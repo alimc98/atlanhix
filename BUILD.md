@@ -18,24 +18,41 @@ flutter build windows|apk|linux
 ## Core binaries (engines)
 
 NEXUS supervises external engines; it does not implement tunnel protocols.
-Place binaries in `<app-data>/cores/` (or configure paths in Settings → Cores):
+Place binaries in `cores/<platform>-<arch>/` (repo root, git-ignored) or set a
+custom directory in Settings → Cores. `BinaryManager` searches, in order:
+
+1. user-configured cores dir
+2. `Directory.current/cores/<platform>-<arch>/`  (dev layout)
+3. PATH
+
+Layout (all from **official releases** — never random mirrors):
 
 ```
 cores/
-  sing-box.exe   (or sing-box)   # >= 1.11 (wireguard endpoints, clash api)
-  xray.exe       (or xray)       # >= 1.8 (xhttp, reality, fragmentation)
+  windows-x64/  sing-box.exe   xray.exe
+  windows-arm64/ …
+  linux-x64/    sing-box       xray
+  linux-arm64/  …
 ```
 
-Layout per platform/arch (auto-detected by `CoreBinaryRegistry`):
+Download steps (current versions at time of writing):
 
-| Platform | Arch | Files |
-|---|---|---|
-| Windows | x64 / ARM64 | `cores/windows-x64/sing-box.exe`, `xray.exe` |
-| Linux | x64 / ARM64 | `cores/linux-x64/sing-box`, `xray` (chmod +x) |
-| Android | arm64-v8a | `jniLibs/arm64-v8a/libsingbox.so` (libbox engine) |
+```bash
+# sing-box (GPL-3.0, official SagerNet releases)
+curl -L -o sb.zip \
+  https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box-1.14.0-windows-amd64.zip
+# Xray-core (MPL-2.0, official XTLS releases)
+curl -L -o xr.zip \
+  https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-windows-64.zip
+```
 
-Linux TUN note: grant the core the capabilities it needs instead of running
-the app as root:
+Extract so the final layout is `cores/windows-x64/sing-box.exe` and
+`cores/windows-x64/xray.exe`. `flutter test` auto-detects them and runs the
+REAL engine integration suite; without them those tests skip with a printed
+reason. AmneziaWG (`amneziawg`/`amneziawg-go`) and MasterDNSVPN
+(`mdvpn-client`) binaries follow the same layout when used.
+
+Linux TUN note: grant the core capabilities instead of running the app as root:
 
 ```bash
 sudo setcap cap_net_admin,cap_net_bind_service=+ep cores/linux-x64/sing-box

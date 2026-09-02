@@ -74,30 +74,31 @@ class LatencyTester {
     Socket? sock;
     try {
       sock = await Socket.connect(proxyHost, proxyPort, timeout: t);
+      final reader = _SockReader(sock);
       sock.add([0x05, 0x01, 0x00]);
-      var resp = await _readN(sock, 2, t);
-      if (resp[0] != 0x05 || resp[1] != 0x00) {
+      final greet = await reader.waitAndTake(2, t);
+      if (greet.length < 2 || greet[0] != 0x05 || greet[1] != 0x00) {
         return ProbeResult(
             ok: false, errorKind: 'proxy', detail: 'SOCKS greeting rejected');
       }
       final host = utf8.encode(uri.host);
       final port = uri.port == 0 ? 443 : uri.port;
       sock.add([0x05, 0x01, 0x00, 0x03, host.length, ...host, port >> 8, port & 0xFF]);
-      resp = await _readN(sock, 5, t);
-      if (resp.length < 5 || resp[1] != 0x00) {
+      final rep = await reader.waitAndTake(5, t);
+      if (rep.length < 5 || rep[1] != 0x00) {
         return ProbeResult(
             ok: false,
             errorKind: 'proxy',
-            detail: 'CONNECT failed (${resp.length > 1 ? resp[1] : '?'})');
+            detail: 'CONNECT failed (${rep.length > 1 ? rep[1] : '?'})');
       }
-      final extra = switch (resp[3]) { 0x01 => 6, 0x03 => resp[4] + 2, 0x04 => 18, _ => 6 };
-      if (extra > 0) await _readN(sock, extra, t);
+      final extra = switch (rep[3]) { 0x01 => 6, 0x03 => rep[4] + 2, 0x04 => 18, _ => 6 };
+      if (extra > 0) await reader.waitAndTake(extra, t);
       sock.add(utf8.encode(
           'GET ${uri.path.isEmpty ? '/' : uri.path} HTTP/1.1\r\n'
           'Host: ${uri.host}\r\n'
           'User-Agent: nexus-probe\r\n'
           'Connection: close\r\n\r\n'));
-      final statusLine = await _readLine(sock, t);
+      final statusLine = await reader.readLine(t);
       sw.stop();
       final code = int.tryParse(statusLine.split(' ').elementAt(1)) ?? 0;
       sock.destroy();
@@ -148,24 +149,57 @@ class LatencyTester {
       client?.close(force: true);
     }
   }
+}
 
-  Future<List<int>> _readN(Socket s, int n, Duration t) async {
-    final out = <int>[];
-    await for (final chunk in s.timeout(t)) {
-      out.addAll(chunk);
-      if (out.length >= n) break;
-    }
-    return out.sublist(0, n.clamp(0, out.length));
+/// Single-subscription-safe socket reader: pumps the socket stream ONCE and
+/// lets callers take bytes as they arrive. (Fixes the double-listen crash
+/// found by the runtime integration tests.)
+class _SockReader {
+  _SockReader(Socket s) {
+    _sub = s.listen(
+      (chunk) => _buf.addAll(chunk),
+      onDone: () => _done = true,
+      onError: (Object _) => _done = true,
+      cancelOnError: false,
+    );
   }
 
-  Future<String> _readLine(Socket s, Duration t) async {
-    final b = <int>[];
-    await for (final chunk in s.timeout(t)) {
-      for (final byte in chunk) {
-        if (byte == 0x0A) return utf8.decode(b).trim();
-        if (byte != 0x0D) b.add(byte);
-      }
+  final List<int> _buf = [];
+  StreamSubscription<List<int>>? _sub;
+  bool _done = false;
+
+  /// Waits until at least [n] bytes are buffered, the stream ends, or the
+  /// timeout passes. Returns (and consumes) the first bytes.
+  Future<List<int>> waitAndTake(int n, Duration timeout) async {
+    final stop = DateTime.now().add(timeout);
+    while (_buf.length < n && !_done && DateTime.now().isBefore(stop)) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
     }
-    throw TimeoutException('http read');
+    final take = _buf.length < n ? _buf.length : n;
+    final out = _buf.sublist(0, take);
+    _buf.removeRange(0, take);
+    return out;
+  }
+
+  /// Reads buffered bytes until CRLF (HTTP status line).
+  Future<String> readLine(Duration timeout) async {
+    final stop = DateTime.now().add(timeout);
+    while (!_done && DateTime.now().isBefore(stop)) {
+      final idx = _findCrlf();
+      if (idx >= 0) {
+        final line = utf8.decode(_buf.sublist(0, idx));
+        _buf.removeRange(0, idx + 2);
+        return line.trim();
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    return utf8.decode(_buf, allowMalformed: true).trim();
+  }
+
+  int _findCrlf() {
+    for (var i = 0; i + 1 < _buf.length; i++) {
+      if (_buf[i] == 0x0D && _buf[i + 1] == 0x0A) return i;
+    }
+    return -1;
   }
 }

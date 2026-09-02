@@ -9,3 +9,6 @@ android/local.properties
 windows/flutter/ephemeral/
 linux/flutter/ephemeral/
 *.log
+
+# Engine binaries are user/builder-provided (see BUILD.md) — never committed.
+cores/

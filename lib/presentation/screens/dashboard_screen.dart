@@ -23,10 +23,16 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   ConnectionPhase _phase = ConnectionPhase.disconnected;
   ProxyProfile? _active;
+  int? _latencyMs;
+  CoreKind? _core;
+  DateTime? _connectedAt;
   StreamSubscription? _sub;
-  final _down = List<double>.generate(60, (_) => 0);
-  final _up = List<double>.generate(60, (_) => 0);
-  Timer? _ticker;
+  StreamSubscription? _trafficSub;
+  final _down = List<double>.filled(60, 0);
+  final _up = List<double>.filled(60, 0);
+  int? _lastUp; // for speed delta
+  int? _lastDown;
+  Timer? _clock;
 
   @override
   void initState() {
@@ -36,22 +42,63 @@ class _DashboardScreenState extends State<DashboardScreen> {
       setState(() {
         _phase = s.phase;
         _active = s.activeProfile;
+        _latencyMs = s.latencyMs;
+        _core = s.core ?? s.activeProfile?.effectiveCore;
+        _connectedAt = s.connectedAt;
+        if (s.phase == ConnectionPhase.disconnected) {
+          // Reset the graphs on disconnect — honest empty state.
+          for (var i = 0; i < 60; i++) {
+            _down[i] = 0;
+            _up[i] = 0;
+          }
+          _lastUp = null;
+          _lastDown = null;
+        }
       });
     });
-    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+    _trafficSub = widget.deps.connection.trafficStream.listen((t) {
       if (!mounted) return;
       setState(() {
-        _down..removeAt(0)..add(0);
-        _up..removeAt(0)..add(0);
+        // Real speed = delta of engine counters (Phase 24).
+        final upSpeed =
+            _lastUp == null ? 0 : (t.upBytes - _lastUp!).clamp(0, 1 << 30);
+        final downSpeed = _lastDown == null
+            ? 0
+            : (t.downBytes - _lastDown!).clamp(0, 1 << 30);
+        _lastUp = t.upBytes;
+        _lastDown = t.downBytes;
+        _down..removeAt(0)..add(downSpeed.toDouble());
+        _up..removeAt(0)..add(upSpeed.toDouble());
       });
+    });
+    _clock = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && _phase == ConnectionPhase.connected) {
+        setState(() {}); // session clock
+      }
     });
   }
 
   @override
   void dispose() {
     _sub?.cancel();
-    _ticker?.cancel();
+    _trafficSub?.cancel();
+    _clock?.cancel();
     super.dispose();
+  }
+
+  static String _fmtSpeed(num bps) {
+    if (bps > 1 << 20) return '${(bps / (1 << 20)).toStringAsFixed(1)} MB/s';
+    if (bps > 1 << 10) return '${(bps / (1 << 10)).toStringAsFixed(0)} KB/s';
+    return '$bps B/s';
+  }
+
+  String _fmtSession(DateTime? since) {
+    if (since == null) return '—';
+    final d = DateTime.now().difference(since);
+    final h = d.inHours, m = d.inMinutes % 60, s = d.inSeconds % 60;
+    return '${h.toString().padLeft(2, '0')}:'
+        '${m.toString().padLeft(2, '0')}:'
+        '${s.toString().padLeft(2, '0')}';
   }
 
   @override
@@ -115,29 +162,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Expanded(
                     child: MetricTile(
                         label: l.downloadSpeed,
-                        value: '0 KB/s',
+                        value: _fmtSpeed(_down.last),
                         color: c.info),
                   ),
                   const SizedBox(width: 24),
                   Expanded(
                     child: MetricTile(
                         label: l.uploadSpeed,
-                        value: '0 KB/s',
+                        value: _fmtSpeed(_up.last),
                         color: c.success),
                   ),
                   const SizedBox(width: 24),
                   Expanded(
                     child: MetricTile(
                       label: l.latency,
-                      value: health?.lastLatencyMs == null
+                      value: _latencyMs == null
                           ? '—'
-                          : '${health!.lastLatencyMs} ms',
-                      color: (health?.lastLatencyMs ?? 999) < 300
-                          ? c.success
-                          : c.warning,
+                          : '$_latencyMs ms',
+                      color: (_latencyMs ?? 999) < 300 ? c.success : c.warning,
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '${l.session}: ${_fmtSession(_connectedAt)} · '
+                '↑${_fmtSpeed(_up.last)} · ↓${_fmtSpeed(_down.last)}',
+                textAlign: TextAlign.center,
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: c.textMuted),
               ),
               const SizedBox(height: 16),
               ClipRRect(

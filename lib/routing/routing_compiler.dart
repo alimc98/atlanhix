@@ -3,17 +3,24 @@ import '../routing/routing_models.dart';
 /// Compiles a routing profile + DNS settings into engine-specific rule sets.
 class RoutingCompiler {
   /// sing-box `route.rules` entries (as maps ready for json encoding).
+  /// Blocking uses the `reject` *action* (block outbound was removed in
+  /// sing-box 1.13).
   List<Map<String, dynamic>> singBoxRules(RoutingProfile profile) {
     final rules = <Map<String, dynamic>>[];
     for (final r in profile.rules.where((r) => r.enabled)) {
-      final outbound = switch (r.action) {
-        RoutingAction.direct => 'direct',
-        RoutingAction.block => 'block',
-        RoutingAction.proxy => 'proxy',
-        RoutingAction.warp => 'warp',
-        RoutingAction.chain => r.chainId ?? 'proxy',
-      };
-      final rule = <String, dynamic>{'outbound': outbound};
+      final rule = <String, dynamic>{};
+      switch (r.action) {
+        case RoutingAction.block:
+          rule['action'] = 'reject';
+        case RoutingAction.direct:
+          rule['outbound'] = 'direct';
+        case RoutingAction.proxy:
+          rule['outbound'] = 'proxy';
+        case RoutingAction.warp:
+          rule['outbound'] = 'warp';
+        case RoutingAction.chain:
+          rule['outbound'] = r.chainId ?? 'proxy';
+      }
       switch (r.matchType) {
         case RuleMatchType.domainFull:
           rule['domain'] = r.patterns;

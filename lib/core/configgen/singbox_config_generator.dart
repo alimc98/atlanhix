@@ -35,14 +35,28 @@ class SingBoxConfigGenerator {
   final OutboundBuilders builders;
   final _compiler = RoutingCompiler();
 
-  /// [upstreams] maps profileId → the outbound the engine should dial.
-  /// Returns the config map; encode with jsonEncode.
+  /// The resolver referenced by `route.default_domain_resolver`
+  /// (required since sing-box 1.12).
+  static Map<String, String> defaultResolver(DnsSettings dns) => {
+        'server': switch (dns.mode) {
+          DnsMode.system || DnsMode.automatic || DnsMode.fakeip => 'local',
+          DnsMode.custom => 'custom',
+          DnsMode.doh => 'doh',
+          DnsMode.dot => 'dot',
+        },
+      };
+
+  /// [socksUpstreams] maps profileId → local host:port of an external engine
+  /// (Xray local SOCKS, MasterDNSVPN SOCKS). Profiles listed here are exposed
+  /// inside the sing-box selector as SOCKS stubs so the front engine can
+  /// hot-switch to them (Phase 5 fast switching).
   Map<String, dynamic> generate({
     required List<ProxyProfile> runnableProfiles,
     required RoutingProfile routing,
     required DnsSettings dns,
     SingBoxOptions options = const SingBoxOptions(),
     required String selectedTag,
+    Map<String, ({String host, int port})> socksUpstreams = const {},
   }) {
     final outbounds = <Map<String, dynamic>>[];
     final endpoints = <Map<String, dynamic>>[];
@@ -60,6 +74,18 @@ class SingBoxConfigGenerator {
       if (ep != null) {
         endpoints.add(ep);
         tags.add(tag);
+        continue;
+      }
+      final up = socksUpstreams[p.id];
+      if (up != null) {
+        outbounds.add({
+          'type': 'socks',
+          'tag': tag,
+          'server': up.host,
+          'server_port': up.port,
+          'version': '5',
+        });
+        tags.add(tag);
       }
     }
 
@@ -67,16 +93,21 @@ class SingBoxConfigGenerator {
       'type': 'selector',
       'tag': 'proxy',
       'outbounds': tags.isEmpty ? ['direct'] : tags,
-      'default': tags.contains(selectedTag) ? selectedTag : (tags.firstOrNull ?? 'direct'),
+      'default':
+          tags.contains(selectedTag) ? selectedTag : (tags.firstOrNull ?? 'direct'),
       'interrupt_exist_connections': true,
     });
-    outbounds.addAll([
-      {'type': 'direct', 'tag': 'direct'},
-      {'type': 'block', 'tag': 'block'},
-      {'type': 'dns', 'tag': 'dns-out'},
-    ]);
+    // NOTE: sing-box ≥1.13 removed the deprecated `block`/`dns` outbounds —
+    // blocking/DNS-hijack are handled by route rule actions instead.
+    outbounds.add({'type': 'direct', 'tag': 'direct'});
 
     final dnsObj = _compiler.singBoxDns(dns);
+    // Ensure the server referenced by default_domain_resolver exists.
+    final servers = dnsObj['servers'] as List;
+    final resolverTag = SingBoxConfigGenerator.defaultResolver(dns)['server']!;
+    if (!servers.any((s) => s['tag'] == resolverTag)) {
+      servers.add({'tag': resolverTag, 'type': 'udp', 'server': '1.1.1.1'});
+    }
 
     return {
       'log': {
@@ -115,6 +146,10 @@ class SingBoxConfigGenerator {
         ],
         'final': 'proxy',
         'auto_detect_interface': true,
+        // Required since sing-box 1.12 (removed-as-deprecated in 1.14):
+        // outbounds without an explicit `domain_resolver` use this server.
+        'default_domain_resolver':
+            SingBoxConfigGenerator.defaultResolver(dns),
       },
       'experimental': {
         'clash_api': {

@@ -9,6 +9,8 @@ import '../application/subscription_service.dart';
 import '../core/core_detector.dart';
 import '../core/health/latency_tester.dart';
 import '../core/health/test_scheduler.dart';
+import '../core/runtime/binary_manager.dart';
+import '../core/runtime/core_manager.dart';
 import '../protocols/importer.dart';
 import '../routing/builtin_profiles.dart';
 import '../warp/warp_http.dart';
@@ -41,6 +43,17 @@ class AppDependencies {
     await deps.chains.load();
     await deps.routingRep.load();
 
+    deps.binaryManager = BinaryManager(
+      // TODO(v0.3): read from Settings → Cores (user override dir).
+      appDir: Directory(
+          '${Directory.current.path}${Platform.pathSeparator}cores'
+          '${Platform.pathSeparator}${BinaryManager.platformDirName()}'),
+    );
+    deps.cores = CoreManager(
+      binaryManager: deps.binaryManager,
+      workDir: Directory('$baseDir/.nexus/runtime'),
+    );
+
     deps.tester = LatencyTester();
     deps.healthStore = HealthStore();
     deps.scheduler = TestScheduler(tester: deps.tester, store: deps.healthStore);
@@ -52,6 +65,7 @@ class AppDependencies {
       healthStore: deps.healthStore,
       tester: deps.tester,
       detector: deps.detector,
+      cores: deps.cores,
     );
     deps.subscriptionService = SubscriptionService(
       subscriptions: deps.subscriptions,
@@ -82,6 +96,8 @@ class AppDependencies {
   late final ChainRepository chains;
   late final RoutingRepository routingRep;
   late final SettingsRepository settings;
+  late final BinaryManager binaryManager;
+  late final CoreManager cores;
   late final LatencyTester tester;
   late final HealthStore healthStore;
   late final TestScheduler scheduler;
@@ -92,3 +108,4 @@ class AppDependencies {
   late final WarpRepository warpRepo;
   late final WarpService warpService;
 }
+

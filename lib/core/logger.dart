@@ -32,23 +32,24 @@ class Logger {
   Stream<LogLine> get stream => _controller.stream;
   List<LogLine> get buffer => List.unmodifiable(_buffer);
 
-  static const _secretPatterns = [
+  static final _secretPatterns = <RegExp>[
     // vmess/vless/trojan userinfo & uuids
-    r'(?<=://)[^:@/\s]+:[^@/\s]+@',
+    RegExp(r'(?<=://)[^:@/\s]+:[^@/\s]+@'),
     // uuid-shaped ids
-    r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b',
-    // base64-ish credentials of suspicious length
-    r'\b(?:password|pass|secret|token|key)=[^\s&;]+',
-    // wireguard private keys
-    r'(?i)privatekey\s*=\s*\S+',
+    RegExp(
+        r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b'),
+    // credential-like query params
+    RegExp(r'\b(?:password|pass|secret|token|key)=[^\s&;]+'),
+    // wireguard private keys (no inline flags: Dart RegExp is ECMAScript)
+    RegExp(r'[Pp]rivate[Kk]ey\s*=\s*\S+'),
     // subscription urls with tokens
-    r'https?://[^\s]+/(sub|api/v1/client/subscribe)[^\s]*',
+    RegExp(r'https?://[^\s]+/(sub|api/v1/client/subscribe)[^\s]*'),
   ];
 
   static String redact(String message) {
     var m = message;
     for (final p in _secretPatterns) {
-      m = m.replaceAllMapped(RegExp(p), (match) {
+      m = m.replaceAllMapped(p, (match) {
         final g = match.group(0)!;
         if (g.length <= 6) return '***';
         return '${g.substring(0, 3)}***${g.substring(g.length - 2)}';
