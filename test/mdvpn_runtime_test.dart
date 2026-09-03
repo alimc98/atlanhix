@@ -117,6 +117,56 @@ void main() {
           reason: 'secret must not persist into rawParams (plaintext store)');
     });
 
+    test('start() prepares the resolvers sidecar (real client requirement)',
+        () async {
+      final dir = await Directory.systemTemp.createTemp('nexus-mdvpn-side');
+      final rt = MasterDnsVpnRuntime(
+        binaryManager: BinaryManager(),
+        workDir: dir,
+      );
+      rt.profile = _mdvpnProfile(params: {
+        'DOMAINS': 'dns-tunnel.example.com',
+        'RESOLVERS': '8.8.8.8,1.1.1.1:5353',
+      });
+      await rt.prepareSidecars();
+      expect(rt.resolversFile, isNotNull);
+      expect(rt.resolversFile!.existsSync(), isTrue,
+          reason: 'real client refuses to start without client_resolvers.txt');
+      final text = await rt.resolversFile!.readAsString();
+      expect(text, contains('8.8.8.8'));
+      expect(text, contains('1.1.1.1:5353'));
+      // Defaults when the profile has none:
+      final rt2 = MasterDnsVpnRuntime(
+        binaryManager: BinaryManager(),
+        workDir: dir,
+      );
+      rt2.profile = _mdvpnProfile();
+      await rt2.prepareSidecars();
+      final text2 = await rt2.resolversFile!.readAsString();
+      expect(text2, contains('8.8.8.8'));
+      expect(text2, contains('1.1.1.1'));
+      await dir.delete(recursive: true);
+    });
+
+    test('launchArgs include -resolvers when the sidecar was prepared',
+        () async {
+      final dir = await Directory.systemTemp.createTemp('nexus-mdvpn-args2');
+      final rt = MasterDnsVpnRuntime(
+        binaryManager: BinaryManager(),
+        workDir: dir,
+      );
+      rt.profile = _mdvpnProfile();
+      final cfgFile = await rt.writeConfig();
+      final argsBefore = rt.launchArgs(cfgFile);
+      expect(argsBefore.contains('-resolvers'), isFalse);
+      await rt.prepareSidecars();
+      final args = rt.launchArgs(cfgFile);
+      expect(args, contains('-resolvers'));
+      expect(args[args.indexOf('-resolvers') + 1],
+          rt.resolversFile!.path);
+      await dir.delete(recursive: true);
+    });
+
     test('resolver file parser handles upstream formats', () {
       final parsed = MasterDnsVpnParser.parseResolverFile(
           '# comment\n8.8.8.8\n1.1.1.1:5353\n[2001:4860:4860::8888]:53\n');

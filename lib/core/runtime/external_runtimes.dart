@@ -47,6 +47,10 @@ abstract class ExternalDaemonRuntime implements CoreRuntime {
 
   CoreBinaryInfo? get binaryInfo => _binary;
 
+  /// Subclass hook: write auxiliary files the daemon requires next to its
+  /// config (e.g. MasterDNSVPN's resolvers file). No-op by default.
+  Future<void> prepareSidecars() async {}
+
   /// PID of the daemon process while running (diagnostics §19); null when
   /// stopped. [ManagedProcess] PID is OS-real, never synthesized.
   int? get lastPid => _process?.pid;
@@ -94,6 +98,8 @@ abstract class ExternalDaemonRuntime implements CoreRuntime {
     }
     final sw = Stopwatch()..start();
     _configFile = await writeConfig();
+    // Subclass hook (e.g. MasterDNSVPN needs a resolvers file sidecar).
+    await prepareSidecars();
     _status = RuntimeStatus.starting;
     try {
       _process =
@@ -349,6 +355,30 @@ class MasterDnsVpnRuntime extends ExternalDaemonRuntime {
     return f;
   }
 
+  /// v0.3.1 (real-binary finding): the upstream client resolves its
+  /// resolvers file relative to the config directory and REFUSES to start
+  /// without it ("resolver file not found"). The config itself does not
+  /// accept a RESOLVERS key — the file + `-resolvers` flag is the mechanism.
+  @override
+  Future<void> prepareSidecars() async {
+    final q = profile?.rawParams ?? const {};
+    var resolvers = (q['RESOLVERS'] ?? '')
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    if (resolvers.isEmpty) {
+      // Sane defaults; public resolvers, upstream-format lines.
+      resolvers = ['8.8.8.8', '1.1.1.1'];
+    }
+    final f = await writeResolversFile(resolvers);
+    _resolversFile = f;
+  }
+
+  /// Written by [prepareSidecars]; handed to the client via `-resolvers`.
+  File? _resolversFile;
+  File? get resolversFile => _resolversFile;
+
   @override
   List<String> launchArgs(File configFile) {
     // v0.3.1 — REAL MasterDnsVPN Go client (cmd/client): flags are
@@ -357,6 +387,9 @@ class MasterDnsVpnRuntime extends ExternalDaemonRuntime {
     // `-version`. The secret goes on the process argv (process-local),
     // NEVER into the config file or logs (§2/§22).
     final args = <String>['-config', configFile.path];
+    if (_resolversFile != null) {
+      args..add('-resolvers')..add(_resolversFile!.path);
+    }
     final key = profile?.password;
     if (key != null && key.isNotEmpty) {
       args..add('-k')..add(key);

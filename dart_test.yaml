@@ -1,0 +1,16 @@
+# Test isolation & parallel safety (v0.3.1 §21)
+#
+# Engine-bound integration tests (e2e, cleanup_stress, xray_crash_recovery,
+# smart_connect, runtime, runtime_lifecycle) launch REAL processes that bind
+# fixed preferred ports. Running test FILES in parallel makes two suites grab
+# the same preferred port → contention failures (observed in v0.3.0).
+#
+# Mitigation strategy (two layers):
+#  1. Dynamic ports — every runtime already allocates via PortAllocator
+#     (sing-box mixed/api, Xray local SOCKS, MDVPN SOCKS); `prefer:` values
+#     are only hints and fall back when taken.
+#  2. File-level serialization — `flutter test --concurrency=1` when running
+#     the full engine-bound suite (documented in docs/V0.3.1_REAL_WORLD_E2E.md).
+#
+# This file is read by `flutter test` (dart_test.yaml semantics).
+concurrency: 1
