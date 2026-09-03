@@ -9,6 +9,7 @@ import '../core/runtime/core_process.dart';
 import '../core/runtime/core_runtime.dart';
 import '../core/runtime/singbox_runtime.dart';
 import '../core/scoring/node_scorer.dart';
+import '../core/scoring/smart_connect.dart';
 import '../chain/chain_planner.dart';
 import '../domain/entities/health.dart';
 import '../domain/entities/proxy_profile.dart';
@@ -122,6 +123,11 @@ class ConnectionController {
   int _consecutiveVerifyFailures = 0;
 
   final NodeScorer _scorer = NodeScorer();
+  final SmartConnectSelector _selector = SmartConnectSelector();
+
+  /// Exposed for UI/tests: number of candidates currently in failure cooldown.
+  int get coolingCandidateCount => _selector.coolingCount;
+  void clearCandidateCooldowns() => _selector.clearCooldowns();
 
   ConnectionStateSnapshot get state => _state;
   Stream<ConnectionStateSnapshot> get states => _stateController.stream;
@@ -135,10 +141,12 @@ class ConnectionController {
         '${s.activeProfile != null ? ' node=${s.activeProfile!.name}' : ''}');
   }
 
-  /// Smart Connect (Phase 7): rank → try in order → verify → connected.
-  /// Never requires the user to choose an engine.
+  /// Smart Connect (v0.3.0 §14): rank → cooldown filter → limited-concurrency
+  /// TCP pre-probe → try in order with full engine start + HTTP verify.
+  /// A candidate is healthy only after a real probe; parsing never qualifies.
   Future<void> smartConnect() async {
-    final ranked = _scorer.rank(repository.all, healthStore.all, strategy);
+    final ranked = _selector.eligible(
+        repository.all, healthStore.all, strategy);
     if (ranked.isEmpty) {
       _setState(ConnectionStateSnapshot(
         phase: ConnectionPhase.error,
@@ -146,10 +154,18 @@ class ConnectionController {
       ));
       return;
     }
+    // Pre-probe keeps the attempt budget for candidates that can actually
+    // accept a TCP connection right now.
+    final probed = await _selector.preprobe(ranked);
+    final candidates =
+        (probed.isNotEmpty ? probed.map((r) => r.$1) : ranked).take(5);
     var lastError = 'all candidates failed';
-    for (final (profile, _) in ranked.take(5)) {
+    for (final profile in candidates) {
       final ok = await connect(profile);
       if (ok) return;
+      // Session cooldown so the next Smart Connect (and failover) skips it
+      // until the cooldown expires — recovery is automatic on expiry.
+      _selector.markFailed(profile.id);
       lastError = _state.error?.userMessage ?? lastError;
     }
     _setState(ConnectionStateSnapshot(
