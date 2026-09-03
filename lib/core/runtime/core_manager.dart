@@ -55,6 +55,10 @@ class CoreManager {
   RuntimeStatus get frontStatus => singbox.status;
   SingBoxRuntime get front => singbox;
 
+  /// Work directory of the Xray runtime (for access-log paths in tests).
+  Directory get xrayWorkDir => Directory(
+      '${workDir.path}${Platform.pathSeparator}xray');
+
   /// W4: every engine's exit stream, tagged with the owning engine —
   /// the controller routes crash recovery per engine.
   final _anyExitCtrl = StreamController<EngineExitEvent>.broadcast();
@@ -196,6 +200,9 @@ class CoreManager {
   }
 
   /// Full start for one profile (Phases 3/4/7 pipeline).
+  /// Safe to call while an engine is already running: the previous topology
+  /// is stopped first (otherwise the old process keeps the ports bound and
+  /// the old selector active — found by the failover E2E test).
   Future<StartResult> startFor(
     ProxyProfile profile, {
     required List<ProxyProfile> all,
@@ -203,6 +210,10 @@ class CoreManager {
     required DnsSettings dns,
   }) async {
     await prepare();
+    if (singbox.status == RuntimeStatus.running ||
+        singbox.status == RuntimeStatus.starting) {
+      await singbox.stop();
+    }
     if (profile.effectiveCore == CoreKind.amneziaWg) {
       amneziaWg.profile = profile;
       final r = await amneziaWg.start();

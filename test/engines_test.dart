@@ -85,17 +85,23 @@ void main() {
   group('sing-box config generator', () {
     final gen = SingBoxConfigGenerator();
 
-    test('generates runnable client config with selector + mixed inbound', () {
+    test('generates runnable client config with selector + mixed inbound',
+        () {
       final cfg = gen.generate(
         runnableProfiles: [_hysteria2(), _vlessXhttpReality()],
         routing: BuiltinRoutingProfiles.all().first,
         dns: DnsSettings(mode: DnsMode.automatic),
         selectedTag: 'node:2',
+        socksUpstreams: {'1': (host: '127.0.0.1', port: 2081)},
       );
       final outbounds = cfg['outbounds'] as List;
       final selector = outbounds.firstWhere((o) => o['tag'] == 'proxy');
       expect(selector['type'], 'selector');
+      // hysteria2 is native; vless+xhttp is now a SOCKS stub (W2).
       expect((selector['outbounds'] as List).length, 2);
+      final stub = outbounds.firstWhere((o) => o['tag'] == 'node:1');
+      expect(stub['type'], 'socks');
+      expect(stub['server_port'], 2081);
       final inbounds = cfg['inbounds'] as List;
       expect(inbounds.any((i) => i['type'] == 'mixed'), isTrue);
       final experimental = cfg['experimental'] as Map;

@@ -139,7 +139,6 @@ class RoutingCompiler {
       };
     }
     if (rules.isNotEmpty) dnsObj['rules'] = rules;
-    dnsObj['independent_cache'] = true;
     return dnsObj;
   }
 

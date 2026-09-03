@@ -65,6 +65,8 @@ class SingBoxRuntime implements CoreRuntime {
   @override
   TrafficSnapshot? get traffic => _traffic;
 
+  int? get lastPid => _process?.pid;
+
   @override
   Future<void> prepare() async {
     await workDir.create(recursive: true);
@@ -142,6 +144,7 @@ class SingBoxRuntime implements CoreRuntime {
   /// [socksUpstreams] carries the local SOCKS endpoints of external engines
   /// (Xray / MasterDNSVPN) — profiles listed there are built as SOCKS stubs
   /// so their traffic traverses the owning engine (v0.2.1 wiring fix W1).
+  /// [socksUpstreams] carries the local SOCKS endpoints of external engines.
   Future<StartResult> startWith({
     required List<ProxyProfile> profiles,
     required String selectedProfileId,
@@ -200,7 +203,7 @@ class SingBoxRuntime implements CoreRuntime {
       }
     }));
 
-    final ready = await _waitReady(timeout: const Duration(seconds: 8));
+    final ready = await _waitReady(timeout: const Duration(seconds: 15));
     if (!ready) {
       final tail = _stderrTail();
       await stop();
@@ -209,7 +212,10 @@ class SingBoxRuntime implements CoreRuntime {
         kind == CoreExitKind.portConflict
             ? StartStatus.portConflict
             : StartStatus.failed,
-        message: tail.isEmpty ? 'engine did not become ready' : tail,
+        message: tail.isEmpty
+            ? 'engine did not become ready (no stderr output; '
+                'stdout tail: ${_stdoutTail()}'
+            : tail,
         startupMs: sw.elapsedMilliseconds,
       );
     }
@@ -256,17 +262,26 @@ class SingBoxRuntime implements CoreRuntime {
 
   String _stderrTail() => _stderrRing.take(12).join('\n');
 
+  final _stdoutRing = <String>[];
+
+  String _stdoutTail() => _stdoutRing.take(6).join(' | ');
+
   /// Attach log collection (call once after start).
   void collectLogs() {
     final p = _process;
     if (p == null) return;
     _stderrRing.clear();
+    _stdoutRing.clear();
     p.stderrStream.listen((line) {
       _stderrRing.add(line);
       if (_stderrRing.length > 40) _stderrRing.removeAt(0);
       Logger.instance.debug('sing-box', line);
     });
-    p.stdoutStream.listen((line) => Logger.instance.debug('sing-box', line));
+    p.stdoutStream.listen((line) {
+      _stdoutRing.add(line);
+      if (_stdoutRing.length > 40) _stdoutRing.removeAt(0);
+      Logger.instance.debug('sing-box', line);
+    });
   }
 
   /// Phase 5: hot switch inside the running selector — no restart.

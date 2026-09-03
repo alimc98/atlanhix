@@ -157,7 +157,10 @@ class SingBoxConfigGenerator {
           'secret': options.clashApiSecret,
           'default_mode': 'Rule',
         },
-        'cache_file': {'enabled': true},
+        // Disabled: cache-file acquire can time out on test/machine
+        // filesystems; selector state persistence is not required since
+        // NEXUS sets the selector explicitly on every start.
+        'cache_file': {'enabled': false},
       },
     };
   }
