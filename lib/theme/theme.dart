@@ -102,6 +102,9 @@ enum NexusThemeMode { dark, light, oled }
 /// v0.3.0 branding alias — new code should use [AtlanhixThemeMode].
 typedef AtlanhixThemeMode = NexusThemeMode;
 
+/// v0.3.0 branding alias.
+typedef AtlanhixTheme = NexusTheme;
+
 /// Typography scale (design/TYPOGRAPHY.md).
 class NexusTypography {
   static const _fontLatin = 'Inter';
