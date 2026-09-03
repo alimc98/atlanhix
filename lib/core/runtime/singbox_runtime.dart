@@ -86,6 +86,8 @@ class SingBoxRuntime implements CoreRuntime {
     required RoutingProfile routing,
     required DnsSettings dns,
     Map<String, ({String host, int port})> socksUpstreams = const {},
+    ProxyProfile? warpProfile,
+    bool chainWarpOutside = true,
   }) {
     return SingBoxConfigGenerator().generate(
       runnableProfiles: profiles,
@@ -99,6 +101,8 @@ class SingBoxRuntime implements CoreRuntime {
       ),
       selectedTag: '$tagPrefix$selectedProfileId',
       socksUpstreams: socksUpstreams,
+      warpProfile: warpProfile,
+      chainWarpOutside: chainWarpOutside,
     );
   }
 
@@ -108,6 +112,8 @@ class SingBoxRuntime implements CoreRuntime {
     required RoutingProfile routing,
     required DnsSettings dns,
     Map<String, ({String host, int port})> socksUpstreams = const {},
+    ProxyProfile? warpProfile,
+    bool chainWarpOutside = true,
   }) async {
     if (_binary == null || _binary!.status != 'available') {
       _binary = await binaryManager.inspect(CoreBinaryKind.singbox);
@@ -121,7 +127,9 @@ class SingBoxRuntime implements CoreRuntime {
         selectedProfileId: selectedProfileId,
         routing: routing,
         dns: dns,
-        socksUpstreams: socksUpstreams);
+        socksUpstreams: socksUpstreams,
+        warpProfile: warpProfile,
+        chainWarpOutside: chainWarpOutside);
     final f = await _writeConfig(cfg);
     try {
       final r = await Process.run(b.path!, ['check', '-c', f.path],
@@ -140,17 +148,18 @@ class SingBoxRuntime implements CoreRuntime {
   }
 
   /// Generates, validates and starts with all [profiles] loaded so selector
-  /// hot-switching (Phase 5) can swap between them without a restart.
-  /// [socksUpstreams] carries the local SOCKS endpoints of external engines
-  /// (Xray / MasterDNSVPN) — profiles listed there are built as SOCKS stubs
-  /// so their traffic traverses the owning engine (v0.2.1 wiring fix W1).
-  /// [socksUpstreams] carries the local SOCKS endpoints of external engines.
+  /// hot-switching can swap between them without a restart.
+  /// [socksUpstreams]: local SOCKS endpoints of external engines (Xray/MDVPN).
+  /// [warpProfile]: materializes the WARP WireGuard endpoint for traffic
+  /// chaining (v0.3.0 §8) — traffic flows through WARP per [chainWarpOutside].
   Future<StartResult> startWith({
     required List<ProxyProfile> profiles,
     required String selectedProfileId,
     required RoutingProfile routing,
     required DnsSettings dns,
     Map<String, ({String host, int port})> socksUpstreams = const {},
+    ProxyProfile? warpProfile,
+    bool chainWarpOutside = true,
   }) async {
     final sw = Stopwatch()..start();
     final validation = await validateAll(
@@ -158,7 +167,9 @@ class SingBoxRuntime implements CoreRuntime {
         selectedProfileId: selectedProfileId,
         routing: routing,
         dns: dns,
-        socksUpstreams: socksUpstreams);
+        socksUpstreams: socksUpstreams,
+        warpProfile: warpProfile,
+        chainWarpOutside: chainWarpOutside);
     if (!validation.ok) {
       _status = RuntimeStatus.stopped;
       final detail = (validation.output ?? '')
@@ -175,7 +186,9 @@ class SingBoxRuntime implements CoreRuntime {
         selectedProfileId: selectedProfileId,
         routing: routing,
         dns: dns,
-        socksUpstreams: socksUpstreams);
+        socksUpstreams: socksUpstreams,
+        warpProfile: warpProfile,
+        chainWarpOutside: chainWarpOutside);
     _configFile = await _writeConfig(cfg);
 
     final b = _binary!;

@@ -199,15 +199,23 @@ class CoreManager {
     }
   }
 
-  /// Full start for one profile (Phases 3/4/7 pipeline).
+  /// Full start for one profile.
   /// Safe to call while an engine is already running: the previous topology
   /// is stopped first (otherwise the old process keeps the ports bound and
   /// the old selector active — found by the failover E2E test).
+  ///
+  /// [warpProfile] — WARP traffic chaining (v0.3.0 §8): when non-null (built
+  /// via `WarpRegistrar.toProfile(account)`), the WARP WireGuard endpoint is
+  /// materialized inside the front sing-box config and node outbounds dial
+  /// through it per [chainWarpOutside]. The chain is real: sing-box itself
+  /// dials the WireGuard handshake through the chain.
   Future<StartResult> startFor(
     ProxyProfile profile, {
     required List<ProxyProfile> all,
     required RoutingProfile routing,
     required DnsSettings dns,
+    ProxyProfile? warpProfile,
+    bool chainWarpOutside = true,
   }) async {
     await prepare();
     if (singbox.status == RuntimeStatus.running ||
@@ -227,6 +235,8 @@ class CoreManager {
       routing: routing,
       dns: dns,
       socksUpstreams: _socksUpstreams(all),
+      warpProfile: warpProfile,
+      chainWarpOutside: chainWarpOutside,
     );
     if (r.ok) {
       _restartCount = 0;

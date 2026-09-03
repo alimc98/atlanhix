@@ -159,7 +159,13 @@ class WarpRegistrar {
   }
 
   /// Converts the account into a runnable WireGuard-family profile.
-  ProxyProfile toProfile(WarpAccount a, {String name = 'Cloudflare WARP'}) {
+  ProxyProfile toProfile(WarpAccount a, {String name = 'Cloudflare WARP'}) =>
+      WarpRegistrar.profileFor(a, name: name);
+
+  /// Pure conversion (no network, no instance state) so any layer can
+  /// materialize a registered WARP device as a WireGuard endpoint — used by
+  /// the v0.3.0 WARP traffic chain (§8).
+  static ProxyProfile profileFor(WarpAccount a, {String name = 'Cloudflare WARP'}) {
     return ProxyProfile(
       id: Ids.newId(),
       name: name,

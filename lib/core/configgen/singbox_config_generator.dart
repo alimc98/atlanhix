@@ -50,6 +50,16 @@ class SingBoxConfigGenerator {
   /// (Xray local SOCKS, MasterDNSVPN SOCKS). Profiles listed here are exposed
   /// inside the sing-box selector as SOCKS stubs so the front engine can
   /// hot-switch to them (Phase 5 fast switching).
+  ///
+  /// [chainWarpOutside] — WARP **traffic chaining** (v0.3.0 §8). When set and
+  /// [warpProfile] is provided, the WARP WireGuard endpoint is materialized
+  /// and the selected node's outbound dials *through* it (`detour: warp`),
+  /// i.e. traffic flows node → WARP → internet. When false, WARP is the
+  /// first hop: traffic flows warp-endpoint → node → internet. The selector
+  /// always contains both plain and chained tags so switching is a Clash-API
+  /// call. Never a separate "WARP running" indicator — the chain is real
+  /// only when traffic traverses both outbounds (E2E-verified via the outer
+  /// engine's counters/log).
   Map<String, dynamic> generate({
     required List<ProxyProfile> runnableProfiles,
     required RoutingProfile routing,
@@ -57,14 +67,27 @@ class SingBoxConfigGenerator {
     SingBoxOptions options = const SingBoxOptions(),
     required String selectedTag,
     Map<String, ({String host, int port})> socksUpstreams = const {},
+    ProxyProfile? warpProfile,
+    bool chainWarpOutside = true,
+    String? selectedWarpTag,
   }) {
     final outbounds = <Map<String, dynamic>>[];
     final endpoints = <Map<String, dynamic>>[];
     final tags = <String>[];
 
+    // Materialize the WARP endpoint first if chaining is enabled.
+    var warpTag = '';
+    if (warpProfile != null) {
+      warpTag = 'warp';
+      final wEp = builders.singBoxWireguardEndpoint(warpProfile, tag: warpTag);
+      if (wEp != null) endpoints.add(wEp);
+    }
+
     for (final p in runnableProfiles) {
       final tag = 'node:${p.id}';
-      final o = builders.singBoxOutbound(p, tag: tag);
+      final o = builders.singBoxOutbound(p, tag: tag,
+          // Chained: the node's outbound dials through WARP (WARP outside).
+          detourTag: warpProfile != null && chainWarpOutside ? warpTag : null);
       if (o != null) {
         outbounds.add(o);
         tags.add(tag);
@@ -84,6 +107,7 @@ class SingBoxConfigGenerator {
           'server': up.host,
           'server_port': up.port,
           'version': '5',
+          if (warpProfile != null && chainWarpOutside) 'detour': warpTag,
         });
         tags.add(tag);
       }

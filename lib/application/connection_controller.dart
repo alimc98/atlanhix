@@ -15,7 +15,9 @@ import '../domain/entities/proxy_profile.dart';
 import '../domain/errors/app_error.dart';
 import '../routing/builtin_profiles.dart';
 import '../routing/routing_models.dart';
+import '../warp/warp_registrar.dart';
 import '../data/profile_repository.dart';
+import '../data/repositories.dart';
 import '../platform/system_proxy.dart';
 
 /// Strict connection state machine (Phase 25).
@@ -77,6 +79,7 @@ class ConnectionController {
     required this.tester,
     required this.detector,
     required this.cores,
+    this.warpRepo,
   }) {
     // Phase 26: react to engine crashes (front AND upstreams — v0.2.1 W4).
     cores.onAnyExit.listen(_onEngineExit);
@@ -87,6 +90,14 @@ class ConnectionController {
   final LatencyTester tester;
   final CoreDetector detector;
   final CoreManager cores;
+  final WarpRepository? warpRepo;
+
+  /// WARP traffic chaining (v0.3.0 §8). When true, the saved WARP account is
+  /// materialized as a WireGuard endpoint inside the front engine config and
+  /// node traffic is dialed through it. [chainWarpOutside] picks the
+  /// direction: true → node → WARP → internet, false → WARP → node → internet.
+  bool warpChainEnabled = false;
+  bool chainWarpOutside = true;
 
   final _stateController =
       StreamController<ConnectionStateSnapshot>.broadcast();
@@ -176,11 +187,28 @@ class ConnectionController {
       // never starts the Xray/MDVPN upstream.
       profile.core = decision.core;
       await cores.stop(); // clean slate for a new start
+      // WARP traffic chaining (§8): materialize the saved WARP account as a
+      // WireGuard endpoint and dial node traffic through it. If the account
+      // is missing/incomplete the chain is silently skipped — chaining is a
+      // per-connection modifier, not a hard requirement.
+      ProxyProfile? warpProfile;
+      if (warpChainEnabled) {
+        final acct = warpRepo?.account;
+        if (acct != null &&
+            acct.privateKey.isNotEmpty &&
+            acct.peerPublicKey.isNotEmpty) {
+          warpProfile = WarpRegistrar.profileFor(acct);
+          Logger.instance.info('connection',
+              'WARP chain enabled (outside=$chainWarpOutside)');
+        }
+      }
       final start = await cores.startFor(
         profile,
         all: repository.all,
         routing: routing,
         dns: dns,
+        warpProfile: warpProfile,
+        chainWarpOutside: chainWarpOutside,
       );
       if (!start.ok) {
         throw CoreStartError(
