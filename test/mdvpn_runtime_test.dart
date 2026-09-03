@@ -115,6 +115,12 @@ void main() {
       expect(p.rawParams['DATA_ENCRYPTION_METHOD'], '3');
       expect(p.rawParams.containsKey('ENCRYPTION_KEY'), isFalse,
           reason: 'secret must not persist into rawParams (plaintext store)');
+      // §22: the key moves to password (vaultified at persistence) and the
+      // stored raw TOML must be redacted.
+      expect(p.password, 'super-secret-value');
+      expect(p.rawConfig!.contains('super-secret-value'), isFalse,
+          reason: 'rawConfig persists to the JSON store — must be redacted');
+      expect(p.rawConfig, contains('<redacted>'));
     });
 
     test('start() prepares the resolvers sidecar (real client requirement)',

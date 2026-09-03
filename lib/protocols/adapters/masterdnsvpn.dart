@@ -55,9 +55,20 @@ class MasterDnsVpnParser {
           raw: text);
     }
     final name0 = kv['NAME'] ?? 'MasterDNSVPN $server';
-    // The shared key never enters rawParams (plaintext store) — it stays in
-    // the raw TOML blob, which the runtime hands to the client via -k.
-    kv.remove('ENCRYPTION_KEY');
+    // §2/§22: the shared key is a SECRET. Move it into `password` (which the
+    // persistence layer vaultifies) and redact it from the stored raw TOML —
+    // rawConfig otherwise persists plaintext in the JSON store.
+    final secretKey = kv.remove('ENCRYPTION_KEY');
+    var storedRaw = text;
+    if (secretKey != null && secretKey.isNotEmpty) {
+      storedRaw = text.split(RegExp(r'\r?\n')).map((line) {
+        final t = line.trim();
+        if (t.toUpperCase().startsWith('ENCRYPTION_KEY')) {
+          return 'ENCRYPTION_KEY = "<redacted>"';
+        }
+        return line;
+      }).join('\n');
+    }
     return ProxyProfile(
       id: Ids.newId(),
       name: name0,
@@ -65,8 +76,9 @@ class MasterDnsVpnParser {
       port: port ?? 53,
       protocol: ProxyProtocol.masterDnsVpn,
       core: CoreKind.masterDnsVpn,
+      password: (secretKey == null || secretKey.isEmpty) ? null : secretKey,
       rawParams: kv,
-      rawConfig: text,
+      rawConfig: storedRaw,
       source: ProfileSource.fileImport,
     );
   }
