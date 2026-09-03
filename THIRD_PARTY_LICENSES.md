@@ -1,11 +1,11 @@
-# Third-Party Licenses & Attributions
+﻿# Third-Party Licenses & Attributions
 
-NEXUS is an **independent implementation**. No source code was copied from
-the projects below. They are credited because NEXUS either (a) generates
+Atlanhix is an **independent implementation**. No source code was copied from
+the projects below. They are credited because Atlanhix either (a) generates
 configurations consumed by their engines, or (b) follows documented,
 protocol-level interfaces they maintain.
 
-## Engines executed by NEXUS (user-provided binaries)
+## Engines executed by Atlanhix (user-provided binaries)
 
 | Project | License | Role |
 |---|---|---|
@@ -23,7 +23,7 @@ protocol-level interfaces they maintain.
 | [Hiddify](https://github.com/hiddify/hiddify-app) | Apache-2.0 | Fragmentation profiles, config preview UX |
 | [wgcf](https://github.com/ViRb3/wgcf) | MIT | WARP device-registration API usage (OpenAPI spec), license binding, MTU guidance (1280) |
 
-## Dart packages (pub.dev — see each repository for its license)
+## Dart packages (pub.dev â€” see each repository for its license)
 
 | Package | License |
 |---|---|

@@ -1,11 +1,11 @@
-# NEXUS
+﻿# Atlanhix
 
 **A production-grade, cross-platform proxy/VPN client for Windows, Linux and
-Android.** Flutter UI · dual-core architecture (sing-box + Xray-core) ·
-intelligent core detection · health engine · auto-failover · WARP chaining ·
+Android.** Flutter UI آ· dual-core architecture (sing-box + Xray-core) آ·
+intelligent core detection آ· health engine آ· auto-failover آ· WARP chaining آ·
 subscription management.
 
-> NEXUS is an independent implementation. It does not copy code from Throne,
+> Atlanhix is an independent implementation. It does not copy code from Throne,
 > sing-box, Xray or any other client; it generates configurations for proven
 > engines and supervises them. See `THIRD_PARTY_LICENSES.md` for the projects
 > that make this possible.
@@ -14,15 +14,15 @@ subscription management.
 
 | Area | What you get |
 |---|---|
-| **Cores** | sing-box + Xray-core with **intelligent CoreDetector** (confidence-scored, inspects the whole config — transport, security, params — not just the scheme) |
+| **Cores** | sing-box + Xray-core with **intelligent CoreDetector** (confidence-scored, inspects the whole config â€” transport, security, params â€” not just the scheme) |
 | **Protocols** | VMess, VLESS, Trojan, Shadowsocks (SIP002+legacy), Hysteria/2, TUIC, WireGuard, AmneziaWG, AnyTLS, ShadowTLS, Naive, SSH, SOCKS/HTTP, XHTTP, Reality, MasterDNSVPN (adapter) |
-| **Import** | URI lists, Base64 subscriptions, Clash/Clash.Meta YAML, sing-box JSON, Xray JSON, `.conf` files, clipboard, QR, `nexus://import` deeplinks |
+| **Import** | URI lists, Base64 subscriptions, Clash/Clash.Meta YAML, sing-box JSON, Xray JSON, `.conf` files, clipboard, QR, `Atlanhix://import` deeplinks |
 | **Subscriptions** | auto format detection, dedup, `subscription-userinfo` traffic/expiry parsing, background updates, offline-first |
 | **Health** | layered probes (TCP/TLS/HTTP-through-proxy), TestScheduler with priority classes, health states |
 | **Smart engine** | NodeScorer (5 strategies), Smart Connect, auto-failover, CDN detection, opt-in Xray fragmentation with cached profiles |
 | **WARP** | device registration via Cloudflare's documented API, WireGuard endpoint generation, chainable with any node |
-| **Chain builder** | proxy → WARP, WARP → proxy, multi-hop with technical validation (no UDP-in-UDP) |
-| **Routing** | domain/suffix/keyword/IP/GeoIP/port/process rules, per-service profiles (Google→WARP, Iran-direct, AI, streaming, gaming), DNS modes incl. fake-IP |
+| **Chain builder** | proxy â†’ WARP, WARP â†’ proxy, multi-hop with technical validation (no UDP-in-UDP) |
+| **Routing** | domain/suffix/keyword/IP/GeoIP/port/process rules, per-service profiles (Googleâ†’WARP, Iran-direct, AI, streaming, gaming), DNS modes incl. fake-IP |
 | **UI** | original design system (dark/light/OLED), desktop sidebar + mobile bottom nav, EN/FA with full RTL, accessible, 60 fps graphs |
 | **Security** | secrets in OS secure storage (vault-referenced, never in the DB), redacting logger, no telemetry |
 
@@ -35,21 +35,21 @@ flutter test             # unit + widget suites
 flutter analyze          # zero-error policy
 ```
 
-Cores (`sing-box`, `xray`) are not bundled by default — drop the binaries into
-the app's `cores/` directory or set their paths in Settings → Cores.
+Cores (`sing-box`, `xray`) are not bundled by default â€” drop the binaries into
+the app's `cores/` directory or set their paths in Settings â†’ Cores.
 See `BUILD.md` for the exact per-platform layout.
 
 ## Documentation
 
-* `docs/ARCHITECTURE.md` — layers, core runtime model, config pipeline
-* `docs/RUNTIME.md` — v0.2.1 runtime wiring, traffic-path topology, E2E harness
-* `docs/PROTOCOL_SUPPORT.md` — full protocol matrix & core-detection signals
-* `docs/PLATFORM_ARCHITECTURE.md` — Windows/Linux/Android internals (TUN, privileges, IPC)
-* `docs/V0.2_RUNTIME_AUDIT.md` — v0.2 feature classification + verification
-* `docs/V0.2.1_RUNTIME_WIRING_AUDIT.md` — wiring bugs W1–W8 + resolution
-* `docs/V0.2.1_PERFORMANCE.md` — measured timings & resource usage
-* `docs/V0.2.1_ANDROID_READINESS.md` — Android readiness audit
-* `design/` — DESIGN_SYSTEM, COLORS, TYPOGRAPHY, COMPONENTS, UX_RULES
+* `docs/ARCHITECTURE.md` â€” layers, core runtime model, config pipeline
+* `docs/RUNTIME.md` â€” v0.2.1 runtime wiring, traffic-path topology, E2E harness
+* `docs/PROTOCOL_SUPPORT.md` â€” full protocol matrix & core-detection signals
+* `docs/PLATFORM_ARCHITECTURE.md` â€” Windows/Linux/Android internals (TUN, privileges, IPC)
+* `docs/V0.2_RUNTIME_AUDIT.md` â€” v0.2 feature classification + verification
+* `docs/V0.2.1_RUNTIME_WIRING_AUDIT.md` â€” wiring bugs W1â€“W8 + resolution
+* `docs/V0.2.1_PERFORMANCE.md` â€” measured timings & resource usage
+* `docs/V0.2.1_ANDROID_READINESS.md` â€” Android readiness audit
+* `design/` â€” DESIGN_SYSTEM, COLORS, TYPOGRAPHY, COMPONENTS, UX_RULES
 * `BUILD.md`, `DEVELOPMENT.md`, `TROUBLESHOOTING.md`, `SECURITY.md`
 
 ## Status
@@ -57,14 +57,14 @@ See `BUILD.md` for the exact per-platform layout.
 Working, tested today: configuration import/normalize/export pipeline,
 core detection, **engine-validated config generation** (sing-box check /
 xray -test actually run), **real process supervision with traffic-path E2E**
-(sing-box→Xray→destination proven via Xray access log), health/scoring/
+(sing-boxâ†’Xrayâ†’destination proven via Xray access log), health/scoring/
 failover/crash-recovery cycles with real engines, chain planner, routing
 compiler, subscription engine, WARP registration client, system proxy,
 design system & responsive UI shell, EN/FA l10n, **61 tests passing
 (incl. 6 real-engine E2E), 0 analyzer errors**.
 
 Terminology used throughout the docs:
-`PARSED → GENERATED → VALIDATED → EXECUTABLE → RUNTIME_CONNECTED → E2E_VERIFIED`.
+`PARSED â†’ GENERATED â†’ VALIDATED â†’ EXECUTABLE â†’ RUNTIME_CONNECTED â†’ E2E_VERIFIED`.
 
 Remaining milestones (tracked in `DEVELOPMENT.md`): bundled core binaries per
 platform, Windows/Linux TUN elevation UX, Android libbox engine binding
@@ -73,5 +73,5 @@ subscription auto-update scheduler.
 
 ## License
 
-NEXUS code: MIT (see `LICENSE`). Third-party components retain their own
-licenses — see `THIRD_PARTY_LICENSES.md`.
+Atlanhix code: MIT (see `LICENSE`). Third-party components retain their own
+licenses â€” see `THIRD_PARTY_LICENSES.md`.
