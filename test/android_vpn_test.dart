@@ -23,7 +23,7 @@ void main() {
       const MethodChannel('dev.atlanhix/vpn'), (call) async {
       final out = handler(call.method, call.arguments);
       return jsonEncode(out);
-    } as Future<Object?>? Function(MethodCall)?);
+    });
   });
 
   test('handoff payload carries dns/routes/per-app (§6/§7 contract)', () {

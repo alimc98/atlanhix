@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../application/dependencies.dart';
+import '../../diagnostics/diagnostics_service.dart';
 import '../../localization/generated/app_localizations.dart';
 import '../../theme/theme.dart';
 
@@ -71,8 +73,24 @@ class SettingsScreen extends StatelessWidget {
                 ?.copyWith(color: c.textSecondary),
           ),
         ]),
+        _section(context, 'Diagnostics', [
+          Text(
+            'Collects effective core, engine states, real PIDs, ports, DNS, '
+            'readiness, probe result and recent (redacted) logs.',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: c.textSecondary),
+          ),
+          const SizedBox(height: 8),
+          FilledButton.tonalIcon(
+            onPressed: () => _runDiagnostics(context),
+            icon: const Icon(Icons.bug_report_outlined),
+            label: const Text('Run Diagnostics'),
+          ),
+        ]),
         _section(context, l.about, [
-          Text('NEXUS 0.1.0'),
+          Text('Atlanhix 0.3.0'),
           const SizedBox(height: 4),
           Text(
             'Flutter ${const String.fromEnvironment("FLUTTER_VERSION", defaultValue: "3.47")} · '
@@ -106,5 +124,38 @@ class SettingsScreen extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _runDiagnostics(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final report = await DiagnosticsService(
+      cores: deps.cores,
+      routing: deps.connection.routing,
+      dns: deps.connection.dns,
+    ).collect();
+    final text = DiagnosticsService.renderText(report);
+    if (!context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Diagnostics report'),
+        content: SizedBox(
+          width: 560,
+          child: SingleChildScrollView(child: SelectableText(text)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Clipboard.setData(ClipboardData(text: text)),
+            child: const Text('Copy'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+    messenger.hideCurrentSnackBar();
   }
 }

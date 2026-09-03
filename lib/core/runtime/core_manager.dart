@@ -217,6 +217,7 @@ class CoreManager {
     ProxyProfile? warpProfile,
     bool chainWarpOutside = true,
   }) async {
+    final sw = Stopwatch()..start();
     await prepare();
     if (singbox.status == RuntimeStatus.running ||
         singbox.status == RuntimeStatus.starting) {
@@ -241,6 +242,7 @@ class CoreManager {
     if (r.ok) {
       _restartCount = 0;
       _active = profile;
+      lastStartupMs = sw.elapsedMilliseconds;
     } else {
       await _stopUpstreams();
     }
@@ -313,6 +315,9 @@ class CoreManager {
   }
 
   void setActive(ProxyProfile p) => _active = p;
+
+  /// Wall-clock duration of the last successful engine start (§25 metrics).
+  int? lastStartupMs;
 
   /// Phase 26: restart-once recovery; further crashes bubble to failover.
   /// [engine] selects which process topology to rebuild: the front engine

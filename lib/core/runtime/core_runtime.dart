@@ -25,6 +25,10 @@ abstract class CoreRuntime {
   }
 
   RuntimeStatus get status;
+
+  /// PID of the engine process while running; null when not running.
+  /// Diagnostics surface this (§19); implementations must never synthesize it.
+  int? get lastPid => null;
   CoreExitEvent? get lastExit;
 
   /// Engine-measured delay for one upstream tag, when the engine supports it.
