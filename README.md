@@ -42,22 +42,34 @@ See `BUILD.md` for the exact per-platform layout.
 ## Documentation
 
 * `docs/ARCHITECTURE.md` — layers, core runtime model, config pipeline
+* `docs/RUNTIME.md` — v0.2.1 runtime wiring, traffic-path topology, E2E harness
 * `docs/PROTOCOL_SUPPORT.md` — full protocol matrix & core-detection signals
 * `docs/PLATFORM_ARCHITECTURE.md` — Windows/Linux/Android internals (TUN, privileges, IPC)
+* `docs/V0.2_RUNTIME_AUDIT.md` — v0.2 feature classification + verification
+* `docs/V0.2.1_RUNTIME_WIRING_AUDIT.md` — wiring bugs W1–W8 + resolution
+* `docs/V0.2.1_PERFORMANCE.md` — measured timings & resource usage
+* `docs/V0.2.1_ANDROID_READINESS.md` — Android readiness audit
 * `design/` — DESIGN_SYSTEM, COLORS, TYPOGRAPHY, COMPONENTS, UX_RULES
 * `BUILD.md`, `DEVELOPMENT.md`, `TROUBLESHOOTING.md`, `SECURITY.md`
 
 ## Status
 
 Working, tested today: configuration import/normalize/export pipeline,
-core detection, config generation for both engines, health/scoring/failover
-engines, chain planner, routing compiler, subscription engine, WARP
-registration client, design system & responsive UI shell, EN/FA l10n,
-41+ passing tests, zero analyzer errors.
+core detection, **engine-validated config generation** (sing-box check /
+xray -test actually run), **real process supervision with traffic-path E2E**
+(sing-box→Xray→destination proven via Xray access log), health/scoring/
+failover/crash-recovery cycles with real engines, chain planner, routing
+compiler, subscription engine, WARP registration client, system proxy,
+design system & responsive UI shell, EN/FA l10n, **61 tests passing
+(incl. 6 real-engine E2E), 0 analyzer errors**.
+
+Terminology used throughout the docs:
+`PARSED → GENERATED → VALIDATED → EXECUTABLE → RUNTIME_CONNECTED → E2E_VERIFIED`.
 
 Remaining milestones (tracked in `DEVELOPMENT.md`): bundled core binaries per
-platform, Windows/Linux TUN elevation UX, Android libbox engine binding,
-per-app proxy UI, desktop tray menus.
+platform, Windows/Linux TUN elevation UX, Android libbox engine binding
+(see `docs/V0.2.1_ANDROID_READINESS.md`), per-app proxy UI, desktop tray,
+subscription auto-update scheduler.
 
 ## License
 

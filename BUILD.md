@@ -66,5 +66,22 @@ listed milestone in `DEVELOPMENT.md`.
 
 ```bash
 flutter analyze   # must report 0 errors
-flutter test      # 41+ tests: parsers, engines, generators, widgets, l10n
+flutter test      # 60+ tests; runtime/e2e tests auto-skip without cores/
 ```
+
+### Real-credential E2E (opt-in, never committed)
+
+Set any of these to run the full remote-path verification (§8):
+
+```bash
+set NEXUS_E2E_VLESS_URI=vless://uuid@server:port?...
+set NEXUS_E2E_HYSTERIA2_URI=hysteria2://pass@server:port?...
+set NEXUS_E2E_XHTTP_URI=vless://uuid@server:443?type=xhttp&security=reality&...
+flutter test test/e2e_real_test.dart
+```
+
+Each test: import → detect → generate → engine validate → start → readiness
+→ local HTTP through tunnel → internet probe (Cloudflare trace = external IP)
+→ traffic counters → stop → process-leak check. Absent variables produce
+`SKIPPED: … not configured` — never a false pass.
+

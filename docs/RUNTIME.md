@@ -1,85 +1,102 @@
-# NEXUS Runtime (v0.2)
+# NEXUS Runtime (v0.2.1)
 
-How NEXUS actually runs proxies. Everything here is implemented and covered
-by `test/runtime_test.dart` + `test/runtime_lifecycle_test.dart` against real
-engine binaries (sing-box 1.14.0, Xray 26.3.27 at time of writing).
+How NEXUS actually routes traffic. Everything here is implemented and covered
+by `test/runtime_test.dart`, `test/runtime_lifecycle_test.dart` and
+`test/e2e_test.dart` against real engine binaries (sing-box 1.14.0,
+Xray 26.3.27).
 
-## Process lifecycle
+## Traffic-path topology (v0.2.1 — wiring fixed)
 
 ```
-ConnectionController (state machine: Phase 25)
-        │
-CoreManager ──── prepare() once at bootstrap
-        │
-        ├── SingBoxRuntime   front engine — mixed inbound 127.0.0.1:P, selector, TUN opt
-        ├── XrayRuntime      upstream engine — local SOCKS 127.0.0.1:Q, restarted per node
-        ├── AmneziaWgRuntime external daemon (standalone; no chaining) [if binary present]
-        └── MasterDnsVpnRuntime external daemon → localhost SOCKS [if binary present]
-
-ManagedProcess: spawn → stdout/stderr pumps → exit watcher → graceful stop
-                (SIGTERM / taskkill, escalating to kill after grace).
-PortAllocator: free loopback ports (mixed 2080, clash api 9097, xray 2081).
+NEXUS probe/controller
+   │
+   ▼
+sing-box front (mixed inbound 127.0.0.1:P, selector "proxy")
+   ├── native outbound ─────────────────────► remote server
+   ├── wireguard endpoint ──────────────────► wg remote
+   ├── Xray SOCKS stub ──► xray socks-in ──► xray outbound ──► remote
+   └── MDVPN SOCKS stub ──► mdvpn socks ───► DNS tunnel ─────► remote
 ```
 
-## Start pipeline (every connect)
+**Invariant (verified by E2E):** the CoreDetector's engine decision controls
+the actual traffic path. Xray-owned profiles are *never* built as native
+sing-box outbounds — `OutboundBuilders.singBoxOutbound` returns `null` for
+them, and `CoreManager._socksUpstreams` provides the SOCKS stub pointing at
+the Xray local inbound. The stub is only emitted after Xray is confirmed
+listening (`inboundHealthy`).
 
-1. `prepare()` — detect binaries (BinaryManager), allocate ports.
-2. Validate — `sing-box check -c cfg` / `xray run -test -c cfg`.
-   Invalid configs are **never started**; the human-readable engine error is
-   surfaced (e.g. `unknown method:`, `outbounds[4]: dns outbound … removed`).
-3. Start the upstream engine if the profile needs one (Xray / MDVPN).
-4. Start sing-box with **all** runnable profiles in the selector.
-5. Readiness probe — Clash API `/version` + TCP connect to the mixed inbound.
-6. Connectivity verification — HTTP GET through SOCKS5 CONNECT to the tunnel
-   (`gstatic generate_204`), classified DNS/TCP/TLS/HTTP/proxy/timeout.
-7. Only now: state → `connected`, system proxy applied, monitors start.
+## Proof that Xray is IN the path (not merely started)
 
-## Switching (Phase 5)
+1. `XrayConfigGenerator` writes an **access log** per session
+   (`accessLogPath`, truncated at each start).
+2. The E2E test sends an HTTP request whose destination is the local mock
+   server, then asserts the access log contains the destination address.
+3. If sing-box had bypassed Xray (the pre-fix bug), the access log would
+   remain empty → test fails.
 
-| Scenario | Mechanism | Downtime |
+## Engine lifecycle (CoreManager.startFor — full pipeline)
+
+1. `prepare()` — detect binaries, allocate free loopback ports (mixed 2080 *,
+   clash API 9097 *, xray socks 2081 *; * = preferred, falls back to any free).
+2. **Stop previous topology if running** (failover fix: prevents orphaned
+   old-process binding + stale selector).
+3. Start upstream (Xray/MDVPN) if needed: generate config →
+   `run -test` (Xray) → spawn → readiness (SOCKS inbound TCP) →
+   re-check `inboundHealthy`.
+4. Start sing-box front: generate config (**with** SOCKS stubs) →
+   `check` → spawn → readiness (Clash API + mixed inbound).
+5. Connectivity verification — classified HTTP probe through the tunnel.
+6. Only now: state → CONNECTED; system proxy applied; monitors start.
+
+## Fast switching (Phase 5) — verified, zero-restart for same family
+
+| Scenario | Mechanism | Engine restart |
 |---|---|---|
-| sing-box-family → sing-box-family | Clash API `PUT /proxies/proxy {name: node:<id>}` | ~0 |
-| xray → xray | restart Xray process only, then selector swap | Xray restart only |
-| cross-family | start/stop needed upstream, then selector swap | upstream start |
-| AWG | standalone daemon (own TUN) — no front engine | full |
+| sing-box-family → sing-box-family | Clash API selector swap | **no** |
+| xray → xray | Xray process restart only, then swap | Xray only |
+| cross-family | upstream start/stop + swap | affected upstream |
+| AWG | standalone daemon | full |
 
-Verified by tests: the engine keeps `RuntimeStatus.running` across hot switches.
+## Failover (Phase 6) & crash recovery (Phase 26)
 
-## Failover (Phase 6)
+* Active-node monitor (default 30 s) probes through the tunnel.
+* Threshold breach → `NodeScorer.rank` → up to 4 verified candidates.
+* `CoreManager.onAnyExit` merges sing-box + Xray + MDVPN + AWG exit streams;
+  the controller routes: front crash → `recoverFront` (restart once);
+  upstream crash → `recoverEngine(upstream)` (restart once, front untouched).
+* Recovery verify-fail → automatic failover. Bounded everywhere.
 
-Active-node monitor probes the tunnel every `monitorInterval` (30 s default).
-Failure (threshold 2): record → `NodeScorer.rank` → try up to 4 best healthy
-candidates through the full verified start pipeline. Bounded; never loops.
+## Traffic (Phase 24) — real bytes only
 
-## Crash recovery (Phase 26)
-
-`ManagedProcess.onExit` → `classifyExit` (config / port-conflict / binary /
-unknown from stderr tail + uptime) → `recoverFront` restarts **once** →
-verify → else failover. Restart counter resets on clean start.
-
-## Traffic (Phase 24)
-
-`ClashApiClient.connections()` polls `uploadTotal/downloadTotal` once per
-second while connected; the dashboard renders deltas as speeds and the
-cumulative session. Xray-only sessions report `—` (its stats API is a listed
-milestone) — never invented numbers.
+sing-box Clash API `/connections` polled 1 s → `upload/downloadTotal` →
+dashboard speeds (deltas) + session totals. Xray-fronted sessions report `—`
+(stats API milestone) — never invented.
 
 ## System proxy (Phase 13)
 
-Windows: WinINET ProxyEnable/ProxyServer/ProxyOverride via `reg`, refresh via
-`InternetSetOption`; originals captured and restored on disconnect.
-Linux: GNOME gsettings when present. Privacy: all local, no telemetry.
+Windows WinINET (capture → set → restore) with `InternetSetOption` refresh;
+Linux GNOME gsettings when present. Restore runs on every disconnect path.
 
 ## External daemons
 
-* **AmneziaWG** — external `amneziawg` / `amneziawg-go`, standalone TUN.
-  Status exposed as AVAILABLE / NOT INSTALLED / RUNNING / STOPPED / ERROR.
+* **AmneziaWG** — external `amneziawg`/`amneziawg-go`; standalone TUN (no
+  chaining by design); states: AVAILABLE / NOT INSTALLED / RUNNING / etc.
 * **MasterDNSVPN** — external `mdvpn-client` in SOCKS5 mode; NEXUS generates
-  `client_config.toml` from profile params; the local SOCKS is consumed by
-  sing-box as an upstream stub (Phase 17 chaining).
+  `client_config.toml`; localhost SOCKS ingested by sing-box (Phase 17).
 
-## Android
+## E2E verification harness (test/e2e_test.dart)
 
-Manifest + `NexusVpnService` foreground service are in place. Binding the
-libbox engine (`libsingbox.so`) into the service is the remaining native
-milestone; until then Android reports real states only (no fake "connected").
+Deterministic local topology, no external network needed:
+
+```
+probe → sing-box mixed → selector → outbound → MockSocksServer
+                                             → MockHttpServer
+```
+
+* Native: outbound is `shadowsocks` → sing-box ss-server (second process).
+* Xray: outbound is SOCKS stub → xray socks-in → vless → xray vless-server
+  (third process). **Access-log assertion** proves the path.
+* Failover: dead candidate fails verify → alive candidate wins.
+* Crash: `taskkill` the engine → classify → restart once → probe OK.
+* Leaks: 20 cycles → 0 processes / 0 ports / 0 temp files (externally checked).
+* Real-credential tests: env-gated (`NEXUS_E2E_*_URI`), clean SKIP when unset.
