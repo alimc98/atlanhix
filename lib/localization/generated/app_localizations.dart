@@ -101,7 +101,7 @@ abstract class AppLocalizations {
   /// No description provided for @appName.
   ///
   /// In en, this message translates to:
-  /// **'NEXUS'**
+  /// **'Atlanhix'**
   String get appName;
 
   /// No description provided for @navDashboard.
@@ -173,7 +173,7 @@ abstract class AppLocalizations {
   /// No description provided for @connecting.
   ///
   /// In en, this message translates to:
-  /// **'Connecting…'**
+  /// **'Connectingâ€¦'**
   String get connecting;
 
   /// No description provided for @connected.
@@ -209,7 +209,7 @@ abstract class AppLocalizations {
   /// No description provided for @testing.
   ///
   /// In en, this message translates to:
-  /// **'Testing…'**
+  /// **'Testingâ€¦'**
   String get testing;
 
   /// No description provided for @currentNode.
@@ -695,7 +695,7 @@ abstract class AppLocalizations {
   /// No description provided for @updating.
   ///
   /// In en, this message translates to:
-  /// **'Updating…'**
+  /// **'Updatingâ€¦'**
   String get updating;
 
   /// No description provided for @updateFailed.
@@ -1235,7 +1235,7 @@ abstract class AppLocalizations {
   /// No description provided for @subscriptionUpdated.
   ///
   /// In en, this message translates to:
-  /// **'Subscription updated: {before} → {after} nodes'**
+  /// **'Subscription updated: {before} â†’ {after} nodes'**
   String subscriptionUpdated(int before, int after);
 
   /// No description provided for @coreCrashed.

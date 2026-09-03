@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+﻿<manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Core networking -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
@@ -10,7 +10,7 @@
     <uses-feature android:name="android.software.leanback" android:required="false"/>
 
     <application
-        android:label="NEXUS"
+        android:label="Atlanhix"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -34,18 +34,18 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- Deeplink import: nexus://import?url=... (docs/PROTOCOL_SUPPORT.md) -->
+            <!-- Deeplink import: Atlanhix://import?url=... (docs/PROTOCOL_SUPPORT.md) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
-                <data android:scheme="nexus" android:host="import"/>
+                <data android:scheme="Atlanhix" android:host="import"/>
             </intent-filter>
         </activity>
         <!-- VPN foreground service (wired via platform channel; see
-             docs/PLATFORM_ARCHITECTURE.md — Android section). -->
+             docs/PLATFORM_ARCHITECTURE.md â€” Android section). -->
         <service
-            android:name=".vpn.NexusVpnService"
+            android:name=".vpn.AtlanhixVpnService"
             android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:foregroundServiceType="specialUse">

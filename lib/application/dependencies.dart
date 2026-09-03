@@ -1,4 +1,4 @@
-import 'dart:io';
+﻿import 'dart:io';
 import 'package:flutter/foundation.dart';
 import '../data/app_storage.dart';
 import '../data/profile_repository.dart';
@@ -44,7 +44,7 @@ class AppDependencies {
     await deps.routingRep.load();
 
     deps.binaryManager = BinaryManager(
-      // TODO(v0.3): read from Settings → Cores (user override dir).
+      // TODO(v0.3): read from Settings â†’ Cores (user override dir).
       appDir: Directory(
           '${Directory.current.path}${Platform.pathSeparator}cores'
           '${Platform.pathSeparator}${BinaryManager.platformDirName()}'),
@@ -84,7 +84,7 @@ class AppDependencies {
     }
     if (kDebugMode) {
       // ignore: avoid_print
-      print('NEXUS bootstrap complete: ${deps.profiles.all.length} profiles');
+      print('Atlanhix bootstrap complete: ${deps.profiles.all.length} profiles');
     }
     return deps;
   }

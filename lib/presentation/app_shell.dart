@@ -195,7 +195,7 @@ class _AppShellState extends State<AppShell> {
             child: const Icon(Icons.bolt, color: Colors.white, size: 20),
           ),
           const SizedBox(width: 10),
-          Text('NEXUS',
+          Text('ATLANHIX',
               style: Theme.of(context)
                   .textTheme
                   .titleMedium

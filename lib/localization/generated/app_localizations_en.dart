@@ -9,7 +9,7 @@ class AppLocalizationsEn extends AppLocalizations {
   AppLocalizationsEn([String locale = 'en']) : super(locale);
 
   @override
-  String get appName => 'NEXUS';
+  String get appName => 'Atlanhix';
 
   @override
   String get navDashboard => 'Dashboard';
@@ -45,7 +45,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get disconnect => 'Disconnect';
 
   @override
-  String get connecting => 'Connecting…';
+  String get connecting => 'Connectingâ€¦';
 
   @override
   String get connected => 'Connected';
@@ -63,7 +63,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get testAllNodes => 'Test all nodes';
 
   @override
-  String get testing => 'Testing…';
+  String get testing => 'Testingâ€¦';
 
   @override
   String get currentNode => 'Current node';
@@ -310,7 +310,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get updating => 'Updating…';
+  String get updating => 'Updatingâ€¦';
 
   @override
   String get updateFailed => 'Update failed';
@@ -585,7 +585,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String subscriptionUpdated(int before, int after) {
-    return 'Subscription updated: $before → $after nodes';
+    return 'Subscription updated: $before â†’ $after nodes';
   }
 
   @override
