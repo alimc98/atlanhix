@@ -20,6 +20,14 @@ class SystemProxyController {
   bool _enabled = false;
   bool get isEnabled => _enabled;
 
+  static const _kInternet =
+      r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings';
+
+  /// Local/private ranges excluded from system proxy.
+  static const _proxyOverride =
+      'localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;'
+      '172.2*;172.30.*;172.31.*;192.168.*;<local>';
+
   // Captured originals (Windows).
   String? _winPrevEnable;
   String? _winPrevServer;
@@ -30,17 +38,14 @@ class SystemProxyController {
     try {
       if (Platform.isWindows) {
         await _winCapture();
-        await _reg(
-            'add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\'
-            'Internet Settings" /v ProxyEnable /t REG_DWORD /d 1 /f');
-        await _reg(
-            'add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\'
-            'Internet Settings" /v ProxyServer /t REG_SZ /d "127.0.0.1:$port" /f');
-        await _reg(
-            'add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\'
-            'Internet Settings" /v ProxyOverride /t REG_SZ /d '
-            '"localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;'
-            '172.2*;172.30.*;172.31.*;192.168.*;<local>" /f');
+        // W8 (fixed v0.3.0): proper argv lists — Process.run passes each
+        // element as one argument, no fragile string splitting.
+        await _reg(['add', _kInternet, '/v', 'ProxyEnable',
+              '/t', 'REG_DWORD', '/d', '1', '/f']);
+        await _reg(['add', _kInternet, '/v', 'ProxyServer',
+              '/t', 'REG_SZ', '/d', '127.0.0.1:$port', '/f']);
+        await _reg(['add', _kInternet, '/v', 'ProxyOverride',
+              '/t', 'REG_SZ', '/d', _proxyOverride, '/f']);
         await _refreshWinInet();
       } else if (Platform.isLinux) {
         final hasGsettings =
@@ -78,23 +83,19 @@ class SystemProxyController {
     try {
       if (Platform.isWindows) {
         if (_winPrevEnable != null) {
-          await _reg(
-              'add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\'
-              'Internet Settings" /v ProxyEnable /t REG_DWORD /d $_winPrevEnable /f');
+          await _reg(['add', _kInternet, '/v', 'ProxyEnable',
+                '/t', 'REG_DWORD', '/d', _winPrevEnable!, '/f']);
         }
         if (_winPrevServer != null) {
-          await _reg(
-              'add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\'
-              'Internet Settings" /v ProxyServer /t REG_SZ /d "$_winPrevServer" /f');
+          await _reg(['add', _kInternet, '/v', 'ProxyServer',
+                '/t', 'REG_SZ', '/d', _winPrevServer!, '/f']);
         } else {
           await _reg(
-              'delete "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\'
-              'Internet Settings" /v ProxyServer /f');
+              ['delete', _kInternet, '/v', 'ProxyServer', '/f']);
         }
         if (_winPrevOverride != null) {
-          await _reg(
-              'add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\'
-              'Internet Settings" /v ProxyOverride /t REG_SZ /d "$_winPrevOverride" /f');
+          await _reg(['add', _kInternet, '/v', 'ProxyOverride',
+                '/t', 'REG_SZ', '/d', _winPrevOverride!, '/f']);
         }
         await _refreshWinInet();
       } else if (Platform.isLinux) {
@@ -127,13 +128,31 @@ class SystemProxyController {
     _winPrevOverride = value('ProxyOverride');
   }
 
-  Future<void> _reg(String args) async {
-    final r = await Process.run('reg', args.split(' ')
-        .map((a) => a.trim())
-        .toList());
+  /// W8 (fixed v0.3.0): proper argv — no string splitting anywhere, so the
+  /// registry path (containing a space) is a single argument.
+  Future<void> _reg(List<String> args) async {
+    final r = await Process.run('reg', args);
     if (r.exitCode != 0) {
       Logger.instance.warn('sysproxy', 'reg failed: ${r.stderr}');
     }
+  }
+
+  /// Observability for tests/diagnostics (audit W8): read current WinINET
+  /// per-user proxy state. Values are what the registry holds right now.
+  Future<Map<String, String?>> query() async {
+    if (!Platform.isWindows) return const {};
+    final r = await Process.run('reg', ['query', _kInternet]);
+    final out = '${r.stdout}';
+    String? value(String name) {
+      final m = RegExp('$name\\s+REG_(?:DWORD|SZ)\\s+(\\S+)').firstMatch(out);
+      return m?.group(1);
+    }
+
+    return {
+      'ProxyEnable': value('ProxyEnable'),
+      'ProxyServer': value('ProxyServer'),
+      'ProxyOverride': value('ProxyOverride'),
+    };
   }
 
   /// Make WinINET pick up the change without a logoff.
