@@ -247,7 +247,13 @@ class CoreManager {
     return r;
   }
 
-  /// Phase 5 fast switch: same-family swap via selector, no restart.
+  /// Phase 5 fast switch: selector swap, no restart — but ONLY when the
+  /// target profile actually carries traffic after the swap (v0.3.0 §15/§12):
+  ///  * native sing-box profiles (incl. `CoreKind.unknown` non-xhttp ones —
+  ///    a gap the §15 test found) always qualify;
+  ///  * Xray/MDVPN-owned profiles qualify only while their daemon is
+  ///    actually serving its local SOCKS endpoint (a dead stub would break
+  ///    the traffic path silently).
   Future<bool> hotSwitch(
     ProxyProfile next, {
     required RoutingProfile routing,
@@ -255,13 +261,35 @@ class CoreManager {
   }) async {
     final cur = _active;
     if (singbox.status != RuntimeStatus.running) return false;
-    final nextCore = next.effectiveCore;
-    if (nextCore == CoreKind.singbox || nextCore == CoreKind.wireguardSingbox) {
-      if (cur == null ||
-          cur.effectiveCore == CoreKind.singbox ||
-          cur.effectiveCore == CoreKind.wireguardSingbox) {
-        return singbox.switchToProfile(next);
-      }
+    switch (next.effectiveCore) {
+      case CoreKind.singbox:
+      case CoreKind.wireguardSingbox:
+        break;
+      case CoreKind.unknown:
+        if (needsXrayUpstream(next)) return false; // stub only via xray path
+        break;
+      case CoreKind.xray:
+        if (xray.status != RuntimeStatus.running ||
+            !await xray.inboundHealthy()) {
+          return false;
+        }
+        break;
+      case CoreKind.masterDnsVpn:
+        if (masterDnsVpn.status != RuntimeStatus.running ||
+            !await masterDnsVpn.probe()) {
+          return false;
+        }
+        break;
+      case CoreKind.amneziaWg:
+        return false; // standalone daemon, never in the front selector
+    }
+    if (cur != null &&
+        (cur.effectiveCore == CoreKind.singbox ||
+            cur.effectiveCore == CoreKind.wireguardSingbox ||
+            cur.effectiveCore == CoreKind.xray ||
+            cur.effectiveCore == CoreKind.masterDnsVpn ||
+            cur.effectiveCore == CoreKind.unknown)) {
+      return singbox.switchToProfile(next);
     }
     return false;
   }
