@@ -1,69 +1,96 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nexus/core/health/latency_tester.dart';
+import 'package:nexus/core/primitives.dart';
 import 'package:nexus/core/runtime/binary_manager.dart';
+import 'package:nexus/core/runtime/core_process.dart';
 import 'package:nexus/core/runtime/core_runtime.dart';
 import 'package:nexus/core/runtime/external_runtimes.dart';
 import 'package:nexus/domain/entities/proxy_profile.dart';
+import 'package:nexus/protocols/adapters/masterdnsvpn.dart';
 
-/// v0.3.0 §10 — MasterDNSVPN external runtime lifecycle & config.
+/// v0.3.1 §10 — MasterDNSVPN runtime: REAL upstream client schema.
 ///
-/// The config/escape/readiness tests run everywhere. The real-daemon E2E is
+/// Config/escape/readiness tests run everywhere. The real-daemon E2E is
 /// gated by ATLANHIX_MDVPN_E2E=1 plus:
-///   ATLANHIX_MDVPN_BIN     path to the real `mdvpn-client` binary
-///   ATLANHIX_MDVPN_SERVER  DNS-tunnel server host
-///   ATLANHIX_MDVPN_PORT    server port
-///   ATLANHIX_MDVPN_SUB     SUBDOMAIN param (server-assigned)
-///   ATLANHIX_MDVPN_KEY     path to the ENCRYPTION_KEY_FILE (optional)
+///   ATLANHIX_MDVPN_BIN      path to the real `masterdnsvpn-client` binary
+///   ATLANHIX_MDVPN_SERVER   DNS-tunnel server host (also a DOMAIN)
+///   ATLANHIX_MDVPN_PORT     server DNS port (default 53)
+///   ATLANHIX_MDVPN_KEY      shared tunnel encryption key (SECRET)
+///   ATLANHIX_MDVPN_RESOLVERS  optional comma-separated resolver list
 ProxyProfile _mdvpnProfile({Map<String, String>? params}) => ProxyProfile(
       id: 'mdvpn-1',
       name: 'mdvpn test node',
       server: 'dns-tunnel.example.com',
       port: 53,
       protocol: ProxyProtocol.masterDnsVpn,
+      password: 'test-tunnel-key',
       rawParams: params ??
           {
-            'SUBDOMAIN': 't.example.com',
-            'SERVER_PUBLIC_KEY': 'base64pubkey',
+            'DOMAINS': 'dns-tunnel.example.com',
             'DATA_ENCRYPTION_METHOD': '1',
           },
     );
 
 void main() {
-  group('§10 MasterDNSVPN config generation (unit)', () {
-    test('generates TOML with SOCKS5 listener on 127.0.0.1', () async {
+  group('§10 MasterDNSVPN config generation (upstream schema, unit)', () {
+    test('generates client_config.toml with DOMAINS/SOCKS5 listener',
+        () async {
       final dir = await Directory.systemTemp.createTemp('nexus-mdvpn-cfg');
       final rt = MasterDnsVpnRuntime(
         binaryManager: BinaryManager(),
         workDir: dir,
-        socksPort: 9720,
+        socksPort: 18000,
       );
       rt.profile = _mdvpnProfile();
       final f = await rt.writeConfig();
       final text = await f.readAsString();
-      expect(text, contains('SERVER_ADDRESS = "dns-tunnel.example.com"'));
-      expect(text, contains('SERVER_PORT = "53"'));
-      expect(text, contains('SOCKS5_LISTEN_HOST = "127.0.0.1"'));
-      expect(text, contains('SOCKS5_LISTEN_PORT = "9720"'));
-      expect(text, contains('USE_TUN_MODE = "false"'));
-      expect(text, isNot(contains('NEXUS')));
+      expect(text, contains('DOMAINS = ["dns-tunnel.example.com"]'));
+      expect(text, contains('DATA_ENCRYPTION_METHOD = 1'));
+      expect(text, contains('PROTOCOL_TYPE = "SOCKS5"'));
+      expect(text, contains('LISTEN_IP = "127.0.0.1"'));
+      expect(text, contains('LISTEN_PORT = 18000'));
+      // Invented v0.3.0 schema must not reappear:
+      expect(text.contains('SERVER_ADDRESS'), isFalse);
+      expect(text.contains('SUBDOMAIN'), isFalse);
+      expect(text.contains('SOCKS5_LISTEN_PORT'), isFalse);
+      // The shared key must NEVER be written to the config file (§2/§22):
+      expect(text.contains('test-tunnel-key'), isFalse,
+          reason: 'secret must go via -k argv, not the config file');
+      expect(text.contains('ENCRYPTION_KEY'), isFalse);
       await dir.delete(recursive: true);
     });
 
-    test('escapes untrusted rawParams (TOML injection, §21)', () async {
+    test('launchArgs use real Go client flags; key rides argv only', () async {
+      final dir = await Directory.systemTemp.createTemp('nexus-mdvpn-args');
+      final rt = MasterDnsVpnRuntime(
+        binaryManager: BinaryManager(),
+        workDir: dir,
+      );
+      rt.profile = _mdvpnProfile();
+      rt.logPath = '${dir.path}${Platform.pathSeparator}mdvpn.log';
+      final cfgFile = await rt.writeConfig();
+      final args = rt.launchArgs(cfgFile);
+      expect(args, contains('-config'));
+      expect(args[args.indexOf('-config') + 1], cfgFile.path);
+      expect(args, contains('-k'));
+      expect(args[args.indexOf('-k') + 1], 'test-tunnel-key');
+      expect(args, contains('-log'));
+      await dir.delete(recursive: true);
+    });
+
+    test('escapes untrusted rawParams (TOML injection, §21/§22)', () async {
       final dir = await Directory.systemTemp.createTemp('nexus-mdvpn-esc');
       final rt = MasterDnsVpnRuntime(
         binaryManager: BinaryManager(),
         workDir: dir,
       );
       rt.profile = _mdvpnProfile(params: {
-        'SUBDOMAIN': 'x"\nINJECTED_KEY = "pwned',
+        'DOMAINS': 'x"\nINJECTED_KEY = "pwned',
       });
       final f = await rt.writeConfig();
       final text = await f.readAsString();
-      // The payload must stay INSIDE the quoted TOML value: no physical
-      // newline may appear inside the value, and quotes must be escaped —
-      // i.e. no line may BEGIN with the injected key.
       final injected = text
           .split('\n')
           .any((l) => l.trimLeft().startsWith('INJECTED_KEY'));
@@ -72,6 +99,32 @@ void main() {
       expect(text, contains(r'\"'));
       expect(text, contains(r'\n'));
       await dir.delete(recursive: true);
+    });
+
+    test('parser accepts upstream DOMAINS schema and strips the key', () {
+      final toml = '# provider config\n'
+          'DOMAINS = ["u.hixyz.ir"]\n'
+          'DATA_ENCRYPTION_METHOD = 3\n'
+          'ENCRYPTION_KEY = "super-secret-value"\n'
+          'PROTOCOL_TYPE = "SOCKS5"\n'
+          'LISTEN_PORT = 18000\n';
+      final p = MasterDnsVpnParser().parseToml(toml);
+      expect(p.server, 'u.hixyz.ir');
+      expect(p.port, 53);
+      expect(p.rawParams['DOMAINS'], 'u.hixyz.ir');
+      expect(p.rawParams['DATA_ENCRYPTION_METHOD'], '3');
+      expect(p.rawParams.containsKey('ENCRYPTION_KEY'), isFalse,
+          reason: 'secret must not persist into rawParams (plaintext store)');
+    });
+
+    test('resolver file parser handles upstream formats', () {
+      final parsed = MasterDnsVpnParser.parseResolverFile(
+          '# comment\n8.8.8.8\n1.1.1.1:5353\n[2001:4860:4860::8888]:53\n');
+      expect(parsed, [
+        {'host': '8.8.8.8', 'port': '53'},
+        {'host': '1.1.1.1', 'port': '5353'},
+        {'host': '2001:4860:4860::8888', 'port': '53'},
+      ]);
     });
   });
 
@@ -105,12 +158,12 @@ void main() {
     });
   });
 
-  test('§11 (ATLANHIX_MDVPN_E2E=1): real daemon → SOCKS → traffic',
-      () async {
+  test('§11/§13/§14 (ATLANHIX_MDVPN_E2E=1): real daemon → DNS tunnel → '
+      'real HTTP traffic → crash → recovery → traffic again', () async {
     final env = Platform.environment;
     if (env['ATLANHIX_MDVPN_E2E'] != '1') {
       // ignore: avoid_print
-      print('SKIPPED: ATLANHIX_MDVPN_E2E=1 + server params required');
+      print('SKIPPED: ATLANHIX_MDVPN_E2E=1 + ATLANHIX_MDVPN_SERVER/KEY required');
       return;
     }
     final binPath = env['ATLANHIX_MDVPN_BIN'];
@@ -118,12 +171,12 @@ void main() {
       fail('ATLANHIX_MDVPN_E2E set but ATLANHIX_MDVPN_BIN is missing');
     }
     final server = env['ATLANHIX_MDVPN_SERVER'];
-    final sub = env['ATLANHIX_MDVPN_SUB'];
-    if (server == null || sub == null) {
-      fail('ATLANHIX_MDVPN_E2E requires SERVER and SUB');
+    final key = env['ATLANHIX_MDVPN_KEY'];
+    if (server == null || server.isEmpty || key == null || key.isEmpty) {
+      fail('ATLANHIX_MDVPN_E2E requires SERVER and KEY (secrets stay in env)');
     }
-    final port = int.tryParse(env['ATLANHIX_MDVPN_PORT'] ?? '53') ?? 53;
-    final keyFile = env['ATLANHIX_MDVPN_KEY'] ?? '';
+    final method = env['ATLANHIX_MDVPN_METHOD'] ?? '1';
+    final resolvers = env['ATLANHIX_MDVPN_RESOLVERS'] ?? '';
 
     // Expose the real binary to the runtime via userCoresDir.
     final coresDir =
@@ -135,22 +188,53 @@ void main() {
     final rt = MasterDnsVpnRuntime(
       binaryManager: BinaryManager(userCoresDir: coresDir.path),
       workDir: await Directory.systemTemp.createTemp('nexus-mdvpn-e2e'),
-      socksPort: 19720,
+      socksPort: 0, // allocated dynamically below (§21)
     );
     addTearDown(() => rt.stop());
+    await rt.prepare();
+    rt.socksPort = await PortAllocator.freePort(prefer: 18000);
     rt.profile = _mdvpnProfile(params: {
-      'SUBDOMAIN': sub,
-      'SERVER_PUBLIC_KEY': env['ATLANHIX_MDVPN_PUBKEY'] ?? '',
-      'ENCRYPTION_KEY_FILE': keyFile,
-    });
+      'DOMAINS': server,
+      'DATA_ENCRYPTION_METHOD': method,
+      if (resolvers.isNotEmpty) 'RESOLVERS': resolvers,
+    })
+      ..password = key; // delivered via -k argv only (§2/§22)
+    final sw = Stopwatch()..start();
     final r = await rt.start();
     expect(r.ok, isTrue, reason: 'daemon start failed: ${r.message}');
-    // §10: not ready until the SOCKS endpoint actually speaks SOCKS5.
+    // §12: not ready until the SOCKS endpoint actually speaks SOCKS5.
     final ready = await rt.probe();
     expect(ready, isTrue, reason: 'daemon did not open its SOCKS5 endpoint');
+    // §13: REAL HTTP request THROUGH the tunnel to a REAL destination.
+    final probe = await LatencyTester().testHttpViaSocksProxy(
+        '127.0.0.1', rt.socksPort, 'https://www.gstatic.com/generate_204',
+        timeout: const Duration(seconds: 45));
+    expect(probe.ok, isTrue,
+        reason: 'HTTP through MDVPN tunnel failed: ${probe.errorKind} '
+            '${probe.detail}');
     // ignore: avoid_print
-    print('MDVPN E2E: daemon ready pid=${rt.lastPid} '
-        '(traffic-path verification needs a live DNS tunnel server — '
-        'probe-only here unless ATLANHIX_MDVPN_HTTP_TARGET is set)');
-  }, timeout: const Timeout(Duration(minutes: 3)));
+    print('METRIC mdvpn: start=${sw.elapsedMilliseconds}ms pid=${rt.lastPid} '
+        'http=${probe.latencyMs}ms socksPort=${rt.socksPort}');
+    // §14: kill → detect → restart → readiness → traffic again → new PID.
+    final oldPid = rt.lastPid!;
+    if (Platform.isWindows) {
+      await Process.run('taskkill', ['/PID', '$oldPid', '/F']);
+    } else {
+      Process.killPid(oldPid, ProcessSignal.sigkill);
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    expect(rt.lastExit, isNotNull, reason: 'exit watcher must fire on kill');
+    expect(rt.lastExit!.kind, isNot(CoreExitKind.clean));
+    await rt.start();
+    expect(await rt.probe(), isTrue, reason: 'recovered daemon not ready');
+    final probe2 = await LatencyTester().testHttpViaSocksProxy(
+        '127.0.0.1', rt.socksPort, 'https://www.gstatic.com/generate_204',
+        timeout: const Duration(seconds: 45));
+    expect(probe2.ok, isTrue, reason: 'post-recovery HTTP probe failed');
+    expect(rt.lastPid, isNot(equals(oldPid)),
+        reason: 'recovered daemon must be a new process');
+    // ignore: avoid_print
+    print('METRIC mdvpn recovery: oldPid=$oldPid newPid=${rt.lastPid} '
+        'http=${probe2.latencyMs}ms');
+  }, timeout: const Timeout(Duration(minutes: 6)));
 }

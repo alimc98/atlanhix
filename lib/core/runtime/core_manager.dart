@@ -105,6 +105,9 @@ class CoreManager {
     await xray.prepare();
     await amneziaWg.prepare();
     await masterDnsVpn.prepare();
+    // v0.3.1 §21: MDVPN SOCKS port is dynamically allocated per manager
+    // instance so parallel test files / concurrent sessions never contend.
+    masterDnsVpn.socksPort = await PortAllocator.freePort(prefer: 18000);
     _prepared = true;
   }
 

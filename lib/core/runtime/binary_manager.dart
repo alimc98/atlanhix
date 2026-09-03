@@ -69,38 +69,50 @@ class BinaryManager {
       CoreBinaryKind.amneziaWg => Platform.isWindows
           ? 'amneziawg$exe'
           : 'amneziawg-go',
+      // v0.3.1: upstream releases name the client `masterdnsvpn-client`
+      // (cmd/client in the MasterDnsVPN repo). `mdvpn-client` remains a
+      // legacy fallback candidate.
       CoreBinaryKind.masterDnsVpn => Platform.isWindows
-          ? 'mdvpn-client$exe'
-          : 'mdvpn-client',
+          ? 'masterdnsvpn-client$exe'
+          : 'masterdnsvpn-client',
     };
   }
+
+  /// Alternative file names accepted per engine (first hit wins).
+  static List<String> binaryAliases(CoreBinaryKind kind) => switch (kind) {
+        CoreBinaryKind.masterDnsVpn => Platform.isWindows
+            ? ['mdvpn-client.exe']
+            : ['mdvpn-client'],
+        _ => const [],
+      };
 
   /// Version-probe arguments per engine.
   static List<String> versionArgs(CoreBinaryKind kind) => switch (kind) {
         CoreBinaryKind.singbox => const ['version'],
         CoreBinaryKind.xray => const ['version'],
         CoreBinaryKind.amneziaWg => const ['--version'],
-        CoreBinaryKind.masterDnsVpn => const ['--version'],
+        CoreBinaryKind.masterDnsVpn => const ['-version'],
       };
 
   /// Candidate absolute paths for one engine, in priority order.
   List<String> candidatePaths(CoreBinaryKind kind) {
-    final name = binaryName(kind);
     final out = <String>[];
-    if (userCoresDir != null && userCoresDir!.isNotEmpty) {
-      out.add('${userCoresDir!}${Platform.pathSeparator}$name');
+    for (final name in [binaryName(kind), ...binaryAliases(kind)]) {
+      if (userCoresDir != null && userCoresDir!.isNotEmpty) {
+        out.add('${userCoresDir!}${Platform.pathSeparator}$name');
+      }
+      final appDir = _appCoresDir;
+      if (appDir != null) {
+        out.add('${appDir.path}${Platform.pathSeparator}$name');
+      }
+      // Repo-relative development location (cores/<platform>-<arch>/).
+      try {
+        final cwd = Directory.current.path;
+        out.add(
+            '$cwd${Platform.pathSeparator}cores${Platform.pathSeparator}'
+            '${platformDirName()}${Platform.pathSeparator}$name');
+      } catch (_) {}
     }
-    final appDir = _appCoresDir;
-    if (appDir != null) {
-      out.add('${appDir.path}${Platform.pathSeparator}$name');
-    }
-    // Repo-relative development location (cores/<platform>-<arch>/).
-    try {
-      final cwd = Directory.current.path;
-      out.add(
-          '$cwd${Platform.pathSeparator}cores${Platform.pathSeparator}'
-          '${platformDirName()}${Platform.pathSeparator}$name');
-    } catch (_) {}
     return out;
   }
 
@@ -148,6 +160,11 @@ class BinaryManager {
         RegExp(r'version\s+(\d+\.\d+(?:\.\d+)?)').firstMatch(out),
       CoreBinaryKind.xray =>
         RegExp(r'Xray\s+(\d+\.\d+(?:\.\d+)?)').firstMatch(out),
+      // MasterDnsVPN prints "MasterDnsVPN Client Version: v2026.06.13..."
+      // and may use date-based versions — accept dotted + date-based tags.
+      CoreBinaryKind.masterDnsVpn => RegExp(
+              r'Version:\s*(v?\d+\.\d+(?:\.\d+)?|v?\d{4}\.\d{2}\.\d{2}[^ ]*)')
+          .firstMatch(out),
       _ => RegExp(r'(\d+\.\d+(?:\.\d+)?)').firstMatch(out),
     };
     return m?.group(1);
