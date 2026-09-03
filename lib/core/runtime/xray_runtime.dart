@@ -35,6 +35,10 @@ class XrayRuntime implements CoreRuntime {
   /// (Phase 21 — caller decides eligibility; see FragmentationEngine).
   FragmentProfile? fragment;
 
+  /// Optional path for Xray's access log (v0.2.1 W7). E2E tests assert this
+  /// file grows to prove Xray was actually in the traffic path.
+  String? accessLogPath;
+
   CoreBinaryInfo? _binary;
   ManagedProcess? _process;
   int _localPort = 2081;
@@ -80,6 +84,7 @@ class XrayRuntime implements CoreRuntime {
       localSocksPort: _localPort,
       routing: routing,
       fragment: fragment,
+      accessLogPath: accessLogPath,
     );
   }
 
@@ -130,6 +135,14 @@ class XrayRuntime implements CoreRuntime {
     _configFile = await _writeConfig(cfg);
     final b = _binary!;
     _status = RuntimeStatus.starting;
+    // W7: fresh access log per start — path evidence is per-session.
+    if (accessLogPath != null) {
+      try {
+        final f = File(accessLogPath!);
+        if (await f.exists()) await f.delete();
+        await f.create(recursive: true);
+      } catch (_) {}
+    }
     try {
       _process =
           await ManagedProcess.start(b.path!, ['run', '-c', _configFile!.path]);

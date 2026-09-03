@@ -18,6 +18,7 @@ class XrayConfigGenerator {
     required RoutingProfile routing,
     FragmentProfile? fragment,
     String dnsServer = '1.1.1.1',
+    String? accessLogPath,
   }) {
     final proxyTag = 'proxy-out';
     final proxyOut =
@@ -52,7 +53,10 @@ class XrayConfigGenerator {
     ];
 
     return {
-      'log': {'loglevel': 'warning'},
+      'log': {
+        'loglevel': 'warning',
+        if (accessLogPath != null) 'access': accessLogPath,
+      },
       'dns': {
         'servers': [dnsServer, 'localhost'],
         'queryStrategy': 'UseIP',

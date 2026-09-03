@@ -8,10 +8,24 @@ class OutboundBuilders {
 
   // ---------------------------------------------------------------- sing-box
 
-  /// sing-box outbound object for [p]; returns null when the profile must not
-  /// be executed by sing-box (AmneziaWG, MasterDNSVPN run as external daemons).
+  /// sing-box outbound object for [p]; returns null when the profile must NOT
+  /// be executed as a native sing-box outbound:
+  ///  * AmneziaWG / MasterDNSVPN — external daemons;
+  ///  * **Xray-owned profiles** (`effectiveCore == xray`) and
+  ///    `Transport.xhttp` profiles — these MUST traverse the Xray upstream
+  ///    via a SOCKS stub (detector decision controls the traffic path).
+  /// Returning null makes the generator fall through to the
+  /// `socksUpstreams` map; callers must supply the upstream for such
+  /// profiles or the profile is skipped (and logged) — never native-built.
   Map<String, dynamic>? singBoxOutbound(ProxyProfile p,
       {required String tag, String? detourTag}) {
+    // Invariant: the detector/user decision owns the traffic path. An
+    // Xray-owned profile must never be built as a native sing-box outbound —
+    // silently downgrading xhttp/plain-transport configs here is exactly the
+    // "detector says Xray but sing-box connects directly" failure mode.
+    if (p.effectiveCore == CoreKind.xray || p.transport == Transport.xhttp) {
+      return null;
+    }
     switch (p.protocol) {
       case ProxyProtocol.vmess:
         return _sbBase(p, 'vmess', tag, detourTag)

@@ -78,8 +78,8 @@ class ConnectionController {
     required this.detector,
     required this.cores,
   }) {
-    // Phase 26: react to engine crashes.
-    cores.front.onExit.listen(_onCoreExit);
+    // Phase 26: react to engine crashes (front AND upstreams — v0.2.1 W4).
+    cores.onAnyExit.listen(_onEngineExit);
   }
 
   final ProfileRepository repository;
@@ -170,6 +170,11 @@ class ConnectionController {
           phase: ConnectionPhase.startingCore,
           activeProfile: profile,
           core: decision.core));
+      // W3: persist the detector/user decision on the profile so the
+      // CoreManager (which owns the actual traffic path) executes the
+      // selected engine. Without this, the manager sees `unknown` and
+      // never starts the Xray/MDVPN upstream.
+      profile.core = decision.core;
       await cores.stop(); // clean slate for a new start
       final start = await cores.startFor(
         profile,
@@ -468,12 +473,12 @@ class ConnectionController {
   }
 
   // ------------------------------------------------------------ Phase 26:
-  // crash recovery: restart once, then failover.
+  // crash recovery: restart once, then failover. Routes per crashing engine.
 
-  void _onCoreExit(CoreExitEvent e) {
-    if (e.kind == CoreExitKind.clean) return;
-    Logger.instance
-        .error('connection', 'core crashed: ${e.kind.name} (${e.stderrTail})');
+  void _onEngineExit(EngineExitEvent e) {
+    if (e.event.kind == CoreExitKind.clean) return;
+    Logger.instance.error('connection',
+        '${e.engine.name} crashed: ${e.event.kind.name} (${e.event.stderrTail})');
     final active = _state.activeProfile;
     if (active == null) return;
     if (_state.phase != ConnectionPhase.connected &&
@@ -483,6 +488,25 @@ class ConnectionController {
     unawaited(() async {
       _setState(ConnectionStateSnapshot(
           phase: ConnectionPhase.recovering, activeProfile: active));
+
+      // Upstream crash (Xray/MDVPN): rebuild only the upstream, keep the
+      // front engine and selector untouched.
+      if (e.engine == CoreKind.xray || e.engine == CoreKind.masterDnsVpn) {
+        final recovered = await cores.recoverEngine(
+            e.engine,
+            all: repository.all,
+            routing: routing,
+            dns: dns);
+        if (recovered) {
+          final ok = await _verifyActive(active,
+              core: active.effectiveCore);
+          if (ok) return;
+        }
+        await failoverFrom(active);
+        return;
+      }
+
+      // Front engine crash: full front rebuild.
       final recovered = await cores
           .recoverFront(all: repository.all, routing: routing, dns: dns);
       if (recovered) {

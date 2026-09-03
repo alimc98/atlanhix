@@ -12,6 +12,14 @@ import 'external_runtimes.dart';
 import 'singbox_runtime.dart';
 import 'xray_runtime.dart';
 
+/// An engine process exited — tagged with the owning engine so crash
+/// recovery can rebuild the correct topology (v0.2.1 W4).
+class EngineExitEvent {
+  const EngineExitEvent(this.engine, this.event);
+  final CoreKind engine;
+  final CoreExitEvent event;
+}
+
 /// Orchestrates every engine runtime (Phase 1).
 ///
 /// Architecture: **sing-box is always the front engine** — it owns the mixed
@@ -46,6 +54,29 @@ class CoreManager {
   ProxyProfile? get activeProfile => _active;
   RuntimeStatus get frontStatus => singbox.status;
   SingBoxRuntime get front => singbox;
+
+  /// W4: every engine's exit stream, tagged with the owning engine —
+  /// the controller routes crash recovery per engine.
+  final _anyExitCtrl = StreamController<EngineExitEvent>.broadcast();
+  final _exitSubs = <StreamSubscription>[];
+  bool _exitWired = false;
+
+  Stream<EngineExitEvent> get onAnyExit {
+    if (!_exitWired) {
+      _exitWired = true;
+      _exitSubs.addAll([
+        singbox.onExit.listen((e) => _anyExitCtrl.add(EngineExitEvent(CoreKind.singbox, e))),
+        xray.onExit.listen((e) => _anyExitCtrl.add(EngineExitEvent(CoreKind.xray, e))),
+        masterDnsVpn.onExit
+            .listen((e) => _anyExitCtrl.add(EngineExitEvent(CoreKind.masterDnsVpn, e))),
+        amneziaWg.onExit
+            .listen((e) => _anyExitCtrl.add(EngineExitEvent(CoreKind.amneziaWg, e))),
+      ]);
+    }
+    return _anyExitCtrl.stream;
+  }
+
+  bool _isXrayOwned(ProxyProfile p) => needsXrayUpstream(p);
 
   Future<void> prepare() async {
     if (_prepared) return;
@@ -88,13 +119,24 @@ class CoreManager {
           })
       .toList();
 
+  /// Profiles that must be executed by the Xray upstream: either the
+  /// detector/user pinned Xray, or an unknown-core profile with an
+  /// Xray-only transport (xhttp) — defensive pairing with
+  /// `OutboundBuilders.singBoxOutbound` (v0.2.1 W2/W6).
+  static bool needsXrayUpstream(ProxyProfile p) =>
+      p.effectiveCore == CoreKind.xray ||
+      (p.effectiveCore == CoreKind.unknown &&
+          p.transport == Transport.xhttp);
+
   Map<String, ({String host, int port})> _socksUpstreams(
       List<ProxyProfile> all) {
     final out = <String, ({String host, int port})>{};
     for (final p in all) {
+      if (!p.enabled) continue;
+      if (needsXrayUpstream(p)) {
+        out[p.id] = (host: '127.0.0.1', port: xray.localPort);
+      }
       switch (p.effectiveCore) {
-        case CoreKind.xray:
-          out[p.id] = (host: '127.0.0.1', port: xray.localPort);
         case CoreKind.masterDnsVpn:
           out[p.id] = (host: '127.0.0.1', port: masterDnsVpn.socksPort);
         default:
@@ -110,6 +152,7 @@ class CoreManager {
   }) async {
     switch (profile.effectiveCore) {
       case CoreKind.xray:
+      case CoreKind.unknown when profile.transport == Transport.xhttp:
         if (xray.currentProfile?.id != profile.id ||
             !await xray.inboundHealthy()) {
           final v =
@@ -124,6 +167,13 @@ class CoreManager {
           final r = await xray.startProfile(profile: profile, routing: routing);
           if (!r.ok) {
             throw CoreStartError('Xray failed to start: ${r.message}',
+                exitCode: null);
+          }
+          // W5: never hand sing-box a SOCKS stub whose upstream is not
+          // actually listening.
+          if (!await xray.inboundHealthy()) {
+            throw CoreStartError(
+                'Xray SOCKS inbound is not listening after start.',
                 exitCode: null);
           }
         }
@@ -165,6 +215,7 @@ class CoreManager {
       selectedProfileId: profile.id,
       routing: routing,
       dns: dns,
+      socksUpstreams: _socksUpstreams(all),
     );
     if (r.ok) {
       _restartCount = 0;
@@ -215,7 +266,10 @@ class CoreManager {
   void setActive(ProxyProfile p) => _active = p;
 
   /// Phase 26: restart-once recovery; further crashes bubble to failover.
-  Future<bool> recoverFront({
+  /// [engine] selects which process topology to rebuild: the front engine
+  /// (sing-box) or the Xray/MDVPN upstream of the active profile.
+  Future<bool> recoverEngine(
+    CoreKind engine, {
     required List<ProxyProfile> all,
     required RoutingProfile routing,
     required DnsSettings dns,
@@ -223,12 +277,32 @@ class CoreManager {
     final active = _active;
     if (active == null || _restartCount >= _maxRestarts) return false;
     _restartCount++;
-    Logger.instance
-        .warn('manager', 'recovering front engine (attempt $_restartCount)');
+    Logger.instance.warn('manager',
+        'recovering $engine (attempt $_restartCount)');
+
+    if (engine == CoreKind.xray && _isXrayOwned(active)) {
+      final v = await xray.validateProfile(profile: active, routing: routing);
+      if (!v.ok) return false;
+      if (xray.status == RuntimeStatus.running) await xray.stop();
+      final r = await xray.startProfile(profile: active, routing: routing);
+      if (!r.ok) return false;
+      return singbox.status == RuntimeStatus.running ||
+          await singbox.inboundHealthy();
+    }
+
     await singbox.stop();
     final r = await startFor(active, all: all, routing: routing, dns: dns);
     return r.ok;
   }
+
+  /// Back-compat alias used for front-crash recovery.
+  Future<bool> recoverFront({
+    required List<ProxyProfile> all,
+    required RoutingProfile routing,
+    required DnsSettings dns,
+  }) =>
+      recoverEngine(CoreKind.singbox,
+          all: all, routing: routing, dns: dns);
 
   Future<void> _stopUpstreams() async {
     if (xray.status == RuntimeStatus.running) await xray.stop();
@@ -245,6 +319,10 @@ class CoreManager {
 
   Future<void> dispose() async {
     await stop();
+    for (final s in _exitSubs) {
+      await s.cancel();
+    }
+    await _anyExitCtrl.close();
     await singbox.dispose();
     await xray.dispose();
     await amneziaWg.dispose();

@@ -83,6 +83,7 @@ class SingBoxRuntime implements CoreRuntime {
     required String selectedProfileId,
     required RoutingProfile routing,
     required DnsSettings dns,
+    Map<String, ({String host, int port})> socksUpstreams = const {},
   }) {
     return SingBoxConfigGenerator().generate(
       runnableProfiles: profiles,
@@ -95,6 +96,7 @@ class SingBoxRuntime implements CoreRuntime {
         enableTun: enableTun,
       ),
       selectedTag: '$tagPrefix$selectedProfileId',
+      socksUpstreams: socksUpstreams,
     );
   }
 
@@ -103,6 +105,7 @@ class SingBoxRuntime implements CoreRuntime {
     required String selectedProfileId,
     required RoutingProfile routing,
     required DnsSettings dns,
+    Map<String, ({String host, int port})> socksUpstreams = const {},
   }) async {
     if (_binary == null || _binary!.status != 'available') {
       _binary = await binaryManager.inspect(CoreBinaryKind.singbox);
@@ -113,7 +116,10 @@ class SingBoxRuntime implements CoreRuntime {
           message: 'sing-box engine is ${b.status}');
     }
     final cfg = buildConfig(profiles,
-        selectedProfileId: selectedProfileId, routing: routing, dns: dns);
+        selectedProfileId: selectedProfileId,
+        routing: routing,
+        dns: dns,
+        socksUpstreams: socksUpstreams);
     final f = await _writeConfig(cfg);
     try {
       final r = await Process.run(b.path!, ['check', '-c', f.path],
@@ -133,18 +139,23 @@ class SingBoxRuntime implements CoreRuntime {
 
   /// Generates, validates and starts with all [profiles] loaded so selector
   /// hot-switching (Phase 5) can swap between them without a restart.
+  /// [socksUpstreams] carries the local SOCKS endpoints of external engines
+  /// (Xray / MasterDNSVPN) — profiles listed there are built as SOCKS stubs
+  /// so their traffic traverses the owning engine (v0.2.1 wiring fix W1).
   Future<StartResult> startWith({
     required List<ProxyProfile> profiles,
     required String selectedProfileId,
     required RoutingProfile routing,
     required DnsSettings dns,
+    Map<String, ({String host, int port})> socksUpstreams = const {},
   }) async {
     final sw = Stopwatch()..start();
     final validation = await validateAll(
         profiles: profiles,
         selectedProfileId: selectedProfileId,
         routing: routing,
-        dns: dns);
+        dns: dns,
+        socksUpstreams: socksUpstreams);
     if (!validation.ok) {
       _status = RuntimeStatus.stopped;
       final detail = (validation.output ?? '')
@@ -158,7 +169,10 @@ class SingBoxRuntime implements CoreRuntime {
               : '${validation.message} — $detail');
     }
     final cfg = buildConfig(profiles,
-        selectedProfileId: selectedProfileId, routing: routing, dns: dns);
+        selectedProfileId: selectedProfileId,
+        routing: routing,
+        dns: dns,
+        socksUpstreams: socksUpstreams);
     _configFile = await _writeConfig(cfg);
 
     final b = _binary!;
