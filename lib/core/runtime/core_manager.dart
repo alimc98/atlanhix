@@ -311,6 +311,19 @@ class CoreManager {
           await singbox.inboundHealthy();
     }
 
+    // MDVPN upstream crash: rebuild only the daemon (v0.3.0 §10 restart),
+    // keep the front engine and selector untouched.
+    if (engine == CoreKind.masterDnsVpn && active.effectiveCore == CoreKind.masterDnsVpn) {
+      if (masterDnsVpn.status == RuntimeStatus.running) {
+        await masterDnsVpn.stop();
+      }
+      masterDnsVpn.profile = active;
+      final r = await masterDnsVpn.start();
+      if (!r.ok) return false;
+      // Readiness is the SOCKS greeting probe — no readiness, no recovery.
+      return masterDnsVpn.probe();
+    }
+
     await singbox.stop();
     final r = await startFor(active, all: all, routing: routing, dns: dns);
     return r.ok;
