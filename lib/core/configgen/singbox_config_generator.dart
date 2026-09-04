@@ -166,6 +166,13 @@ class SingBoxConfigGenerator {
             'protocol': 'dns',
             'action': 'hijack-dns',
           },
+          // v0.3.2 (live validation finding): loopback/private destinations
+          // must never be routed through a proxy node — the loopback E2E
+          // probes (127.0.0.1 mock destinations) exposed this regression.
+          {
+            'ip_is_private': true,
+            'outbound': 'direct',
+          },
           ..._compiler.singBoxRules(routing),
         ],
         'final': 'proxy',

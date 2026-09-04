@@ -271,6 +271,12 @@ class MasterDnsVpnRuntime extends ExternalDaemonRuntime {
   /// allocates a free port at prepare() to avoid parallel-test contention
   /// (v0.3.1 §21) and writes it into the generated config.
   int socksPort;
+
+  /// v0.3.2 (live finding): tunnel establishment includes MTU probing over
+  /// DNS round-trips (~10-30 s on real networks) BEFORE the SOCKS5 listener
+  /// opens. The 6 s daemon default can never suffice for a DNS tunnel.
+  @override
+  Duration get readinessTimeout => const Duration(seconds: 60);
   ProxyProfile? profile;
 
   @override

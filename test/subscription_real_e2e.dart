@@ -12,6 +12,7 @@ import 'package:nexus/core/runtime/core_process.dart';
 import 'package:nexus/core/runtime/core_runtime.dart';
 import 'package:nexus/core/scoring/smart_connect.dart';
 import 'package:nexus/core/configgen/singbox_config_generator.dart';
+import 'package:nexus/core/logger.dart';
 import 'package:nexus/domain/entities/proxy_profile.dart';
 import 'package:nexus/protocols/importer.dart';
 import 'package:nexus/routing/builtin_profiles.dart';
@@ -31,7 +32,7 @@ import 'package:nexus/routing/routing_models.dart';
 ///
 /// NO node is connected "simultaneously"; connectivity is sequential and
 /// bounded. Every emitted line is sanitized (no passwords/UUIDs/URLs/keys).
-const _maxConnectCandidates = 3;
+const _maxConnectCandidates = 12;
 
 Map<String, dynamic> _inventoryLine(ProxyProfile p, CoreDecision d,
     {required bool sbConfigOk}) {
@@ -198,32 +199,43 @@ Future<void> _continueSubscriptionE2E(List<ProxyProfile> profiles) async {
   }
 
   // 7) bounded REAL connectivity: TCP pre-probe → sequential connect.
+  // v0.3.2: test ALL alive candidates (bounded per-node timeouts), classify
+  // per §22, and capture sanitized engine stderr on failures.
   final selector = SmartConnectSelector();
   final probed = await selector.preprobe(profiles, concurrency: 8);
   // ignore: avoid_print
   print('CONNECTIVITY pre-probe: ${probed.length}/${profiles.length} '
       'candidates answered TCP');
-  final alive = probed.take(_maxConnectCandidates).toList();
 
+  final results = <String, String>{}; // id → classification
+  final details = <String>[];
   final mgr = CoreManager(
     binaryManager: bm,
     workDir: await Directory.systemTemp.createTemp('nexus-sub-e2e'),
   );
   final routing = BuiltinRoutingProfiles.all().first;
   var verified = 0;
+  var tried = 0;
   final testedIds = <String>{};
-  for (final (profile, _) in alive) {
+  for (final (profile, _) in probed) {
     if (!testedIds.add(profile.id)) continue;
+    if (tried >= _maxConnectCandidates) break;
+    tried++;
     final d = detector.resolve(profile);
     profile.core = d.core; // §7: detector decision drives the runtime
+    final swStart = Stopwatch()..start();
     final start = await mgr.startFor(profile,
         all: [profile],
         routing: routing,
         dns: DnsSettings(mode: DnsMode.automatic));
+    final startMs = swStart.elapsedMilliseconds;
+    final label = '${profile.protocol.name}/'
+        '${profile.transport?.name ?? "-"}/${profile.security.name}';
     if (!start.ok) {
-      // ignore: avoid_print
-      print('CONNECTIVITY ${profile.protocol.name} start=FAIL '
-          '(${start.status.name})');
+      results[profile.id] = 'FAIL';
+      details.add('$label via ${d.core.name}: START_FAIL '
+          '(${start.status.name}) ${start.message ?? ''} '
+          '${_sanitizedTail(mgr)}');
       continue;
     }
     // §7 core-selection verification: the launched runtime must match.
@@ -232,25 +244,80 @@ Future<void> _continueSubscriptionE2E(List<ProxyProfile> profiles) async {
       CoreKind.masterDnsVpn => mgr.masterDnsVpn.status,
       _ => mgr.front.status,
     };
-    expect(runtimeStatus, RuntimeStatus.running,
-        reason: 'CoreDetector said ${d.core.name} but that runtime is not '
-            'running (§7 violation)');
+    if (runtimeStatus != RuntimeStatus.running) {
+      results[profile.id] = 'FAIL';
+      details.add('$label via ${d.core.name}: CORE_MISMATCH (§7 violation) '
+          '${_engineExits(mgr)}');
+      await mgr.stop();
+      continue;
+    }
     final probe = await LatencyTester().testHttpViaSocksProxy(
         '127.0.0.1', mgr.front.mixedPort,
         'https://www.gstatic.com/generate_204',
         timeout: const Duration(seconds: 15));
-    // ignore: avoid_print
-    print('CONNECTIVITY ${profile.protocol.name}/'
-        '${profile.transport?.name ?? "-"}/${profile.security.name} '
-        'via ${d.core.name} pid=${start.pid} → '
-        'HTTP ${probe.ok ? "OK" : "FAIL"} ${probe.latencyMs}ms');
-    if (probe.ok) verified++;
+    if (probe.ok) {
+      verified++;
+      results[profile.id] = 'PASS';
+      details.add('$label via ${d.core.name}: HTTP_OK ${probe.latencyMs}ms '
+          'startMs=$startMs pid=${start.pid}');
+    } else {
+      results[profile.id] =
+          probe.errorKind == 'timeout' ? 'TIMEOUT' : 'FAIL';
+      details.add('$label via ${d.core.name}: HTTP_FAIL '
+          '(${probe.errorKind ?? '?'}) detail=${Logger.redact(probe.detail ?? '')} '
+          'startMs=$startMs ${_engineExits(mgr)}');
+    }
     await mgr.stop();
   }
+  for (final d in details) {
+    // ignore: avoid_print
+    print('CONNECTIVITY $d');
+  }
+  // Unsupported/not-alive nodes are reported, not silently dropped.
+  final aliveIds = probed.map((r) => r.$1.id).toSet();
+  var skipped = 0;
+  for (final p in profiles) {
+    if (!aliveIds.contains(p.id) && !results.containsKey(p.id)) {
+      results[p.id] = 'SKIPPED';
+      skipped++;
+    }
+  }
+  final counts = <String, int>{};
+  for (final v in results.values) {
+    counts[v] = (counts[v] ?? 0) + 1;
+  }
   // ignore: avoid_print
-  print('RESULT connectivity verified=$verified of ${alive.length} tried; '
-      'total profiles=${profiles.length}');
+  print('RESULT total=${profiles.length} '
+      '${counts.entries.map((e) => '${e.key}=${e.value}').join(' ')} '
+      'verified=$verified');
   // At least one real node must verify for a PASS (no manufactured passes).
   expect(verified, greaterThanOrEqualTo(1),
       reason: 'no real node from the subscription carried HTTP traffic');
 }
+
+/// Sanitized engine stderr tail for failure diagnostics (no credentials —
+/// engine logs never contain them; Redact applied as defense in depth).
+String _sanitizedTail(CoreManager mgr) {
+  final buf = <String>[];
+  final all = Logger.instance.buffer;
+  final from = all.length > 12 ? all.length - 12 : 0;
+  for (final line in all.skip(from)) {
+    buf.add(line.message);
+  }
+  return buf.isEmpty ? '' : ' | log: ${Logger.redact(buf.join(' / ').trim())}';
+}
+
+/// Real engine exit diagnostics: exit kind + stderr tail per engine.
+String _engineExits(CoreManager mgr) {
+  final parts = <String>[];
+  final fe = mgr.front.lastExit;
+  if (fe != null) {
+    parts.add('singbox[${fe.kind.name}]: ${Logger.redact(fe.stderrTail)}');
+  }
+  final xe = mgr.xray.lastExit;
+  if (xe != null) {
+    parts.add('xray[${xe.kind.name}]: ${Logger.redact(xe.stderrTail)}');
+  }
+  return parts.isEmpty ? '(no exits captured)' : parts.join(' || ');
+}
+

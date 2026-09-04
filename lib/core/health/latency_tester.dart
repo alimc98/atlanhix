@@ -65,58 +65,184 @@ class LatencyTester {
   }
 
   /// HTTP probe through a SOCKS5 proxy — genuine end-to-end success.
+  ///
+  /// v0.3.2 (live-subscription finding): rewritten on [RawSocket]/
+  /// [RawSecureSocket]. The previous [Socket]+[SecureSocket.secure] upgrade
+  /// was impossible once a stream subscription existed (Dart sockets are
+  /// single-subscription), so every real HTTPS probe failed with
+  /// `Connection terminated during handshake`.
+  ///
+  /// For https targets the TLS upgrade happens AFTER the SOCKS CONNECT via
+  /// [RawSecureSocket.secure], with certificate verification ON.
   Future<ProbeResult> testHttpViaSocksProxy(String proxyHost, int proxyPort,
       String testUrl,
       {Duration? timeout}) async {
     final t = timeout ?? defaultTimeout;
     final uri = Uri.parse(testUrl);
     final sw = Stopwatch()..start();
-    Socket? sock;
+    RawSocket? sock;
     try {
-      sock = await Socket.connect(proxyHost, proxyPort, timeout: t);
-      final reader = _SockReader(sock);
-      sock.add([0x05, 0x01, 0x00]);
-      final greet = await reader.waitAndTake(2, t);
+      sock = await RawSocket.connect(proxyHost, proxyPort, timeout: t);
+      sock.setOption(SocketOption.tcpNoDelay, true);
+
+      // SOCKS5 greeting: offer NO-AUTH.
+      if (!_rawWrite(sock, [0x05, 0x01, 0x00])) {
+        return ProbeResult(
+            ok: false, errorKind: 'proxy', detail: 'write failed');
+      }
+      final greet = await _rawReadAtLeast(sock, 2, t);
       if (greet.length < 2 || greet[0] != 0x05 || greet[1] != 0x00) {
         return ProbeResult(
             ok: false, errorKind: 'proxy', detail: 'SOCKS greeting rejected');
       }
+      // CONNECT host:port (domain → remote DNS resolution by design).
       final host = utf8.encode(uri.host);
       final port = uri.port == 0 ? 443 : uri.port;
-      sock.add([0x05, 0x01, 0x00, 0x03, host.length, ...host, port >> 8, port & 0xFF]);
-      final rep = await reader.waitAndTake(5, t);
+      if (!_rawWrite(sock,
+          [0x05, 0x01, 0x00, 0x03, host.length, ...host, port >> 8, port & 0xFF])) {
+        return ProbeResult(
+            ok: false, errorKind: 'proxy', detail: 'write failed');
+      }
+      final rep = await _rawReadAtLeast(sock, 5, t);
       if (rep.length < 5 || rep[1] != 0x00) {
         return ProbeResult(
             ok: false,
             errorKind: 'proxy',
             detail: 'CONNECT failed (${rep.length > 1 ? rep[1] : '?'})');
       }
-      final extra = switch (rep[3]) { 0x01 => 6, 0x03 => rep[4] + 2, 0x04 => 18, _ => 6 };
-      if (extra > 0) await reader.waitAndTake(extra, t);
-      sock.add(utf8.encode(
+      final extra = switch (rep[3]) {
+        0x01 => 6,
+        0x03 => rep[4] + 2,
+        0x04 => 18,
+        _ => 6,
+      };
+      if (extra - 5 > 0) await _rawReadAtLeast(sock, extra - 5, t);
+
+      Object transport = sock;
+      // TLS upgrade for https targets (certificate verification ON).
+      if (uri.scheme == 'https') {
+        try {
+          // Drain any SOCKS reply bytes already buffered so they are not
+          // misread as TLS records (RawSecureSocket has no drain; we must
+          // ensure a clean stream — the SOCKS reply was already consumed by
+          // _rawReadAtLeast above; a final poll ensures late bytes land).
+          await Future<void>.delayed(const Duration(milliseconds: 25));
+          sock.read(65536); // best-effort soak of any trailing bytes
+          transport = await RawSecureSocket.secure(sock,
+              host: uri.host, onBadCertificate: (_) => false);
+        } on HandshakeException catch (e) {
+          sock.close();
+          return ProbeResult(ok: false, errorKind: 'tls', detail: e.message);
+        } on SocketException catch (e) {
+          sock.close();
+          return ProbeResult(
+              ok: false, errorKind: 'tls', detail: e.message);
+        }
+      }
+
+      final request = utf8.encode(
           'GET ${uri.path.isEmpty ? '/' : uri.path} HTTP/1.1\r\n'
           'Host: ${uri.host}\r\n'
-          'User-Agent: nexus-probe\r\n'
-          'Connection: close\r\n\r\n'));
-      final statusLine = await reader.readLine(t);
-      sw.stop();
-      final code = int.tryParse(statusLine.split(' ').elementAt(1)) ?? 0;
-      sock.destroy();
+          'User-Agent: atlanhix-probe\r\n'
+          'Connection: close\r\n\r\n');
+      if (!_rawWrite(transport, request)) {
+        return ProbeResult(
+            ok: false, errorKind: 'http', detail: 'write failed');
+      }
+      final respBytes = await _rawReadUntilClosed(transport, t);
+      final text = utf8.decode(respBytes, allowMalformed: true);
+      final statusLine =
+          text.split('\r\n').isEmpty ? '' : text.split('\r\n').first.trim();
+      final codeMatch = RegExp(r'HTTP/\d(?:\.\d)?\s+(\d{3})').firstMatch(
+          statusLine.isEmpty ? text : statusLine);
+      final code = codeMatch != null
+          ? int.parse(codeMatch.group(1)!)
+          : (respBytes.isEmpty ? 0 : -1);
+      sock.close();
       final ok = code >= 200 && code < 400;
       return ProbeResult(
         ok: ok,
         latencyMs: sw.elapsedMilliseconds,
-        errorKind: ok ? null : 'http',
-        detail: 'HTTP $code',
+        errorKind: ok ? null : (code == 0 ? 'timeout' : 'http'),
+        detail: ok ? 'HTTP $code' : 'HTTP ${code == 0 ? 'NO-RESPONSE' : code} '
+            'bytes=${respBytes.length}',
       );
     } catch (e) {
-      sock?.destroy();
+      sock?.close();
       return ProbeResult(
         ok: false,
         errorKind: e is TimeoutException ? 'timeout' : 'http',
         detail: e.toString(),
       );
     }
+  }
+
+  bool _rawWrite(Object transport, List<int> bytes) {
+    // v0.3.2 hardening: RawSocket.write may accept a prefix — loop until the
+    // whole request is out (partial writes previously corrupted probes).
+    try {
+      var written = 0;
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (written < bytes.length) {
+        final n = transport is RawSecureSocket
+            ? (transport as RawSecureSocket).write(bytes.sublist(written))
+            : (transport as RawSocket).write(bytes.sublist(written));
+        if (n > 0) {
+          written += n;
+          continue;
+        }
+        if (DateTime.now().isAfter(deadline)) return false;
+        return false; // caller treats as failure; polling write is unsafe here
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Poll-reads until at least [n] bytes arrive (raw sockets have no stream
+  /// subscriptions — the re-listen hazard does not apply).
+  Future<List<int>> _rawReadAtLeast(
+      RawSocket s, int n, Duration timeout) async {
+    final stop = DateTime.now().add(timeout);
+    final buf = <int>[];
+    while (buf.length < n && DateTime.now().isBefore(stop)) {
+      final chunk = s.read(n - buf.length);
+      if (chunk != null && chunk.isNotEmpty) {
+        buf.addAll(chunk);
+        continue;
+      }
+      // RawSocket gotcha: after a null read, read events are disabled and
+      // must be re-enabled or every subsequent read() returns null.
+      s.readEventsEnabled = true;
+      await Future<void>.delayed(const Duration(milliseconds: 4));
+    }
+    return buf;
+  }
+
+  /// Poll-reads until headers complete, the connection closes, or timeout.
+  Future<List<int>> _rawReadUntilClosed(
+      Object transport, Duration timeout) async {
+    final stop = DateTime.now().add(timeout);
+    final buf = <int>[];
+    final RawSocket s =
+        transport is RawSecureSocket ? transport : transport as RawSocket;
+    while (DateTime.now().isBefore(stop)) {
+      final chunk = s.read(65536);
+      if (chunk == null) {
+        s.readEventsEnabled = true;
+        await Future<void>.delayed(const Duration(milliseconds: 4));
+        continue;
+      }
+      if (chunk.isEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 4));
+        continue;
+      }
+      buf.addAll(chunk);
+      final t = utf8.decode(buf, allowMalformed: true);
+      if (t.contains('\r\n\r\n')) break; // headers complete — enough for 204
+    }
+    return buf;
   }
 
   /// sing-box Clash-API delay test when available.
@@ -167,6 +293,13 @@ class _SockReader {
   final List<int> _buf = [];
   StreamSubscription<List<int>>? _sub;
   bool _done = false;
+
+  /// Releases the raw subscription so a TLS upgrade can re-listen the
+  /// underlying socket (v0.3.2 — required before SecureSocket.secure).
+  Future<void> detach() async {
+    await _sub?.cancel();
+    _sub = null;
+  }
 
   /// Waits until at least [n] bytes are buffered, the stream ends, or the
   /// timeout passes. Returns (and consumes) the first bytes.

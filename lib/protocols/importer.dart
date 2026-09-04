@@ -54,7 +54,7 @@ class SourceFormatSniffer {
       return SourceFormat.clashYaml;
     }
     if (MasterDnsVpnParser.looksLikeToml(text) &&
-        RegExp(r'SERVER_(ADDRESS|PUBLIC_KEY)|RESOLVERS|SUBDOMAIN',
+        RegExp(r'SERVER_(ADDRESS|PUBLIC_KEY)|RESOLVERS|SUBDOMAIN|DOMAINS\s*=',
                 multiLine: true)
             .hasMatch(text)) {
       return SourceFormat.masterDnsVpnToml;
@@ -64,7 +64,9 @@ class SourceFormatSniffer {
         .map((l) => l.trim())
         .where((l) => l.isNotEmpty)
         .toList();
-    if (lines.isNotEmpty && lines.every(_isShareUri)) {
+    // v0.3.2 (live-subscription finding): real subscriptions mix node URIs
+    // with comment/info lines — require ANY share line, not every line.
+    if (lines.isNotEmpty && lines.any(_isShareUri)) {
       return SourceFormat.uriList;
     }
     final decoded = UriUtils.tryDecodeBase64(t);
@@ -136,13 +138,16 @@ class MultiFormatImporter {
       case SourceFormat.masterDnsVpnToml:
         profiles.add(_mdvpn.parseToml(payload, name: fileName));
       case SourceFormat.unknown:
-        throw ParseError('Could not recognize this configuration format.',
+        // v0.3.2 (§13 security): never echo raw payload — real subscription
+        // URIs embed credentials (uuid/password) that previously leaked into
+        // the error text. Report shape, not content.
+        throw ParseError(
+            'Could not recognize this configuration format.',
             likelyCauses: [
               'Expected share links, base64 list, Clash YAML, sing-box/Xray JSON, or a WireGuard .conf'
             ],
-            raw: payload.length > 120
-                ? '${payload.substring(0, 120)}…'
-                : payload);
+            raw:
+                'payload ${payload.length} bytes, line count ~${payload.split(RegExp(r"\r?\n")).length}');
     }
     if (profiles.isEmpty) {
       throw ParseError('No usable proxy configurations were found.',

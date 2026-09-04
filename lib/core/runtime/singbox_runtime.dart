@@ -267,6 +267,13 @@ class SingBoxRuntime implements CoreRuntime {
 
   void _startTrafficPolling() {
     _trafficTimer?.cancel();
+    // v0.3.2: seed the counters immediately instead of waiting for the first
+    // 1 s tick — the E2E probe (sub-second) used to read null and crash on
+    // the traffic-delta assertion.
+    Future<void>.microtask(() async {
+      final t0 = await (_api?.connections() ?? Future.value(null));
+      if (t0 != null) _traffic = t0;
+    });
     _trafficTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
       final t = await (_api?.connections() ?? Future.value(null));
       if (t != null) _traffic = t;
