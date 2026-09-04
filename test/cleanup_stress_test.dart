@@ -17,8 +17,22 @@ import 'helpers/mock_servers.dart';
 /// verifying zero leaked processes and zero leaked temp configs.
 Future<bool> processAlive(int pid) async {
   if (!Platform.isWindows) return true;
-  final r = await Process.run('tasklist', ['/FI', 'PID eq $pid']);
-  return '${r.stdout}'.contains('$pid');
+  // v0.3.2 hardening: tasklist's PID filter is a substring match — a pid
+  // like 314 also matches 3148/13145. Filter rows and match the PID column.
+  final r = await Process.run('tasklist', ['/FO', 'CSV', '/NH']);
+  final needle = ',$pid,';
+  for (final line in '${r.stdout}'.split(RegExp(r'\r?\n'))) {
+    final l = line.trim();
+    if (l.isEmpty) continue;
+    final cols = l.split('","');
+    if (cols.length >= 2) {
+      final rowPid = cols[1].replaceAll('"', '').trim();
+      if (rowPid == '$pid') return true;
+    } else if (l.contains(needle)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void main() {

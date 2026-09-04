@@ -54,21 +54,27 @@ See `BUILD.md` for the exact per-platform layout.
 
 ## Status
 
-Working, tested today: configuration import/normalize/export pipeline,
-core detection, **engine-validated config generation** (sing-box check /
-xray -test actually run), **real process supervision with traffic-path E2E**
-(sing-boxâ†’Xrayâ†’destination proven via Xray access log), health/scoring/
-failover/crash-recovery cycles with real engines, chain planner, routing
-compiler, subscription engine, WARP registration client, system proxy,
-design system & responsive UI shell, EN/FA l10n, **61 tests passing
-(incl. 6 real-engine E2E), 0 analyzer errors**.
+Verified with REAL external infrastructure (see `docs/e2e/v0.3.2-live-report.md`):
+configuration import/normalize/export pipeline, core detection, **engine-validated
+config generation** (sing-box check / xray -test actually run), **real process
+supervision with live traffic-path E2E** — a real subscription (12 nodes) parsed,
+inventoried and connected: **4 real nodes carried live HTTP 204 traffic through
+Xray** (vless+xhttp over TLS and Reality); **real MasterDNSVPN DNS tunnel**
+(`u.hixyz.ir`, official client binary) carried real HTTP traffic through the full
+`sing-box → MDVPN SOCKS → DNS tunnel` chain, with crash recovery and process
+cleanup proven; Smart Connect/failover/crash-recovery cycles with real engines,
+chain planner, routing compiler, subscription engine, WARP registration client,
+system proxy round-trip, diagnostics, design system & responsive UI shell,
+EN/FA l10n, **94 tests passing (incl. live-subscription + live-MDVPN E2E),
+0 analyzer errors**.
 
 Terminology used throughout the docs:
-`PARSED â†’ GENERATED â†’ VALIDATED â†’ EXECUTABLE â†’ RUNTIME_CONNECTED â†’ E2E_VERIFIED`.
+`PARSED → GENERATED → VALIDATED → EXECUTABLE → RUNTIME_CONNECTED → E2E_VERIFIED`
+(parser support ≠ connectivity; only `E2E_VERIFIED` means real traffic was proven).
 
 Remaining milestones (tracked in `DEVELOPMENT.md`): bundled core binaries per
 platform, Windows/Linux TUN elevation UX, Android libbox engine binding
-(see `docs/V0.2.1_ANDROID_READINESS.md`), per-app proxy UI, desktop tray,
+(see `docs/ANDROID_VPN.md`), per-app proxy UI, desktop tray,
 subscription auto-update scheduler.
 
 ## License
