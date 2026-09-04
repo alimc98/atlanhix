@@ -27,6 +27,17 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // v0.4 (§23): arm64-v8a is the primary Android target. Fat APKs
+        // (~154 MB with all ABIs) exceeded real-device storage during the
+        // §26 install E2E, so the default packages arm64 only. Restore the
+        // fat build (or target the x86_64 emulator — which additionally
+        // requires a hypervisor: AEHD/WHPX) with:
+        //   gradlew :app:assembleDebug -Pabi-filters=arm64-v8a,x86_64
+        ndk {
+            val abiOverride = (project.findProperty("abi-filters") as String?)
+                ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
+            abiFilters += abiOverride ?: listOf("arm64-v8a")
+        }
     }
 
     buildTypes {

@@ -1,5 +1,6 @@
 ﻿import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import '../data/app_storage.dart';
 import '../data/profile_repository.dart';
 import '../data/repositories.dart';
@@ -24,11 +25,22 @@ class AppDependencies {
   static Future<AppDependencies> bootstrap() async {
     final deps = AppDependencies._();
 
-    final baseDir = Platform.environment['APPDATA'] ??
-        Platform.environment['HOME'] ??
-        Directory.systemTemp.path;
+    // v0.4 (§10/§22): storage must live inside the app sandbox on mobile
+    // (secure per-app storage); desktop keeps APPDATA/HOME resolution.
+    Directory baseDir;
+    if (Platform.isAndroid || Platform.isIOS) {
+      final support = await getApplicationSupportDirectory();
+      baseDir = support;
+    } else {
+      baseDir = Directory(
+          Platform.environment['APPDATA'] ??
+              Platform.environment['HOME'] ??
+              Directory.systemTemp.path);
+    }
     deps.store = JsonStore(
-        directory: Directory('$baseDir/.nexus/data'), schemaVersion: 1);
+        directory: Directory('${baseDir.path}${Platform.pathSeparator}.nexus'
+            '${Platform.pathSeparator}data'),
+        schemaVersion: 1);
     deps.vault = InMemoryVault();
     await deps.store.load();
 
@@ -60,6 +72,13 @@ class AppDependencies {
     deps.detector = CoreDetector();
     deps.importer = MultiFormatImporter();
 
+    // v0.4 BUGFIX (Android device run): warpRepo must be initialized BEFORE
+    // ConnectionController reads it — `late final` access during construction
+    // threw LateInitializationError and killed bootstrap (white screen).
+    deps.warpRepo = WarpRepository(deps.store, deps.vault);
+    await deps.warpRepo.load();
+    deps.warpService = WarpService(registrar: WarpRegistrar(http: HttpWarpApi()));
+
     deps.connection = ConnectionController(
       repository: deps.profiles,
       healthStore: deps.healthStore,
@@ -73,9 +92,6 @@ class AppDependencies {
       profiles: deps.profiles,
       importer: deps.importer,
     );
-    deps.warpRepo = WarpRepository(deps.store, deps.vault);
-    await deps.warpRepo.load();
-    deps.warpService = WarpService(registrar: WarpRegistrar(http: HttpWarpApi()));
 
     // Seed builtin routing profiles on first run.
     if (deps.routingRep.all.isEmpty) {

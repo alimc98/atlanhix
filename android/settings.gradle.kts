@@ -22,10 +22,18 @@ pluginManagement {
 
 // v0.4: same repository order for every plugin module's own resolutions
 // (connectivity_plus et al fetch the lint toolchain from here).
+// PREFER_SETTINGS forces project-level repositories (set by the Flutter
+// plugin loader) to defer to THIS list — required because dl.google.com
+// 404s the lint jars on this network while the aliyun mirror serves them.
+// NOTE: two runs of the same build may be needed after cache invalidation —
+// Gradle re-downloads artifact metadata even when the file cache is warm.
 dependencyResolutionManagement {
+    repositoriesMode = RepositoriesMode.PREFER_SETTINGS
     repositories {
         google()
         maven { url = uri("https://maven.aliyun.com/repository/google") }
+        // Flutter engine artifacts (io.flutter:arm64_v8a_debug et al)
+        maven { url = uri("https://storage.googleapis.com/download.flutter.io") }
         mavenCentral()
     }
 }

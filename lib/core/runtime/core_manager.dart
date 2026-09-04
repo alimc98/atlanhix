@@ -31,11 +31,34 @@ class EngineExitEvent {
 ///  * cross-family: start/stop the needed upstream, then selector swap
 ///  * AWG: standalone daemon (no front) — documented limitation
 class CoreManager {
+  /// v0.4 BUGFIX (Android device run): the four runtimes are constructed
+  /// eagerly. They were `late final` + built only in prepare(), so any
+  /// read of frontStatus/front before prepare() (the UI reads it at
+  /// startup) threw LateInitializationError and killed the widget tree.
+  /// Construction is I/O-free; prepare() still performs all disk work.
   CoreManager({
     required this.binaryManager,
     required this.workDir,
     this.enableTun = false,
-  });
+  }) {
+    singbox = SingBoxRuntime(
+      binaryManager: binaryManager,
+      workDir: Directory('${workDir.path}${Platform.pathSeparator}singbox'),
+      enableTun: enableTun,
+    );
+    xray = XrayRuntime(
+      binaryManager: binaryManager,
+      workDir: Directory('${workDir.path}${Platform.pathSeparator}xray'),
+    );
+    amneziaWg = AmneziaWgRuntime(
+      binaryManager: binaryManager,
+      workDir: Directory('${workDir.path}${Platform.pathSeparator}awg'),
+    );
+    masterDnsVpn = MasterDnsVpnRuntime(
+      binaryManager: binaryManager,
+      workDir: Directory('${workDir.path}${Platform.pathSeparator}mdvpn'),
+    );
+  }
 
   final BinaryManager binaryManager;
   final Directory workDir;
@@ -84,23 +107,6 @@ class CoreManager {
 
   Future<void> prepare() async {
     if (_prepared) return;
-    singbox = SingBoxRuntime(
-      binaryManager: binaryManager,
-      workDir: Directory('${workDir.path}${Platform.pathSeparator}singbox'),
-      enableTun: enableTun,
-    );
-    xray = XrayRuntime(
-      binaryManager: binaryManager,
-      workDir: Directory('${workDir.path}${Platform.pathSeparator}xray'),
-    );
-    amneziaWg = AmneziaWgRuntime(
-      binaryManager: binaryManager,
-      workDir: Directory('${workDir.path}${Platform.pathSeparator}awg'),
-    );
-    masterDnsVpn = MasterDnsVpnRuntime(
-      binaryManager: binaryManager,
-      workDir: Directory('${workDir.path}${Platform.pathSeparator}mdvpn'),
-    );
     await singbox.prepare();
     await xray.prepare();
     await amneziaWg.prepare();
