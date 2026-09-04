@@ -19,7 +19,9 @@ class MainActivity : FlutterActivity() {
             AtlanhixVpnChannel.CHANNEL
         ).setMethodCallHandler { call, result ->
             try {
-                val arg = call.arguments()?.let { JSONObject(it.toString()) }
+                val rawArg: Any? = call.arguments()
+                val arg: JSONObject? =
+                    if (rawArg == null) null else JSONObject(rawArg.toString())
                 when (call.method) {
                     "prepare" -> {
                         val resp = vpnChannelOrNew().prepare()

@@ -1,4 +1,4 @@
-package com.example.nexus.vpn
+﻿package com.example.nexus.vpn
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -10,18 +10,19 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import org.json.JSONObject
+import com.example.nexus.R
 
 /**
- * Atlanhix Android VPN transport (v0.3.0 §3–§7).
+ * Atlanhix Android VPN transport (v0.3.0 آ§3â€“آ§7).
  *
  * Owns the TUN interface and hands its file descriptor to a real tunneling
  * engine ([VpnEngine]). States are driven by ACTUAL runtime events only:
- * this service never reports CONNECTED by itself — the Dart side flips to
+ * this service never reports CONNECTED by itself â€” the Dart side flips to
  * connected only after a real connectivity probe through the tunnel, so a
- * start() that merely returns cannot fake a tunnel (§5).
+ * start() that merely returns cannot fake a tunnel (آ§5).
  *
- * Lifecycle: Dart → platform channel (MainActivity) → startService/stopService
- * → onStartCommand → Builder → establish() fd → engine.start().
+ * Lifecycle: Dart â†’ platform channel (MainActivity) â†’ startService/stopService
+ * â†’ onStartCommand â†’ Builder â†’ establish() fd â†’ engine.start().
  * Restart handling: START_STICKY + onRevoke cleanup. A second start while an
  * engine session is active is rejected (no multiple simultaneous engines).
  */
@@ -43,16 +44,16 @@ class AtlanhixVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            Action.STOP -> {
+            ACTION_STOP -> {
                 shutdown()
                 return START_NOT_STICKY
             }
-            Action.START -> {
-                // Foreground first — Android requires it before long work.
+            ACTION_START -> {
+                // Foreground first â€” Android requires it before long work.
                 startForeground(NOTIFY_ID, buildNotification())
                 val s = state
                 if (s != State.IDLE && s != State.STOPPED && s != State.FAILED) {
-                    setState(State.FAILED, "start while $s — session already active")
+                    setState(State.FAILED, "start while $s â€” session already active")
                     return START_STICKY
                 }
                 setState(State.PREPARING)
@@ -90,7 +91,7 @@ class AtlanhixVpnService : VpnService() {
             if (inet6.isNotEmpty()) {
                 b.addAddress(inet6, config.optInt("inet6Prefix", 126))
             }
-            // §7: DNS resolves through the tunnel — the resolver list comes
+            // آ§7: DNS resolves through the tunnel â€” the resolver list comes
             // from the generated sing-box DNS config, never plaintext outside.
             val dns = config.optJSONArray("dns") ?: org.json.JSONArray()
             for (i in 0 until dns.length()) {
@@ -106,7 +107,7 @@ class AtlanhixVpnService : VpnService() {
 
             val fd = b.establish()
             if (fd == null) {
-                setState(State.FAILED, "establish() returned null — VPN permission revoked?")
+                setState(State.FAILED, "establish() returned null â€” VPN permission revoked?")
                 shutdownTunnelOnly()
                 return
             }
@@ -115,14 +116,14 @@ class AtlanhixVpnService : VpnService() {
             val eng = engine ?: UnavailableEngine()
             engine = eng
             eng.start(config.toString(), fd.fd, engineEvents)
-            // State advances ONLY via engineEvents + Dart-side probe (§5).
+            // State advances ONLY via engineEvents + Dart-side probe (آ§5).
         } catch (e: Exception) {
             setState(State.FAILED, "tun setup failed: ${e.message}")
             shutdownTunnelOnly()
         }
     }
 
-    /** §6 per-app routing: include-list wins over exclude-list. */
+    /** آ§6 per-app routing: include-list wins over exclude-list. */
     private fun applyPerAppRouting(b: Builder, config: JSONObject) {
         val include = config.optJSONArray("includeApps")
         if (include != null && include.length() > 0) {
@@ -137,7 +138,7 @@ class AtlanhixVpnService : VpnService() {
                     b.addDisallowedApplication(exclude.getString(i))
                 } catch (e: PackageManager.NameNotFoundException) {
                     // Unknown package: skipped (documented limitation,
-                    // docs/ANDROID_VPN.md §per-app).
+                    // docs/ANDROID_VPN.md آ§per-app).
                 }
             }
         }
@@ -188,7 +189,7 @@ class AtlanhixVpnService : VpnService() {
     }
 
     override fun onRevoke() {
-        // User disabled the VPN in system settings — clean up, go failed.
+        // User disabled the VPN in system settings â€” clean up, go failed.
         setState(State.FAILED, "revoked by system")
         shutdownTunnelOnly()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -230,18 +231,18 @@ class AtlanhixVpnService : VpnService() {
         val text = when (state) {
             State.IDLE, State.STOPPED -> "Stopped"
             State.REQUESTING_PERMISSION -> "Waiting for VPN permission"
-            State.PREPARING -> "Preparing…"
-            State.STARTING -> "Starting engine…"
-            State.VALIDATING -> "Validating tunnel…"
+            State.PREPARING -> "Preparingâ€¦"
+            State.STARTING -> "Starting engineâ€¦"
+            State.VALIDATING -> "Validating tunnelâ€¦"
             State.CONNECTED -> "Connected"
-            State.RECONNECTING -> "Reconnecting…"
-            State.STOPPING -> "Stopping…"
+            State.RECONNECTING -> "Reconnectingâ€¦"
+            State.STOPPING -> "Stoppingâ€¦"
             State.FAILED -> "Failed: ${stateDetail ?: "unknown"}"
         }
         return builder
             .setContentTitle("Atlanhix")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_vpn_ic)
+            .setSmallIcon(R.drawable.ic_vpn_status)
             .setContentIntent(pi)
             .setOngoing(state != State.STOPPED)
             .build()
@@ -255,17 +256,17 @@ class AtlanhixVpnService : VpnService() {
     companion object {
         const val CHANNEL_ID = "atlanhix_vpn"
         const val NOTIFY_ID = 0x4154 // 'AT'
+        // v0.4: flat constants â€” a nested object inside companion does not
+        // resolve cross-file (`AtlanhixVpnService.Action` was unresolved).
+        const val ACTION_START = "com.example.nexus.vpn.START"
+        const val ACTION_STOP = "com.example.nexus.vpn.STOP"
 
-        // Static mirror — the platform channel answers from the UI process
+        // Static mirror â€” the platform channel answers from the UI process
         // without binding the service first. Config is stashed by the
         // channel right before startService() (same process).
         @Volatile var state: State = State.IDLE
         @Volatile var stateDetail: String? = null
         @Volatile var pendingConfig: JSONObject? = null
-
-        object Action {
-            const val START = "com.example.nexus.vpn.START"
-            const val STOP = "com.example.nexus.vpn.STOP"
-        }
     }
 }
+

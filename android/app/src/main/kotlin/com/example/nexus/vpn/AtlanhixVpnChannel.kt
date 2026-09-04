@@ -1,4 +1,4 @@
-package com.example.nexus.vpn
+﻿package com.example.nexus.vpn
 
 import android.app.Activity
 import android.content.Intent
@@ -6,13 +6,13 @@ import android.net.VpnService
 import org.json.JSONObject
 
 /**
- * Platform-channel contract for the Atlanhix Android VPN runtime (§3–§5).
+ * Platform-channel contract for the Atlanhix Android VPN runtime (آ§3â€“آ§5).
  *
  * Channel: `dev.atlanhix/vpn`
- *   prepare            → {granted: Bool, needsUserConsent: Bool}
- *   start(configJson)  → {ok: Bool}
- *   stop()             → {ok: Bool}
- *   state()            → {state: String, detail: String?}
+ *   prepare            â†’ {granted: Bool, needsUserConsent: Bool}
+ *   start(configJson)  â†’ {ok: Bool}
+ *   stop()             â†’ {ok: Bool}
+ *   state()            â†’ {state: String, detail: String?}
  *
  * Permission flow: `prepare()` runs [VpnService.prepare]; when user consent
  * is required the intent is launched with [RC_VPN] and the outcome is
@@ -33,7 +33,7 @@ class AtlanhixVpnChannel(private val activity: Activity) {
         else -> JSONObject().put("error", "unknown method: $method")
     }
 
-    private fun prepare(): JSONObject {
+    fun prepare(): JSONObject {
         val intent: Intent? = VpnService.prepare(activity)
         return if (intent == null) {
             JSONObject().put("granted", true)
@@ -57,14 +57,14 @@ class AtlanhixVpnChannel(private val activity: Activity) {
     private fun start(config: JSONObject): JSONObject {
         AtlanhixVpnService.pendingConfig = config
         val intent = Intent(activity, AtlanhixVpnService::class.java)
-            .setAction(AtlanhixVpnService.Action.START)
+            .setAction(AtlanhixVpnService.ACTION_START)
         activity.startForegroundService(intent)
         return JSONObject().put("ok", true)
     }
 
     private fun stop(): JSONObject {
         val intent = Intent(activity, AtlanhixVpnService::class.java)
-            .setAction(AtlanhixVpnService.Action.STOP)
+            .setAction(AtlanhixVpnService.ACTION_STOP)
         activity.startService(intent)
         return JSONObject().put("ok", true)
     }
@@ -76,3 +76,4 @@ class AtlanhixVpnChannel(private val activity: Activity) {
         const val CHANNEL = "dev.atlanhix/vpn"
     }
 }
+
