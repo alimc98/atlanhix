@@ -1,0 +1,14 @@
+org.gradle.jvmargs=-Xmx8G -XX:MaxMetaspaceSize=4G -XX:ReservedCodeCacheSize=512m -XX:+HeapDumpOnOutOfMemoryError
+android.useAndroidX=true
+# This newDsl flag was added by the Flutter template
+android.newDsl=false
+# This builtInKotlin flag was added by the Flutter template
+android.builtInKotlin=false
+# v0.4: Android Studio's bundled JBR (JDK 25). The system PATH java is 1.8,
+# which Gradle 9.3 rejects — pin the daemon JVM explicitly.
+org.gradle.java.home=C:/Program Files/Android/Android Studio/jbr
+# v0.4: dl.google.com 404s the AGP lint-toolchain jars on this network and its
+# detached configurations ignore mirror overrides. All dependencies are already
+# in the local modules cache (sha1-verified) — run fully offline so resolution
+# never touches the flaky host. Remove this line to re-enable downloads.
+org.gradle.offline=true

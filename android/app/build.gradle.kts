@@ -4,6 +4,13 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// v0.4.1: the REAL sing-box engine — libbox compiled from sing-box v1.14.0
+// source with gomobile (arm64-v8a). Bundled as a local AAR; see
+// docs/android/v0.4.1-routing.md for the reproducible build recipe.
+dependencies {
+    implementation(files("libs/libbox.aar"))
+}
+
 android {
     namespace = "com.example.nexus"
     compileSdk = flutter.compileSdkVersion

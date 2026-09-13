@@ -37,9 +37,20 @@ class SingBoxConfigGenerator {
 
   /// The resolver referenced by `route.default_domain_resolver`
   /// (required since sing-box 1.12).
+  ///
+  /// DEVICE EVIDENCE (Mi 9T, MCI, 2026-09-13): the carrier `local` resolver
+  /// poison-answerS blocked node domains — `us.hixyz.ir` and even
+  /// graph.facebook.com resolved to a sinkhole (10.10.34.36) while the real
+  /// address is 192.227.211.124. Outbound bootstrap through `local` then
+  /// dials the sinkhole and dies with `tls: Connection terminated during
+  /// handshake`. So automatic/fakeip bootstrap through the clean `remote`
+  /// resolver (1.1.1.1), which the config always carries or auto-adds.
+  /// Explicit user DNS choices (custom/doh/dot) and a deliberate
+  /// DnsMode.system are honored as selected.
   static Map<String, String> defaultResolver(DnsSettings dns) => {
         'server': switch (dns.mode) {
-          DnsMode.system || DnsMode.automatic || DnsMode.fakeip => 'local',
+          DnsMode.automatic || DnsMode.fakeip => 'remote',
+          DnsMode.system => 'local',
           DnsMode.custom => 'custom',
           DnsMode.doh => 'doh',
           DnsMode.dot => 'dot',

@@ -423,7 +423,7 @@ class SystemDnsTransport : LocalDNSTransport {
 private class DnsAddrCallback(
     private val onAns: (List<java.net.InetAddress>, Int) -> Unit,
     private val onErr: (Exception) -> Unit,
-) : android.net.DnsResolver.Callback<java.net.InetAddress> {
+) : android.net.DnsResolver.Callback<MutableList<java.net.InetAddress>> {
     override fun onAnswer(res: MutableList<java.net.InetAddress>, rcode: Int) = onAns(res, rcode)
     override fun onError(e: android.net.DnsResolver.DnsException) = onErr(e)
 }
