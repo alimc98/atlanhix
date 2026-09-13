@@ -205,7 +205,11 @@ class _AppsRoutingScreenState extends State<AppsRoutingScreen> {
                         },
                       ),
           ),
-          const IranianAppsPresetBar(),
+          IranianAppsPresetBar(
+            routingRepo: widget.routingRepo,
+            routing: widget.routing,
+            onChanged: widget.onChanged,
+          ),
         ],
       ),
     );
@@ -236,7 +240,16 @@ class _ModeBanner extends StatelessWidget {
 /// §14 — Iranian apps preset: seeds suggestions into Direct Apps (data, not
 /// hardcode; per-app enable/disable remains the user's).
 class IranianAppsPresetBar extends StatelessWidget {
-  const IranianAppsPresetBar({super.key});
+  const IranianAppsPresetBar({
+    super.key,
+    required this.routingRepo,
+    required this.routing,
+    required this.onChanged,
+  });
+
+  final RoutingSettingsRepository routingRepo;
+  final RoutingSettings routing;
+  final VoidCallback onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -256,13 +269,43 @@ class IranianAppsPresetBar extends StatelessWidget {
               spacing: 8,
               children: [
                 FilledButton.tonal(
-                  onPressed: () {
-                    showModalBottomSheet<void>(
+                  onPressed: () async {
+                    final picked = await showModalBottomSheet<List<String>>(
                       context: context,
-                      builder: (_) => const _PresetSheet(),
+                      isScrollControlled: true,
+                      builder: (_) => SizedBox(
+                        height: MediaQuery.of(context).size.height * 0.7,
+                        child: const _PresetSheet(),
+                      ),
                     );
+                    if (picked == null || picked.isEmpty) return;
+                    // Explicit user action — merge into Direct Apps (no
+                    // duplicates). Routing itself stays opt-in (enabled).
+                    for (final pkg in picked) {
+                      if (!routing.directApps.contains(pkg)) {
+                        routing.directApps.add(pkg);
+                      }
+                    }
+                    await routingRepo.save(routing);
+                    onChanged();
                   },
                   child: const Text('Review preset'),
+                ),
+                OutlinedButton.icon(
+                  // The DOMAIN side of "Iran rules → DIRECT": user picks it,
+                  // never pre-set. Adding *.ir routes all Iranian domains
+                  // direct once routing is enabled.
+                  icon: const Icon(Icons.public),
+                  label: Text(routing.directDomains.any((d) => d == '.ir')
+                      ? '.ir → DIRECT (added)'
+                      : '.ir domains → DIRECT'),
+                  onPressed: routing.directDomains.any((d) => d == '.ir')
+                      ? null
+                      : () async {
+                          routing.directDomains.add('.ir');
+                          await routingRepo.save(routing);
+                          onChanged();
+                        },
                 ),
               ],
             ),
@@ -273,21 +316,76 @@ class IranianAppsPresetBar extends StatelessWidget {
   }
 }
 
-class _PresetSheet extends StatelessWidget {
+/// Review-and-pick sheet for the Iranian apps preset. NOTHING is applied
+/// until the user taps "Add selected (DIRECT)" — per the "no pre-defined
+/// roles" rule: the preset is a suggestion, never a pre-set.
+class _PresetSheet extends StatefulWidget {
   const _PresetSheet();
 
   @override
-  Widget build(BuildContext context) => const SizedBox(
-        height: 500,
-        child: Padding(
-          padding: EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Preset packages (editable list, shipped as data)'),
-              Expanded(child: Center(child: Text('See docs/android/v0.4.1-routing.md'))),
-            ],
+  State<_PresetSheet> createState() => _PresetSheetState();
+}
+
+class _PresetSheetState extends State<_PresetSheet> {
+  final Set<String> _picked = {};
+
+  @override
+  Widget build(BuildContext context) {
+    final apps = IranianAppsPreset.packageIds;
+    return SafeArea(
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              'Iranian apps preset — ${apps.length} packages\n'
+              'Selected: ${_picked.length}. Nothing changes until you tap Add.',
+              style: Theme.of(context).textTheme.titleSmall,
+              textAlign: TextAlign.center,
+            ),
           ),
-        ),
-      );
+          Expanded(
+            child: ListView.builder(
+              itemCount: apps.length,
+              itemBuilder: (context, i) {
+                final pkg = apps[i];
+                return CheckboxListTile(
+                  dense: true,
+                  value: _picked.contains(pkg),
+                  title: Text(pkg, style: const TextStyle(fontSize: 13)),
+                  onChanged: (v) => setState(() {
+                    v == true ? _picked.add(pkg) : _picked.remove(pkg);
+                  }),
+                );
+              },
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                TextButton(
+                  onPressed: () => setState(() {
+                    _picked
+                      ..clear()
+                      ..addAll(apps);
+                  }),
+                  child: const Text('Select all'),
+                ),
+                const Spacer(),
+                FilledButton(
+                  onPressed: _picked.isEmpty
+                      ? null
+                      : () {
+                          Navigator.of(context).pop(_picked.toList());
+                        },
+                  child: Text('Add ${_picked.length} as DIRECT'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

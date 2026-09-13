@@ -116,7 +116,11 @@ class OutboundBuilders {
 
   Map<String, dynamic> _sbBase(
       ProxyProfile p, String type, String tag, String? detourTag) {
-    final tls = p.security != Security.none ? _sbTls(p) : null;
+    // QUIC outbounds carry their own TLS 1.3 — uTLS would be rejected
+    // ("unsupported usage for uTLS", measured on device 2026-09-13).
+    final quic = type == 'hysteria' || type == 'hysteria2' || type == 'tuic';
+    final tls =
+        p.security != Security.none ? _sbTls(p, quic: quic) : null;
     return {
       'type': type,
       'tag': tag,
@@ -128,14 +132,19 @@ class OutboundBuilders {
     };
   }
 
-  Map<String, dynamic>? _sbTls(ProxyProfile p) {
+  Map<String, dynamic>? _sbTls(ProxyProfile p, {bool quic = false}) {
     if (p.security == Security.none) return null;
     return {
       'enabled': true,
       'server_name': p.sni ?? p.host,
       'insecure': p.allowInsecure,
       if (p.alpn.isNotEmpty) 'alpn': p.alpn,
-      if (p.fingerprint != null)
+      // uTLS is a TCP-TLS stack feature: sing-box rejects it on QUIC
+      // outbounds (hysteria / hysteria2 / tuic) with
+      // "unsupported usage for uTLS" — measured on device 2026-09-13
+      // (ro.hixyz.ir hysteria2 node). QUIC has its own TLS 1.3 inside the
+      // transport; the imported `fp=` hint is not applicable there.
+      if (p.fingerprint != null && !quic)
         'utls': {'enabled': true, 'fingerprint': p.fingerprint},
       if (p.security == Security.reality)
         'reality': {

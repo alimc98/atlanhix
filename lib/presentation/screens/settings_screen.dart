@@ -6,6 +6,7 @@ import '../../diagnostics/diagnostics_service.dart';
 import '../../localization/generated/app_localizations.dart';
 import '../../settings/app_settings.dart';
 import '../../theme/theme.dart';
+import 'dns_scan_screen.dart';
 import 'routing_editor_screen.dart';
 
 /// v0.4.1 §7 — the REAL Settings screen. Every control reads and writes the
@@ -122,6 +123,46 @@ class SettingsScreen extends StatelessWidget {
               ],
               onChanged: (m) => _save(s..dnsMode = m!),
             ),
+          ),
+          // v0.4.1 § user request: manual remote + domestic DNS entry,
+          // plus a real scanner that probes candidates from THIS network.
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: TextFormField(
+              key: ValueKey('rdns-${s.remoteDns}'),
+              initialValue: s.remoteDns,
+              decoration: const InputDecoration(
+                labelText: 'Remote DNS (manual)',
+                hintText: '1.1.1.1 · tls://dns.google · https://…/dns-query',
+              ),
+              onFieldSubmitted: (v) => _save(s..remoteDns = v.trim()),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: TextFormField(
+              key: ValueKey('ddns-${s.domesticDns}'),
+              initialValue: s.domesticDns,
+              decoration: const InputDecoration(
+                labelText: 'Domestic DNS (for .ir names)',
+                hintText: '178.22.122.100 (Shecan)',
+              ),
+              onFieldSubmitted: (v) => _save(s..domesticDns = v.trim()),
+            ),
+          ),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.search),
+            title: const Text('Scan DNS resolvers'),
+            subtitle: const Text(
+                'Probe built-in + custom resolvers from this network'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
+              builder: (_) => DnsScanScreen(
+                settings: s,
+                onSave: _save,
+              ),
+            )),
           ),
           if (s.dnsMode == DnsModeUi.custom)
             Padding(

@@ -469,6 +469,10 @@ void main() {
     }
     // ignore: avoid_print
     print('METRIC leak test: ${allPids.length} cycles, 0 leaked');
-  });
+  },
+  // 20 full engine start/stop cycles measured ~25s on a clean machine —
+  // right on the 30s default timeout, so it flaked under parallel load.
+  // Explicit headroom; the leak assertions themselves are unchanged.
+  timeout: const Timeout(Duration(minutes: 3)));
 }
 

@@ -163,10 +163,16 @@ class _AppShellState extends State<AppShell> {
       bottomNavigationBar: wide
           ? null
           : NavigationBar(
-              selectedIndex: _index.clamp(0, 4),
+              selectedIndex: _index.clamp(0, labels.length - 1),
               onDestinationSelected: (i) => setState(() => _index = i),
+              height: 64,
+              labelBehavior:
+                  NavigationDestinationLabelBehavior.alwaysShow,
               destinations: [
-                for (var i = 0; i < 5; i++)
+                // v0.4.1 § user request: the mobile bar must expose ALL
+                // sections — Settings (with the DNS tools) was desktop-only
+                // before this, which read as "the app has no settings".
+                for (var i = 0; i < labels.length; i++)
                   NavigationDestination(
                     icon: Icon(_icons[i].$1),
                     selectedIcon: Icon(_icons[i].$2),

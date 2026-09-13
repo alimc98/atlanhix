@@ -28,26 +28,44 @@ class RuntimeConfigBridge {
 
   /// DNS settings consumed by RoutingCompiler.singBoxDns (§21/§22).
   /// UI modes map onto the engine-level DnsSettings:
-  ///   auto    → automatic (local + remote https)
+  ///   auto    → automatic (clean domestic UDP by default, manual overrides
+  ///             honored via remoteDns / domesticDns)
   ///   system  → system resolvers only
-  ///   remote  → encrypted resolver through the tunnel (1.1.1.1 DoH)
+  ///   remote  → encrypted resolver through the tunnel (user pick, else DoH)
   ///   custom  → user-supplied plaintext servers (udp)
   DnsSettings dnsSettings() {
+    final remote = settings.remoteDns.trim();
+    final domestic = settings.domesticDns.trim();
     switch (settings.dnsMode) {
       case DnsModeUi.auto:
-        return DnsSettings(mode: DnsMode.automatic);
+        return DnsSettings(
+          mode: DnsMode.automatic,
+          remoteOverride: remote.isEmpty ? null : remote,
+          domesticOverride: domestic.isEmpty ? null : domestic,
+        );
       case DnsModeUi.system:
         return DnsSettings(mode: DnsMode.system);
       case DnsModeUi.remote:
-        return DnsSettings(mode: DnsMode.doh, dohUrl: 'https://cloudflare-dns.com/dns-query');
+        // A manually entered remote DNS wins over the built-in DoH default.
+        if (remote.isNotEmpty &&
+            (remote.startsWith('https://') || remote.startsWith('tls://'))) {
+          return remote.startsWith('https://')
+              ? DnsSettings(mode: DnsMode.doh, dohUrl: remote)
+              : DnsSettings(
+                  mode: DnsMode.dot, dotHost: remote.substring(6).trim());
+        }
+        return DnsSettings(
+            mode: DnsMode.doh,
+            dohUrl: 'https://cloudflare-dns.com/dns-query');
       case DnsModeUi.custom:
         final primary = settings.dnsServers.isNotEmpty
             ? settings.dnsServers.first
-            : '1.1.1.1';
+            : (remote.isNotEmpty ? remote : '178.22.122.100');
         final secondary = settings.dnsServers.length > 1
             ? settings.dnsServers[1]
             : null;
-        return DnsSettings(mode: DnsMode.custom, primary: primary, secondary: secondary);
+        return DnsSettings(
+            mode: DnsMode.custom, primary: primary, secondary: secondary);
     }
   }
 
@@ -59,12 +77,17 @@ class RuntimeConfigBridge {
         .toList();
     switch (settings.dnsMode) {
       case DnsModeUi.auto:
+        // Domestic clean UDP resolvers measured reachable from IR mobile
+        // data (2026-09-13, Mi 9T/MCI); 1.1.1.1/8.8.8.8 are blocked there,
+        // and a TUN whose DNS servers are unreachable starves every system
+        // lookup (including our Kotlin DnsResolver path) into timeouts.
+        return const ['178.22.122.100', '185.55.226.26'];
       case DnsModeUi.system:
         return const ['1.1.1.1', '8.8.8.8'];
       case DnsModeUi.remote:
         return const ['1.1.1.1'];
       case DnsModeUi.custom:
-        return custom.isNotEmpty ? custom : const ['1.1.1.1'];
+        return custom.isNotEmpty ? custom : const ['178.22.122.100'];
     }
   }
 

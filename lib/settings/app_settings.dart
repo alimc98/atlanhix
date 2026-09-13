@@ -24,6 +24,8 @@ class AppSettings {
     // ---- VPN (§7 VPN) ----
     this.dnsMode = DnsModeUi.auto,
     this.dnsServers = const [],
+    this.remoteDns = '',
+    this.domesticDns = '',
     this.ipv6 = IpV6Mode.off,
     this.mtu = 0, // 0 = AUTO
     this.autoReconnect = true,
@@ -52,6 +54,15 @@ class AppSettings {
   // VPN
   DnsModeUi dnsMode;
   List<String> dnsServers; // custom servers when dnsMode == custom
+
+  /// v0.4.1 § user request: manual DNS entry.
+  /// [remoteDns] — the "outside" resolver the tunnel should trust for
+  /// blocked/global names: a plain UDP IP (1.1.1.1), a DoT host
+  /// (dns.google) or a DoH URL (https://…/dns-query). [domesticDns] — the
+  /// resolver used for bootstrap/inside names (e.g. Shecan). Both feed the
+  /// AUTO mode when set; empty means the app's measured defaults.
+  String remoteDns;
+  String domesticDns;
   IpV6Mode ipv6;
   int mtu;
   bool autoReconnect;
@@ -87,6 +98,8 @@ class AppSettings {
         'theme': theme,
         'dnsMode': dnsMode.name,
         'dnsServers': dnsServers,
+        'remoteDns': remoteDns,
+        'domesticDns': domesticDns,
         'ipv6': ipv6.name,
         'mtu': mtu,
         'autoReconnect': autoReconnect,
@@ -112,6 +125,8 @@ class AppSettings {
             orElse: () => DnsModeUi.auto),
         dnsServers:
             (j['dnsServers'] as List?)?.cast<String>() ?? const [],
+        remoteDns: j['remoteDns'] as String? ?? '',
+        domesticDns: j['domesticDns'] as String? ?? '',
         ipv6: IpV6Mode.values
             .firstWhere((e) => e.name == j['ipv6'], orElse: () => IpV6Mode.off),
         mtu: j['mtu'] as int? ?? 0,

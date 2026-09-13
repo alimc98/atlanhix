@@ -98,6 +98,8 @@ class DnsSettings {
     this.secondary,
     this.dohUrl,
     this.dotHost,
+    this.remoteOverride,
+    this.domesticOverride,
   });
 
   final DnsMode mode;
@@ -106,12 +108,21 @@ class DnsSettings {
   final String? dohUrl; // https://dns.google/dns-query
   final String? dotHost; // dns.google (DoT via tls://)
 
+  /// v0.4.1 manual DNS entry (user request). Scheme-aware strings:
+  /// `1.2.3.4`, `1.2.3.4:5300`, `https://host/path` (DoH), `tls://host`
+  /// (DoT :853). [remoteOverride] replaces the "outside/clean" resolver;
+  /// [domesticOverride] adds a second resolver that serves `.ir` names.
+  final String? remoteOverride;
+  final String? domesticOverride;
+
   Map<String, dynamic> toJson() => {
         'mode': mode.name,
         'primary': primary,
         'secondary': secondary,
         'dohUrl': dohUrl,
         'dotHost': dotHost,
+        'remoteOverride': remoteOverride,
+        'domesticOverride': domesticOverride,
       };
 
   static DnsSettings fromJson(Map<String, dynamic> j) => DnsSettings(
@@ -121,5 +132,7 @@ class DnsSettings {
         secondary: j['secondary'] as String?,
         dohUrl: j['dohUrl'] as String?,
         dotHost: j['dotHost'] as String?,
+        remoteOverride: j['remoteOverride'] as String?,
+        domesticOverride: j['domesticOverride'] as String?,
       );
 }

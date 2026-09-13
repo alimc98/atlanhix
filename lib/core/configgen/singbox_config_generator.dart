@@ -141,7 +141,13 @@ class SingBoxConfigGenerator {
     final servers = dnsObj['servers'] as List;
     final resolverTag = SingBoxConfigGenerator.defaultResolver(dns)['server']!;
     if (!servers.any((s) => s['tag'] == resolverTag)) {
-      servers.add({'tag': resolverTag, 'type': 'udp', 'server': '1.1.1.1'});
+      // Domestic clean UDP resolver: 1.1.1.1 is unreachable from IR mobile
+      // data (measured on Mi 9T / MCI 2026-09-13).
+      servers.add({
+        'tag': resolverTag,
+        'type': 'udp',
+        'server': '178.22.122.100',
+      });
     }
 
     return {

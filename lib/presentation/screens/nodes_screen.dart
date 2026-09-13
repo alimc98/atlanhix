@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../application/dependencies.dart';
 import '../../core/android_node_support.dart';
 import '../../core/logger.dart';
+import '../../core/node_core_choice.dart';
 import '../../domain/entities/health.dart';
 import '../../domain/entities/proxy_profile.dart';
 import '../../domain/errors/app_error.dart';
@@ -145,6 +146,7 @@ class _NodesScreenState extends State<NodesScreen> {
                       selected: _selectedId == p.id,
                       isAndroid: Platform.isAndroid,
                       onConnect: () => _onNodeTap(context, p),
+                      onCoreTap: () => _showCorePicker(context, p),
                     );
                   },
                 ),
@@ -231,6 +233,84 @@ class _NodesScreenState extends State<NodesScreen> {
       await widget.deps.connection.switchTo(p);
     } on AppError catch (e) {
       Logger.instance.error('node-tap', e.userMessage);
+    }
+  }
+
+  /// v0.4.1 per-node core picker: Auto (default) / sing-box / Xray.
+  /// Persisted via [ProxyProfile.userPinnedCore] so it survives restarts and
+  /// drives CoreDetector.resolve() on every connect. Xray on Android is
+  /// selectable but honest: it explains the platform limit (no exec() of
+  /// downloaded binaries on Android ≥10; no mobile export in Xray) and
+  /// connects will fail fast with CORE_NOT_RUNNABLE_ON_ANDROID rather than
+  /// silently swapping cores.
+  Future<void> _showCorePicker(BuildContext context, ProxyProfile p) async {
+    final onAndroid = Platform.isAndroid;
+    final xrayWarn = NodeCoreChoice.xrayWarning(p, onAndroid: onAndroid);
+    final picked = await showModalBottomSheet<CoreKind>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(p.name,
+                  style: Theme.of(ctx).textTheme.titleMedium),
+            ),
+            ListTile(
+              leading: Icon(p.userPinnedCore == null ||
+                      p.userPinnedCore == CoreKind.unknown
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked),
+              title: const Text('Auto (recommended)'),
+              subtitle: const Text(
+                  'Detect the best engine for this node automatically'),
+              onTap: () => Navigator.pop(ctx, CoreKind.unknown),
+            ),
+            ListTile(
+              leading: Icon(p.userPinnedCore == CoreKind.singbox
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked),
+              title: const Text('sing-box'),
+              subtitle: Text(onAndroid
+                  ? 'The on-device engine — runs this node in-app'
+                  : 'Force the sing-box core'),
+              onTap: () => Navigator.pop(ctx, CoreKind.singbox),
+            ),
+            ListTile(
+              enabled: xrayWarn == null || !onAndroid,
+              leading: Icon(p.userPinnedCore == CoreKind.xray
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked),
+              title: const Text('Xray'),
+              subtitle: Text(xrayWarn ??
+                  (onAndroid
+                      ? 'Runs this node through the Xray core'
+                      : 'Force the Xray core (separate process)'),
+                  style: xrayWarn != null
+                      ? TextStyle(
+                          color: Theme.of(ctx).colorScheme.error,
+                          fontSize: 12)
+                      : null),
+              onTap: xrayWarn != null && onAndroid
+                  ? null
+                  : () => Navigator.pop(ctx, CoreKind.xray),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    final updated = p.copyWith(userPinnedCore: picked);
+    await widget.deps.profiles.update(updated);
+    setState(() {});
+    if (context.mounted) {
+      final label = NodeCoreChoice.labelFor(updated, onAndroid: onAndroid);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('${p.name}: core set to $label'),
+        duration: const Duration(seconds: 2),
+      ));
     }
   }
 
@@ -330,6 +410,7 @@ class _NodeTile extends StatelessWidget {
     required this.profile,
     required this.stats,
     required this.onConnect,
+    required this.onCoreTap,
     this.selected = false,
     this.isAndroid = false,
   });
@@ -337,6 +418,9 @@ class _NodeTile extends StatelessWidget {
   final ProxyProfile profile;
   final NodeHealthStats? stats;
   final VoidCallback onConnect;
+  /// v0.4.1: tap on the core badge opens the per-node core picker
+  /// (Auto / sing-box / Xray).
+  final VoidCallback onCoreTap;
   final bool selected;
   final bool isAndroid;
 
@@ -380,9 +464,24 @@ class _NodeTile extends StatelessWidget {
     // explains why instead of attempting a doomed connect.
     final reason = isAndroid ? AndroidNodeSupport.notRunnableReason(profile) : null;
     final runnable = reason == null;
+    // v0.4.1 per-node core: the badge reflects the USER's selection
+    // (auto/sing-box/Xray) when pinned; otherwise the honest platform label.
+    final pinned = profile.userPinnedCore != null &&
+        profile.userPinnedCore != CoreKind.unknown;
     final coreLabel = isAndroid
-        ? AndroidNodeSupport.androidCoreLabel(profile)
-        : profile.effectiveCore.name;
+        ? (pinned
+            ? NodeCoreChoice.labelFor(profile, onAndroid: true)
+            : AndroidNodeSupport.androidCoreLabel(profile))
+        : (pinned
+            ? NodeCoreChoice.labelFor(profile, onAndroid: false)
+            : profile.effectiveCore.name);
+    final badgeText = isAndroid
+        ? (pinned
+            ? NodeCoreChoice.labelFor(profile, onAndroid: true)
+            : AndroidNodeSupport.shortBadge(profile))
+        : (pinned
+            ? NodeCoreChoice.labelFor(profile, onAndroid: false)
+            : profile.effectiveCore.name);
     final tileOpacity = runnable ? 1.0 : 0.55;
 
     return Opacity(
@@ -451,29 +550,33 @@ class _NodeTile extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   Tooltip(
-                    message: reason ?? coreLabel,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: runnable
-                            ? c.info.withValues(alpha: 0.12)
-                            : c.warning.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(999),
-                        border: Border.all(
+                    message: reason ??
+                        'Core: $badgeText — tap to choose (Auto / sing-box / Xray)',
+                    child: InkWell(
+                      onTap: onCoreTap,
+                      borderRadius: BorderRadius.circular(999),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
                           color: runnable
-                              ? c.info.withValues(alpha: 0.4)
-                              : c.warning.withValues(alpha: 0.5),
+                              ? c.info.withValues(alpha: 0.12)
+                              : c.warning.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color: runnable
+                                ? c.info.withValues(alpha: 0.4)
+                                : c.warning.withValues(alpha: 0.5),
+                          ),
                         ),
-                      ),
-                      child: Text(
-                        isAndroid
-                            ? AndroidNodeSupport.shortBadge(profile)
-                            : profile.effectiveCore.name,
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: runnable ? c.info : c.warning,
-                              fontWeight: FontWeight.w600,
-                            ),
+                        child: Text(
+                          badgeText,
+                          style:
+                              Theme.of(context).textTheme.labelSmall?.copyWith(
+                                    color: runnable ? c.info : c.warning,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                        ),
                       ),
                     ),
                   ),
