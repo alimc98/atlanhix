@@ -35,6 +35,13 @@ class MainActivity : FlutterActivity() {
                             result.success(resp.toString())
                         }
                     }
+                    // v0.4.1 §11: installedApps returns a JSONArray under
+                    // "apps"; the generic handler only ships JSONObject, so
+                    // unwrap here and pass the array text directly.
+                    "installedApps" -> result.success(
+                        vpnChannelOrNew().handle(call.method, arg)
+                            .getJSONArray("apps").toString()
+                    )
                     else -> result.success(vpnChannelOrNew().handle(call.method, arg).toString())
                 }
             } catch (e: Exception) {

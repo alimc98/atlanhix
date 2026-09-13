@@ -30,6 +30,12 @@ class AtlanhixVpnChannel(private val activity: Activity) {
                 "detail",
                 AtlanhixVpnService.stateDetail ?: JSONObject.NULL
             )
+            .put(
+                "errorCode",
+                AtlanhixVpnService.errorCode ?: JSONObject.NULL
+            )
+        // v0.4.1 §11 — REAL PackageManager inventory for the app picker.
+        "installedApps" -> JSONObject().put("apps", InstalledAppsSource.list(activity.packageManager))
         else -> JSONObject().put("error", "unknown method: $method")
     }
 
