@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../../domain/entities/proxy_profile.dart';
 
 /// Builds the *outbound* portion of engine configs for a normalized profile.
@@ -134,6 +136,7 @@ class OutboundBuilders {
 
   Map<String, dynamic>? _sbTls(ProxyProfile p, {bool quic = false}) {
     if (p.security == Security.none) return null;
+    final echPem = _echPemFromProfile(p);
     return {
       'enabled': true,
       'server_name': p.sni ?? p.host,
@@ -146,6 +149,16 @@ class OutboundBuilders {
       // transport; the imported `fp=` hint is not applicable there.
       if (p.fingerprint != null && !quic)
         'utls': {'enabled': true, 'fingerprint': p.fingerprint},
+      // ECH (Encrypted ClientHello): subscriptions carry it as the `ech=`
+      // URI param (base64 DER ECHConfigList) or `echBase64` in clash-style
+      // tls objects. sing-box consumes it as a PEM block typed exactly
+      // "ECH CONFIGS" whose DER bytes ARE the full ECHConfigList — verified
+      // against the bundled engine (common/tls/ech.go v1.14.0: pem.Decode +
+      // block.Type != "ECH CONFIGS" -> error; SetECHConfigList(block.Bytes))
+      // and by `sing-box check` on a generated config (2026-09-13). Without
+      // this, ECH-only servers reject the handshake ("Connection terminated
+      // during handshake" — measured on hysteria2 uk/ro nodes, same day).
+      if (echPem != null) 'ech': {'enabled': true, 'config': [echPem]},
       if (p.security == Security.reality)
         'reality': {
           'enabled': true,
@@ -153,6 +166,33 @@ class OutboundBuilders {
           'short_id': p.realityShortId ?? '',
         },
     };
+  }
+
+  /// ECHConfigList (base64 DER) carried by a profile -> the sing-box PEM
+  /// block format. Returns null when absent or unparseable.
+  ///
+  /// Sources, in priority order: `ech` / `echBase64` in the profile's
+  /// preserved raw params (hysteria/vless/trojan URI params, clash-style tls
+  /// object). The block type MUST be "ECH CONFIGS" (sing-box's pem decoder
+  /// rejects any other) and MUST be a single block (it checks `rest` empty).
+  static String? _echPemFromProfile(ProxyProfile p) {
+    final raw = p.rawParams['ech'] ?? p.rawParams['echBase64'];
+    if (raw == null || raw.isEmpty) return null;
+    List<int> der;
+    try {
+      der = base64.decode(raw);
+    } on FormatException {
+      try {
+        der = base64Url.decode(raw);
+      } on FormatException {
+        return null; // never emit a corrupt ECH block
+      }
+    }
+    final b64 = base64.encode(der);
+    final lines = <String>[
+      for (var i = 0; i < b64.length; i += 64) b64.substring(i, i + 64 > b64.length ? b64.length : i + 64)
+    ];
+    return '-----BEGIN ECH CONFIGS-----\n${lines.join('\n')}\n-----END ECH CONFIGS-----';
   }
 
   Map<String, dynamic>? _sbTransport(ProxyProfile p) {
