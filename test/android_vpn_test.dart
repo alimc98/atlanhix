@@ -112,7 +112,8 @@ void main() {
     expect(c.phase, AndroidVpnPhase.failed);
   });
 
-  test('permission denied → failed phase, no start attempted', () async {
+  test('permission denied → permissionDenied phase, no start attempted',
+      () async {
     final c = AndroidVpnController()..permissionPollSeconds = 1;
     var started = false;
     handler = (m, a) {
@@ -129,7 +130,93 @@ void main() {
     expect(ok, isFalse);
     expect(started, isFalse,
         reason: 'start must not be attempted without VPN permission');
-    expect(c.phase, AndroidVpnPhase.failed);
+    expect(c.phase, AndroidVpnPhase.permissionDenied);
+    expect(c.lastErrorCode, VpnErrorCode.permissionDenied);
+  });
+
+  test('explicit denial → immediate permissionDenied, exactly one prepare',
+      () async {
+    final c = AndroidVpnController();
+    var prepareCalls = 0;
+    handler = (m, a) {
+      switch (m) {
+        case 'prepare':
+          prepareCalls++;
+          return {'granted': false};
+      }
+      return {};
+    };
+    final ok = await c.connect(probeTunnel: () async => true);
+    expect(ok, isFalse);
+    expect(c.phase, AndroidVpnPhase.permissionDenied,
+        reason: 'denial is its own state, not generic failed (v0.4.1 §3)');
+    expect(c.lastErrorCode, VpnErrorCode.permissionDenied);
+    expect(prepareCalls, 1,
+        reason: 'NO re-launch loop — one prepare per user action');
+  });
+
+  test('native REVOKED while connected → revoked phase + service stopped',
+      () async {
+    final c = AndroidVpnController()..watcherInterval = const Duration(milliseconds: 50);
+    var stopped = false;
+    var revokedSeen = false;
+    handler = (m, a) {
+      switch (m) {
+        case 'prepare':
+          return {'granted': true};
+        case 'start':
+          return {'ok': true};
+        case 'state':
+          // VALIDATING once (probe gate) → CONNECTED → then REVOKED.
+          if (!revokedSeen && c.phase == AndroidVpnPhase.connected) {
+            revokedSeen = true;
+            return {
+              'state': 'REVOKED',
+              'detail': 'revoked by system',
+              'errorCode': 'VPN_REVOKED'
+            };
+          }
+          if (revokedSeen) return {'state': 'STOPPED'};
+          return {'state': 'VALIDATING', 'detail': ''};
+        case 'stop':
+          stopped = true;
+          return {'ok': true};
+      }
+      return {};
+    };
+    final ok = await c.connect(probeTunnel: () async => true);
+    expect(ok, isTrue);
+    // Watcher ticks every 50ms — wait for it to mirror the revoke.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    expect(c.phase, AndroidVpnPhase.revoked);
+    expect(c.lastErrorCode, VpnErrorCode.revoked);
+    expect(stopped, isTrue,
+        reason: 'revoke must tear the tunnel down, not leave it stale');
+  });
+
+  test('§6 native failure carries structured errorCode into diagnostics',
+      () async {
+    final c = AndroidVpnController();
+    handler = (m, a) {
+      switch (m) {
+        case 'prepare':
+          return {'granted': true};
+        case 'start':
+          return {'ok': true};
+        case 'state':
+          return {
+            'state': 'FAILED',
+            'detail': 'engineUnavailable: no libbox',
+            'errorCode': 'ENGINE_START_FAILED'
+          };
+      }
+      return {};
+    };
+    await c.connect(probeTunnel: () async => true);
+    expect(c.lastErrorCode, 'ENGINE_START_FAILED');
+    final d = await c.diagnostics();
+    expect(d['errorCode'], 'ENGINE_START_FAILED');
+    expect(d['nativeState'], 'FAILED');
   });
 
   test('stop: confirms native STOPPED before declaring stopped', () async {

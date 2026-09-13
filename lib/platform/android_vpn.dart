@@ -1,28 +1,33 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../core/logger.dart';
 
-/// v0.3.0 آ§3â€“آ§7 â€” Android VPN runtime controller.
+/// v0.4.1 (§2-§6) — Android VPN runtime controller.
 ///
-/// Bridge: Dart controller â†’ platform channel (`dev.atlanhix/vpn`) â†’
-/// AtlanhixVpnService â†’ VpnEngine (libbox) â†’ TUN.
+/// Bridge: Dart controller → platform channel (`dev.atlanhix/vpn`) →
+/// AtlanhixVpnService → VpnEngine → TUN.
 ///
-/// The state machine (آ§5) advances ONLY on real events: the native service
+/// The state machine (§5) advances ONLY on real events: the native service
 /// state plus an actual connectivity probe through the tunnel before
 /// `connected`. A start() that merely returns never yields connected=true.
 class AndroidVpnController {
+
+  /// True when running on an Android device (platform channel usable).
+  bool get isAndroid =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
   AndroidVpnController();
 
   static const _channel = MethodChannel('dev.atlanhix/vpn');
 
   /// Full sing-box config JSON for the TUN build (generated Dart-side with
-  /// enableTun=true and handed to the native engine as-is, آ§3/آ§4).
+  /// enableTun=true and handed to the native engine as-is, §3/§4).
   String? configJson;
 
-  /// آ§7 TUN resolver addresses â€” must match the generated sing-box DNS.
+  /// §7 TUN resolver addresses — must match the generated sing-box DNS.
   List<String> dnsServers = ['1.1.1.1', '8.8.8.8'];
 
   /// TUN interface addresses (must match the config's tun inbound).
@@ -32,17 +37,26 @@ class AndroidVpnController {
   int inet6Prefix = 126;
   List<String> routes = ['0.0.0.0/0', '::/0'];
 
-  /// آ§6 per-app routing (persisted by the settings layer).
+  /// §6 per-app routing (persisted by the settings layer).
+  /// [includeApps] = only these packages use the VPN (addAllowedApplication).
+  /// [excludeApps] = these packages bypass the VPN (addDisallowedApplication,
+  /// i.e. Android-level DIRECT). Include wins over exclude native-side.
   List<String> includeApps = [];
   List<String> excludeApps = [];
   int mtu = 9000;
 
   AndroidVpnPhase phase = AndroidVpnPhase.idle;
+
+  /// §6 structured failure classification (stable codes, no stack traces).
+  String? lastErrorCode;
   String? lastDetail;
 
   /// How many seconds to wait for the user consent dialog before giving up.
   /// Reduced in tests to keep the deny path fast.
   int permissionPollSeconds = 60;
+
+  /// How often the connected-state watcher polls the native service.
+  Duration watcherInterval = const Duration(seconds: 2);
 
   final _stateController = StreamController<AndroidVpnPhase>.broadcast();
   Stream<AndroidVpnPhase> get states => _stateController.stream;
@@ -55,12 +69,13 @@ class AndroidVpnController {
       phase == AndroidVpnPhase.reconnecting ||
       phase == AndroidVpnPhase.stopping;
 
-  void _set(AndroidVpnPhase p, {String? detail}) {
+  void _set(AndroidVpnPhase p, {String? detail, String? errorCode}) {
     phase = p;
     if (detail != null) lastDetail = detail;
+    if (errorCode != null) lastErrorCode = errorCode;
     _stateController.add(p);
-    Logger.instance.info(
-        'android-vpn', 'phase=${p.name}${detail != null ? ' ($detail)' : ''}');
+    Logger.instance.info('android-vpn',
+        'phase=${p.name}${detail != null ? ' ($detail)' : ''}${errorCode != null ? ' [$errorCode]' : ''}');
   }
 
   Future<Map<String, dynamic>> _call(String method, [Object? arg]) async {
@@ -68,27 +83,74 @@ class AndroidVpnController {
     return jsonDecode(raw ?? '{}') as Map<String, dynamic>;
   }
 
-  /// Asks Android for the VPN permission. True when already granted or the
-  /// user accepts the consent dialog. REQUESTING_PERMISSION is a real state.
+  /// §4: while the tunnel is up, mirror native lifecycle events (REVOKED,
+  /// FAILED) into the Dart state machine. The VPN belongs to the Android
+  /// service — the UI must follow reality, never assume it.
+  void _startWatcher() {
+    _watcher?.cancel();
+    _watcher = Timer.periodic(watcherInterval, (_) async {
+      try {
+        final s = await _call('state');
+        final native = (s['state'] as String? ?? '').toUpperCase();
+        final code = s['errorCode'] as String?;
+        switch (native) {
+          case 'REVOKED':
+            _set(AndroidVpnPhase.revoked,
+                detail: 'VPN permission revoked by system',
+                errorCode: code ?? VpnErrorCode.revoked);
+            await stop();
+          case 'FAILED':
+            _set(AndroidVpnPhase.failed,
+                detail: s['detail'] as String? ?? 'service reported failure',
+                errorCode: code ?? VpnErrorCode.unknown);
+          default:
+            break;
+        }
+      } catch (_) {
+        // Channel hiccup — next tick retries; never crash the watcher.
+      }
+    });
+  }
+
+  Timer? _watcher;
+
+  /// Asks Android for the VPN permission (v0.4.1 §2/§3).
+  ///
+  /// Real flow: one `prepare()` call. When consent is needed the NATIVE side
+  /// launches the dialog and holds the method reply until the user answers —
+  /// so this future resolves exactly once, with the dialog outcome. Denial
+  /// lands on [AndroidVpnPhase.permissionDenied]; there is NO re-launch loop
+  /// (the pre-0.4.1 poll loop re-opened the dialog on every tick).
   Future<bool> requestPermission() async {
     try {
-      var resp = await _call('prepare');
+      final resp = await _call('prepare');
       if (resp['granted'] == true) {
         _set(AndroidVpnPhase.idle, detail: 'permission granted');
         return true;
       }
-      _set(AndroidVpnPhase.requestingPermission);
-      // The consent dialog was launched native-side; poll prepare() until
-      // the user answers (bounded).
-      for (var i = 0; i < permissionPollSeconds; i++) {
-        await Future<void>.delayed(const Duration(seconds: 1));
-        resp = await _call('prepare');
-        if (resp['granted'] == true) {
-          _set(AndroidVpnPhase.idle, detail: 'permission granted after consent');
-          return true;
+      if (resp['needsUserConsent'] == true) {
+        // Defensive path for native layers that reply immediately and expect
+        // polling. Bounded; each tick only ASKS, never re-launches more than
+        // the platform does for prepare() itself.
+        _set(AndroidVpnPhase.requestingPermission);
+        for (var i = 0; i < permissionPollSeconds; i++) {
+          await Future<void>.delayed(const Duration(seconds: 1));
+          final r2 = await _call('prepare');
+          if (r2['granted'] == true) {
+            _set(AndroidVpnPhase.idle,
+                detail: 'permission granted after consent');
+            return true;
+          }
         }
+        _set(AndroidVpnPhase.permissionDenied,
+            detail: 'user did not grant VPN permission',
+            errorCode: VpnErrorCode.permissionDenied);
+        return false;
       }
-      _set(AndroidVpnPhase.failed, detail: 'permission not granted');
+      // Explicit denial (dialog answered with cancel, or permanently denied).
+      _set(AndroidVpnPhase.permissionDenied,
+          detail: 'VPN permission denied by user',
+          errorCode: VpnErrorCode.permissionDenied);
       return false;
     } on MissingPluginException {
       _set(AndroidVpnPhase.failed,
@@ -100,7 +162,7 @@ class AndroidVpnController {
     }
   }
 
-  /// آ§3 config handoff payload consumed by AtlanhixVpnService.
+  /// §3 config handoff payload consumed by AtlanhixVpnService.
   Map<String, dynamic> buildHandoff() => {
         'mtu': mtu,
         'inet4Address': inet4Address,
@@ -114,9 +176,10 @@ class AndroidVpnController {
         'configJson': configJson ?? '',
       };
 
-  /// Connect flow: permission â†’ handoff â†’ service start â†’ native engine
-  /// reaches VALIDATING (TUN fd established) â†’ REAL probe through the tunnel
-  /// â†’ connected. Every failure path lands on [AndroidVpnPhase.failed].
+  /// Connect flow (§2): permission → handoff → service start → native engine
+  /// reaches VALIDATING (TUN fd established) → REAL probe through the tunnel
+  /// → connected. Every failure path lands on a terminal state with a
+  /// structured §6 error code. CONNECTED is impossible without a real probe.
   Future<bool> connect({
     required Future<bool> Function() probeTunnel,
     Duration startupTimeout = const Duration(seconds: 12),
@@ -134,10 +197,19 @@ class AndroidVpnController {
         final s = await _call('state');
         final native = (s['state'] as String? ?? 'IDLE').toUpperCase();
         final detail = s['detail'] as String?;
+        final code = s['errorCode'] as String?;
         if (detail != null && detail.isNotEmpty) lastDetail = detail;
         switch (native) {
+          case 'REVOKED':
+            _set(AndroidVpnPhase.revoked,
+                detail: detail ?? 'revoked during startup',
+                errorCode: code ?? VpnErrorCode.revoked);
+            await stop();
+            return false;
           case 'FAILED':
-            _set(AndroidVpnPhase.failed, detail: detail ?? 'engine failed');
+            _set(AndroidVpnPhase.failed,
+                detail: detail ?? 'engine failed',
+                errorCode: code ?? VpnErrorCode.engineStartFailed);
             await stop();
             return false;
           case 'VALIDATING':
@@ -146,15 +218,20 @@ class AndroidVpnController {
             final ok = await probeTunnel().timeout(startupTimeout);
             if (ok) {
               _set(AndroidVpnPhase.connected);
+              _startWatcher();
               return true;
             }
-            _set(AndroidVpnPhase.failed, detail: 'connectivity probe failed');
+            _set(AndroidVpnPhase.failed,
+                detail: 'connectivity probe failed',
+                errorCode: VpnErrorCode.healthCheckFailed);
             await stop();
             return false;
         }
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
-      _set(AndroidVpnPhase.failed, detail: 'engine did not reach validating in time');
+      _set(AndroidVpnPhase.failed,
+          detail: 'engine did not reach validating in time',
+          errorCode: VpnErrorCode.engineNotReady);
       await stop();
       return false;
     } catch (e) {
@@ -163,17 +240,18 @@ class AndroidVpnController {
     }
   }
 
-  /// Clean disconnect (آ§3): stop the service and confirm STOPPED natively.
-  /// When [keepFailedPhase] is set (connect-failure paths), the controller
-  /// tears everything down but the phase stays `failed` so UI/diagnostics
-  /// surface the reason instead of a benign `stopped`.
-  bool keepFailedPhase = false;
-
+  /// Clean disconnect (§3): stop the service and confirm STOPPED natively.
+  /// Terminal failure phases (failed/denied/revoked) are preserved so the UI
+  /// surfaces the reason instead of a benign `stopped`.
   Future<void> stop() async {
+    _watcher?.cancel();
+    _watcher = null;
     if (phase == AndroidVpnPhase.idle || phase == AndroidVpnPhase.stopped) {
       return;
     }
-    final wasFailed = phase == AndroidVpnPhase.failed || keepFailedPhase;
+    final wasFailed = phase == AndroidVpnPhase.failed ||
+        phase == AndroidVpnPhase.permissionDenied ||
+        phase == AndroidVpnPhase.revoked;
     if (!wasFailed) _set(AndroidVpnPhase.stopping);
     try {
       await _channel.invokeMethod<String>('stop');
@@ -186,14 +264,13 @@ class AndroidVpnController {
       await Future<void>.delayed(const Duration(milliseconds: 150));
     }
     if (wasFailed) {
-      keepFailedPhase = false;
-      _stateController.add(AndroidVpnPhase.failed);
+      _stateController.add(phase);
     } else {
       _set(AndroidVpnPhase.stopped);
     }
   }
 
-  /// آ§19 diagnostics: real native state + config handoff facts.
+  /// §19 diagnostics: real native state + config handoff facts.
   Future<Map<String, dynamic>> diagnostics() async {
     try {
       final s = await _call('state');
@@ -201,6 +278,7 @@ class AndroidVpnController {
         'platform': 'android',
         'nativeState': s['state'],
         'detail': s['detail'],
+        'errorCode': s['errorCode'],
         'phase': phase.name,
         'mtu': mtu,
         'dns': dnsServers,
@@ -212,12 +290,29 @@ class AndroidVpnController {
     }
   }
 
+  /// §11 — installed applications from the REAL PackageManager (native
+  /// cached inventory; the picker does not rescan per frame).
+  /// Returns [{package, name, system}] — icons are rendered Dart-side.
+  Future<List<Map<String, dynamic>>> installedApps() async {
+    try {
+      final raw = await _channel.invokeMethod<String>('installedApps');
+      final list = jsonDecode(raw ?? '[]') as List;
+      return list.map((e) => (e as Map).cast<String, dynamic>()).toList();
+    } on MissingPluginException {
+      return const [];
+    } catch (e) {
+      Logger.instance.warn('android-vpn', 'installedApps failed: $e');
+      return const [];
+    }
+  }
+
   void dispose() {
+    _watcher?.cancel();
     _stateController.close();
   }
 }
 
-/// Android VPN state machine (آ§5) â€” mirrors AtlanhixVpnService.State.
+/// Android VPN state machine (§5) — mirrors AtlanhixVpnService.State.
 enum AndroidVpnPhase {
   idle,
   requestingPermission,
@@ -229,4 +324,21 @@ enum AndroidVpnPhase {
   stopping,
   stopped,
   failed,
+  permissionDenied,
+  revoked,
+}
+
+/// §6 stable error codes — map 1:1 to AtlanhixVpnService companion constants.
+abstract final class VpnErrorCode {
+  static const permissionDenied = 'VPN_PERMISSION_DENIED';
+  static const tunCreateFailed = 'TUN_CREATE_FAILED';
+  static const engineStartFailed = 'ENGINE_START_FAILED';
+  static const engineNotReady = 'ENGINE_NOT_READY';
+  static const healthCheckFailed = 'HEALTH_CHECK_FAILED';
+  static const revoked = 'VPN_REVOKED';
+  static const serviceStartFailed = 'SERVICE_START_FAILED';
+  static const configInvalid = 'CONFIG_INVALID';
+  static const networkUnavailable = 'NETWORK_UNAVAILABLE';
+  static const coreUnavailable = 'CORE_UNAVAILABLE';
+  static const unknown = 'UNKNOWN';
 }

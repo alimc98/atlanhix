@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
 import '../../application/dependencies.dart';
 import '../../diagnostics/diagnostics_service.dart';
 import '../../localization/generated/app_localizations.dart';
+import '../../settings/app_settings.dart';
 import '../../theme/theme.dart';
+import 'routing_editor_screen.dart';
 
-/// Settings (§37): appearance, language, connection mode, about.
+/// v0.4.1 §7 — the REAL Settings screen. Every control reads and writes the
+/// persistent [AppSettings] model (no hardcoded toggles); each save flows
+/// through the RuntimeConfigBridge so it actually affects runtime behavior.
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
     super.key,
@@ -24,10 +29,50 @@ class SettingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context)!;
     final c = ThemeExt.of(context);
+    final s = deps.appSettings;
+
+    String dnsLabel(DnsModeUi m) => switch (m) {
+          DnsModeUi.auto => 'Auto',
+          DnsModeUi.system => 'System',
+          DnsModeUi.remote => 'Remote (encrypted)',
+          DnsModeUi.custom => 'Custom',
+        };
+    String ipv6Label(IpV6Mode m) => switch (m) {
+          IpV6Mode.auto => 'Auto',
+          IpV6Mode.on => 'On',
+          IpV6Mode.off => 'Off',
+        };
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // ------------------------------------------------------ General
+        _section(context, 'General', [
+          SwitchListTile(
+            title: const Text('Auto connect'),
+            subtitle: const Text('Connect when the app starts'),
+            value: s.autoConnect,
+            onChanged: (v) => _save(s..autoConnect = v),
+          ),
+          SwitchListTile(
+            title: const Text('Start on boot'),
+            subtitle: const Text('Launch Atlanhix after device boot'),
+            value: s.startOnBoot,
+            onChanged: (v) => _save(s..startOnBoot = v),
+          ),
+          SwitchListTile(
+            title: const Text('Keep VPN alive'),
+            subtitle: const Text('Hold the TUN across app backgrounding'),
+            value: s.keepVpnAlive,
+            onChanged: (v) => _save(s..keepVpnAlive = v),
+          ),
+          SwitchListTile(
+            title: const Text('Notifications'),
+            subtitle: const Text('Show connection status notifications'),
+            value: s.showNotifications,
+            onChanged: (v) => _save(s..showNotifications = v),
+          ),
+        ]),
         _section(context, l.appearance, [
           Row(
             children: [
@@ -46,8 +91,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
             ],
           ),
-        ]),
-        _section(context, l.language, [
+          const SizedBox(height: 8),
           Wrap(
             children: [
               for (final loc in const [Locale('en'), Locale('fa')])
@@ -64,23 +108,160 @@ class SettingsScreen extends StatelessWidget {
             ],
           ),
         ]),
-        _section(context, l.connectionMode, [
-          Text(
-            'System proxy · TUN · Managed — see docs/PLATFORM_ARCHITECTURE.md',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: c.textSecondary),
+
+        // ---------------------------------------------------------- VPN
+        _section(context, 'VPN', [
+          ListTile(
+            dense: true,
+            title: const Text('DNS mode'),
+            trailing: DropdownButton<DnsModeUi>(
+              value: s.dnsMode,
+              items: [
+                for (final m in DnsModeUi.values)
+                  DropdownMenuItem(value: m, child: Text(dnsLabel(m))),
+              ],
+              onChanged: (m) => _save(s..dnsMode = m!),
+            ),
+          ),
+          if (s.dnsMode == DnsModeUi.custom)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: TextFormField(
+                initialValue: s.dnsServers.join(', '),
+                decoration: const InputDecoration(
+                  labelText: 'DNS servers (comma separated IPs)',
+                  hintText: '1.1.1.1, 8.8.8.8',
+                ),
+                onFieldSubmitted: (v) {
+                  final ips = v
+                      .split(',')
+                      .map((e) => e.trim())
+                      .where((e) => e.isNotEmpty)
+                      .toList();
+                  _save(s..dnsServers.clear()..dnsServers.addAll(ips));
+                },
+              ),
+            ),
+          ListTile(
+            dense: true,
+            title: const Text('IPv6'),
+            trailing: SegmentedButton<IpV6Mode>(
+              segments: const [
+                ButtonSegment(value: IpV6Mode.auto, label: Text('Auto')),
+                ButtonSegment(value: IpV6Mode.on, label: Text('On')),
+                ButtonSegment(value: IpV6Mode.off, label: Text('Off')),
+              ],
+              selected: {s.ipv6},
+              onSelectionChanged: (sel) => _save(s..ipv6 = sel.first),
+            ),
+          ),
+          ListTile(
+            dense: true,
+            title: const Text('MTU'),
+            subtitle: Text(s.mtu == 0 ? 'Auto (8500)' : '${s.mtu} bytes'),
+            trailing: SizedBox(
+              width: 110,
+              child: TextFormField(
+                key: ValueKey('mtu-${s.mtu}'),
+                initialValue: s.mtu == 0 ? null : s.mtu.toString(),
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(hintText: 'Auto'),
+                onFieldSubmitted: (v) {
+                  final n = int.tryParse(v.trim());
+                  if (v.trim().isEmpty) {
+                    _save(s..mtu = 0);
+                  } else if (n == null || n < 576 || n > 65535) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('MTU must be 576–65535, or empty for Auto')));
+                  } else {
+                    _save(s..mtu = n);
+                  }
+                },
+              ),
+            ),
+          ),
+          SwitchListTile(
+            dense: true,
+            title: const Text('Auto reconnect'),
+            subtitle: const Text('Repair the tunnel after network loss'),
+            value: s.autoReconnect,
+            onChanged: (v) => _save(s..autoReconnect = v),
+          ),
+          ListTile(
+            dense: true,
+            title: const Text('Connection timeout'),
+            subtitle: Text('${s.connectionTimeoutSeconds} s'),
+            trailing: SizedBox(
+              width: 90,
+              child: TextFormField(
+                key: ValueKey('ct-${s.connectionTimeoutSeconds}'),
+                initialValue: s.connectionTimeoutSeconds.toString(),
+                keyboardType: TextInputType.number,
+                onFieldSubmitted: (v) {
+                  final n = int.tryParse(v.trim());
+                  if (n != null && n >= 3 && n <= 120) {
+                    _save(s..connectionTimeoutSeconds = n);
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Timeout must be 3–120 seconds')));
+                  }
+                },
+              ),
+            ),
           ),
         ]),
+
+        // ------------------------------------------------------ Routing
+        _section(context, 'Routing', [
+          ListTile(
+            leading: const Icon(Icons.route),
+            title: Text('Mode: ${_modeLabel()}'),
+            subtitle: const Text('Global or Rule-based routing'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).pushNamed('/routing'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.apps),
+            title: const Text('Application rules'),
+            subtitle: Text(
+                '${deps.routingSettings.directApps.length} direct · '
+                '${deps.routingSettings.proxyApps.length} proxy apps'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).pushNamed('/routing/apps'),
+          ),
+        ]),
+
+        // --------------------------------------------------------- WARP
+        _section(context, 'WARP', [
+          ListTile(
+            leading: const Icon(Icons.shield_outlined),
+            title: Text(s.warpEnabled ? 'Enabled' : 'Disabled'),
+            subtitle: const Text('WARP registration & chaining'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).pushNamed('/warp'),
+          ),
+        ]),
+
+        // -------------------------------------------------- Diagnostics
         _section(context, 'Diagnostics', [
-          Text(
-            'Collects effective core, engine states, real PIDs, ports, DNS, '
-            'readiness, probe result and recent (redacted) logs.',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: c.textSecondary),
+          SwitchListTile(
+            dense: true,
+            title: const Text('Traffic statistics'),
+            value: s.trafficStats,
+            onChanged: (v) => _save(s..trafficStats = v),
+          ),
+          SwitchListTile(
+            dense: true,
+            title: const Text('Connection logs'),
+            value: s.connectionLogs,
+            onChanged: (v) => _save(s..connectionLogs = v),
+          ),
+          SwitchListTile(
+            dense: true,
+            title: const Text('Debug logging'),
+            subtitle: const Text('Verbose engine logs (larger output)'),
+            value: s.debugLogging,
+            onChanged: (v) => _save(s..debugLogging = v),
           ),
           const SizedBox(height: 8),
           FilledButton.tonalIcon(
@@ -90,11 +271,11 @@ class SettingsScreen extends StatelessWidget {
           ),
         ]),
         _section(context, l.about, [
-          Text('Atlanhix 0.3.0'),
+          const Text('Atlanhix 0.4.1'),
           const SizedBox(height: 4),
           Text(
             'Flutter ${const String.fromEnvironment("FLUTTER_VERSION", defaultValue: "3.47")} · '
-            'sing-box / Xray-core adapters · WARP · WireGuard · AmneziaWG · MasterDNSVPN',
+            'sing-box (libbox) engine · WARP · WireGuard · AmneziaWG · MasterDNSVPN',
             style: Theme.of(context)
                 .textTheme
                 .bodySmall
@@ -103,6 +284,17 @@ class SettingsScreen extends StatelessWidget {
         ]),
       ],
     );
+  }
+
+  String _modeLabel() {
+    // OPT-IN: show Off until the user explicitly enables routing.
+    if (!deps.routingSettings.enabled) return 'Off';
+    final mode = deps.routingSettings.mode.name;
+    return mode[0].toUpperCase() + mode.substring(1);
+  }
+
+  Future<void> _save(AppSettings s) async {
+    await deps.appSettingsRepo.save(s);
   }
 
   Widget _section(BuildContext context, String title, List<Widget> children) {

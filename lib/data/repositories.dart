@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import '../domain/entities/subscription.dart';
 import '../domain/entities/proxy_profile.dart';
@@ -122,6 +122,26 @@ class _ListSection<T> {
     _controller.add(items);
   }
 
+  // v0.4 BUGFIX (Android device run, fresh install): upsert/remove used to
+  // mutate the UNMODIFIABLE view returned by `items` â€” every list-repo
+  // mutation threw `Cannot add to an unmodifiable list`. Mutate the backing
+  // `_items` and expose typed operations to the repositories instead.
+  Future<void> upsert(T item) async {
+    final id = idOf(item);
+    final idx = _items.indexWhere((x) => idOf(x) == id);
+    if (idx >= 0) {
+      _items[idx] = item;
+    } else {
+      _items.add(item);
+    }
+    await save();
+  }
+
+  Future<void> removeById(String id) async {
+    _items.removeWhere((x) => idOf(x) == id);
+    await save();
+  }
+
   Future<void> save() async {
     final section = <String, dynamic>{
       for (final i in _items) idOf(i): encode(i),
@@ -148,20 +168,9 @@ class SubscriptionRepository {
 
   Future<void> load() => _section.load();
 
-  Future<void> upsert(Subscription s) async {
-    final idx = _section.items.indexWhere((x) => x.id == s.id);
-    if (idx >= 0) {
-      _section.items[idx] = s;
-    } else {
-      _section.items.add(s);
-    }
-    await _section.save();
-  }
+  Future<void> upsert(Subscription s) => _section.upsert(s);
 
-  Future<void> remove(String id) async {
-    _section.items.removeWhere((s) => s.id == id);
-    await _section.save();
-  }
+  Future<void> remove(String id) => _section.removeById(id);
 
   static Map<String, dynamic> _subToJson(Subscription s) => {
         'id': s.id,
@@ -201,20 +210,9 @@ class ChainRepository {
 
   Future<void> load() => _section.load();
 
-  Future<void> upsert(ProxyChain c) async {
-    final idx = _section.items.indexWhere((x) => x.id == c.id);
-    if (idx >= 0) {
-      _section.items[idx] = c;
-    } else {
-      _section.items.add(c);
-    }
-    await _section.save();
-  }
+  Future<void> upsert(ProxyChain c) => _section.upsert(c);
 
-  Future<void> remove(String id) async {
-    _section.items.removeWhere((c) => c.id == id);
-    await _section.save();
-  }
+  Future<void> remove(String id) => _section.removeById(id);
 }
 
 class RoutingRepository {
@@ -234,18 +232,9 @@ class RoutingRepository {
 
   Future<void> load() => _section.load();
 
-  Future<void> upsert(RoutingProfile p) async {
-    final idx = _section.items.indexWhere((x) => x.id == p.id);
-    if (idx >= 0) {
-      _section.items[idx] = p;
-    } else {
-      _section.items.add(p);
-    }
-    await _section.save();
-  }
+  Future<void> upsert(RoutingProfile p) => _section.upsert(p);
 
-  Future<void> remove(String id) async {
-    _section.items.removeWhere((p) => p.id == id);
-    await _section.save();
-  }
+  Future<void> remove(String id) => _section.removeById(id);
 }
+
+

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../application/connection_controller.dart';
 import '../../application/dependencies.dart';
+import '../../core/android_node_support.dart';
 import '../../domain/entities/health.dart';
 import '../../domain/entities/proxy_profile.dart';
 import '../../localization/generated/app_localizations.dart';
@@ -28,11 +29,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
   DateTime? _connectedAt;
   StreamSubscription? _sub;
   StreamSubscription? _trafficSub;
+  StreamSubscription? _vpnSub;
   final _down = List<double>.filled(60, 0);
   final _up = List<double>.filled(60, 0);
   int? _lastUp; // for speed delta
   int? _lastDown;
   Timer? _clock;
+  // v0.4.1 §5: Android selection is authoritative and can change OUTSIDE the
+  // state machine (tap while disconnected emits no VPN phase), so the
+  // dashboard also listens to explicit selection events and re-reads
+  // selectedNode — the tapped node shows immediately, BEFORE any connect.
+  StreamSubscription? _selectionSub;
+
+  bool get _onAndroid => widget.deps.vpnSession.controller.isAndroid;
 
   @override
   void initState() {
@@ -56,6 +65,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       });
     });
+    // v0.4.1 §5: single authoritative state — on Android the VPN session is
+    // the source of truth; mirror its native phases into the dashboard UI.
+    if (widget.deps.vpnSession.controller.isAndroid) {
+      _vpnSub = widget.deps.vpnSession.states.listen((_) {
+        if (!mounted) return;
+        setState(() {
+          _phase = widget.deps.vpnSession.uiPhase;
+          _active = widget.deps.vpnSession.selectedNode;
+        });
+      });
+      // Selection changed without a phase event (tap while disconnected):
+      // repaint so the tapped node appears the moment it is tapped.
+      _selectionSub = widget.deps.vpnSession.selectionChanged.listen((_) {
+        if (!mounted) return;
+        setState(() {
+          _active = widget.deps.vpnSession.selectedNode;
+        });
+      });
+    }
     _trafficSub = widget.deps.connection.trafficStream.listen((t) {
       if (!mounted) return;
       setState(() {
@@ -82,6 +110,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void dispose() {
     _sub?.cancel();
     _trafficSub?.cancel();
+    _vpnSub?.cancel();
+    _selectionSub?.cancel();
     _clock?.cancel();
     super.dispose();
   }
@@ -105,14 +135,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     final c = ThemeExt.of(context);
     final l = AppLocalizations.of(context)!;
+    // v0.4.1 §5: on Android the VpnSession's explicit selection IS the truth.
+    // Read it on every build so the hero card reflects the TAPPED node
+    // immediately — before any connect attempt, even while disconnected.
+    final active = _onAndroid
+        ? (widget.deps.vpnSession.selectedNode ?? _active)
+        : _active;
     final health =
-        _active == null ? null : widget.deps.healthStore.statsOf(_active!.id);
+        active == null ? null : widget.deps.healthStore.statsOf(active.id);
     final connected = _phase == ConnectionPhase.connected;
-    final coreInfo = _active == null
+    final coreInfo = active == null
         ? ''
-        : '${_active!.protocol.name.toUpperCase()} · '
-            '${widget.deps.detector.resolve(_active!).core.name} · '
-            '${_active!.server}';
+        : '${active.protocol.name.toUpperCase()} · '
+            '${_onAndroid ? AndroidNodeSupport.androidCoreLabel(active) : widget.deps.detector.resolve(active).core.name} · '
+            '${active.server}';
+    // v0.4.1: REAL active-core indicator — derived from the VPN session's
+    // selected node and the on-device engine gating, never hardcoded.
+    final activeCoreLabel = _onAndroid && active != null
+        ? AndroidNodeSupport.coreDisplayName(widget.deps.vpnSession.activeCore)
+        : null;
+    // Honest error codes from the last connect attempt (node-selection).
+    final lastErr = _onAndroid ? widget.deps.vpnSession.lastError : null;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(NexusSpacing.xl),
@@ -125,9 +168,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Center(
                 child: ConnectRing(
                   phase: _phase,
-                  onToggle: () => connected
-                      ? widget.deps.connection.disconnect()
-                      : widget.deps.connection.smartConnect(),
+                  // v0.4.1 §2: on Android the connect path is the VPN session
+                  // (VpnService.prepare → libbox); desktop keeps smartConnect.
+                  onToggle: () async {
+                    if (connected) {
+                      if (widget.deps.vpnSession.controller.isAndroid) {
+                        await widget.deps.vpnSession.disconnect();
+                      } else {
+                        await widget.deps.connection.disconnect();
+                      }
+                    } else {
+                      if (widget.deps.vpnSession.controller.isAndroid) {
+                        final ok = await widget.deps.vpnSession.connect();
+                        if (!ok && mounted) {
+                          final vpn = widget.deps.vpnSession;
+                          final req = vpn.selectedNode;
+                          final why = req == null
+                              ? ''
+                              : ' (${AndroidNodeSupport.notRunnableReason(req) ?? req.name} cannot run on this device)';
+                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                              content: Text(AndroidNodeSupport
+                                      .connectErrorHint(vpn.lastError) ??
+                                  'Connection failed$why')));
+                        }
+                      } else {
+                        await widget.deps.connection.smartConnect();
+                      }
+                    }
+                  },
                 ),
               ),
               const SizedBox(height: 20),
@@ -155,6 +223,62 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         .textTheme
                         .bodyMedium
                         ?.copyWith(color: c.textSecondary)),
+              ],
+              if (activeCoreLabel != null) ...[
+                const SizedBox(height: 10),
+                // Per-connection core indicator — the core that WILL run (or
+                // is running) this node on Android, from real session state.
+                Tooltip(
+                  message: 'Core that runs this node on Android',
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: c.surface,
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: c.border),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.memory, size: 14, color: c.info),
+                        const SizedBox(width: 6),
+                        Text(
+                          activeCoreLabel,
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelMedium
+                              ?.copyWith(
+                                  color: c.textSecondary,
+                                  fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+              if (lastErr != null && active != null &&
+                  AndroidNodeSupport.notRunnableReason(active) != null) ...[
+                const SizedBox(height: 10),
+                // Node-selection honesty: the tapped node cannot run on this
+                // device — the reason is visible here and in the log.
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.swap_horiz, size: 14, color: c.warning),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        '${active.name}: ${AndroidNodeSupport.notRunnableReason(active) ?? 'not runnable on Android'}',
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(color: c.warning),
+                      ),
+                    ),
+                  ],
+                ),
               ],
               const SizedBox(height: 28),
               Row(
@@ -203,7 +327,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               _sectionCard(
                 context,
                 title: l.currentNode,
-                child: _active == null
+                child: active == null
                     ? _emptyNode(context, l)
                     : Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -211,7 +335,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           Row(
                             children: [
                               Expanded(
-                                child: Text(_active!.name,
+                                child: Text(active.name,
                                     style:
                                         Theme.of(context).textTheme.titleMedium),
                               ),
@@ -226,16 +350,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             spacing: 8,
                             runSpacing: 8,
                             children: [
-                              Chip(label: Text(_active!.protocol.name)),
+                              Chip(label: Text(active.protocol.name)),
                               Chip(
-                                  label: Text(widget.deps
-                                      .detector.resolve(_active!)
-                                      .core
-                                      .name)),
-                              if (_active!.security != Security.none)
-                                Chip(label: Text(_active!.security.name)),
-                              if (_active!.transport != Transport.none)
-                                Chip(label: Text(_active!.transport.name)),
+                                  label: Text(_onAndroid
+                                      ? AndroidNodeSupport.androidCoreLabel(
+                                          active)
+                                      : widget.deps.detector
+                                          .resolve(active)
+                                          .core
+                                          .name)),
+                              if (active.security != Security.none)
+                                Chip(label: Text(active.security.name)),
+                              if (active.transport != Transport.none)
+                                Chip(label: Text(active.transport.name)),
                             ],
                           ),
                         ],

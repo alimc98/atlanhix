@@ -14,7 +14,6 @@ import '../chain/chain_planner.dart';
 import '../domain/entities/health.dart';
 import '../domain/entities/proxy_profile.dart';
 import '../domain/errors/app_error.dart';
-import '../routing/builtin_profiles.dart';
 import '../routing/routing_models.dart';
 import '../warp/warp_registrar.dart';
 import '../data/profile_repository.dart';
@@ -111,7 +110,12 @@ class ConnectionController {
 
   TunnelMode tunnelMode = TunnelMode.systemProxy;
   DnsSettings dns = DnsSettings(mode: DnsMode.automatic);
-  RoutingProfile routing = BuiltinRoutingProfiles.all().first;
+  /// Desktop connect path. OPT-IN default: a rule-less profile — the user
+  /// gets no routing rules until they explicitly enable routing in settings
+  /// (the Android session uses RuntimeConfigBridge.routingProfile(), which
+  /// carries the same default-off gate).
+  RoutingProfile routing = RoutingProfile(
+      id: 'routing-disabled', name: 'Routing off', rules: const []);
   SelectionStrategy strategy = SelectionStrategy.smart;
   FragmentProfile? fragmentOverride;
   ProxyChain? activeChain;

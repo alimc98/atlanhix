@@ -1,5 +1,9 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import '../../application/dependencies.dart';
+import '../../core/android_node_support.dart';
 import '../../core/logger.dart';
 import '../../domain/entities/health.dart';
 import '../../domain/entities/proxy_profile.dart';
@@ -25,6 +29,8 @@ class _NodesScreenState extends State<NodesScreen> {
   _NodeFilter _filter = _NodeFilter.all;
   String _sortBy = 'latency';
   List<ProxyProfile> _profiles = const [];
+  String? _selectedId;
+  StreamSubscription<void>? _selectionSub;
 
   @override
   void initState() {
@@ -33,6 +39,19 @@ class _NodesScreenState extends State<NodesScreen> {
     widget.deps.profiles.changes.listen((p) {
       if (mounted) setState(() => _profiles = p);
     });
+    // v0.4.1 §5: reflect the VPN session's explicit selection immediately —
+    // the tapped node is shown as chosen on the dashboard BEFORE any connect.
+    _selectedId = widget.deps.vpnSession.selectedNode?.id;
+    _selectionSub =
+        widget.deps.vpnSession.selectionChanged.listen((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _selectionSub?.cancel();
+    super.dispose();
   }
 
   @override
@@ -123,7 +142,9 @@ class _NodesScreenState extends State<NodesScreen> {
                     return _NodeTile(
                       profile: p,
                       stats: s,
-                      onConnect: () => widget.deps.connection.switchTo(p),
+                      selected: _selectedId == p.id,
+                      isAndroid: Platform.isAndroid,
+                      onConnect: () => _onNodeTap(context, p),
                     );
                   },
                 ),
@@ -174,6 +195,44 @@ class _NodesScreenState extends State<NodesScreen> {
         'filterHealthy' => l.filterHealthy,
         _ => l.filterFast,
       };
+
+  /// v0.4.1 node-selection: a tap is an EXPLICIT selection. On Android the
+  /// node is recorded in the VpnSession first (dashboard reflects it
+  /// immediately via [selectionChanged]), then the connect attempt starts.
+  /// Non-runnable nodes are never silently skipped — they connect only via
+  /// the explicit Connect ring (auto-pick), and the reason is shown inline.
+  Future<void> _onNodeTap(BuildContext context, ProxyProfile p) async {
+    final vpn = widget.deps.vpnSession;
+    final runnable = !Platform.isAndroid || AndroidNodeSupport.isRunnable(p);
+    if (Platform.isAndroid) {
+      if (runnable) vpn.selectNode(p);
+      setState(() {});
+    }
+    if (!runnable) {
+      if (Platform.isAndroid && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              '${p.name}: ${AndroidNodeSupport.notRunnableReason(p) ?? 'not runnable on Android'} — cannot be tested on this device'),
+          duration: const Duration(seconds: 4),
+        ));
+      }
+      return;
+    }
+    if (Platform.isAndroid) {
+      final ok = await vpn.connect(node: p);
+      if (!ok && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Connection failed'
+                '${AndroidNodeSupport.connectErrorHint(vpn.lastError) ?? ''}')));
+      }
+      return;
+    }
+    try {
+      await widget.deps.connection.switchTo(p);
+    } on AppError catch (e) {
+      Logger.instance.error('node-tap', e.userMessage);
+    }
+  }
 
   Future<void> _showImportDialog(BuildContext context) async {
     final controller = TextEditingController();
@@ -271,11 +330,15 @@ class _NodeTile extends StatelessWidget {
     required this.profile,
     required this.stats,
     required this.onConnect,
+    this.selected = false,
+    this.isAndroid = false,
   });
 
   final ProxyProfile profile;
   final NodeHealthStats? stats;
   final VoidCallback onConnect;
+  final bool selected;
+  final bool isAndroid;
 
   @override
   Widget build(BuildContext context) {
@@ -312,57 +375,126 @@ class _NodeTile extends StatelessWidget {
       NodeHealth.configError => l.healthConfigError,
       _ => l.healthUnknown,
     };
+    // v0.4.1 §31: show WHICH core runs this node on this device. Non-runnable
+    // nodes are marked honestly (never silently skipped) and dimmed — a tap
+    // explains why instead of attempting a doomed connect.
+    final reason = isAndroid ? AndroidNodeSupport.notRunnableReason(profile) : null;
+    final runnable = reason == null;
+    final coreLabel = isAndroid
+        ? AndroidNodeSupport.androidCoreLabel(profile)
+        : profile.effectiveCore.name;
+    final tileOpacity = runnable ? 1.0 : 0.55;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
-      child: Material(
-        color: c.surface,
-        borderRadius: BorderRadius.circular(NexusSpacing.radiusInput),
-        child: InkWell(
+    return Opacity(
+      opacity: tileOpacity,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+        child: Material(
+          color: selected ? c.accentSoft : c.surface,
           borderRadius: BorderRadius.circular(NexusSpacing.radiusInput),
-          onTap: onConnect,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        profile.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '${profile.protocol.name} · ${profile.effectiveCore.name}'
-                        '${profile.security != Security.none ? ' · ${profile.security.name}' : ''}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: c.textMuted),
-                      ),
-                    ],
+          child: InkWell(
+            borderRadius: BorderRadius.circular(NexusSpacing.radiusInput),
+            onTap: onConnect,
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(NexusSpacing.radiusInput),
+                border: Border.all(
+                  color: selected ? c.accent : Colors.transparent,
+                  width: 1.5,
+                ),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                profile.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyMedium
+                                    ?.copyWith(
+                                      fontWeight: selected
+                                          ? FontWeight.w600
+                                          : FontWeight.w400,
+                                    ),
+                              ),
+                            ),
+                            if (selected) ...[
+                              const SizedBox(width: 6),
+                              Icon(Icons.check_circle,
+                                  size: 14, color: c.accent),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${profile.protocol.name} · $coreLabel'
+                          '${profile.security != Security.none ? ' · ${profile.security.name}' : ''}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: c.textMuted),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                Text(
-                  lat == null ? '—' : '$lat ms',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: latColor,
-                        fontWeight: FontWeight.w600,
+                  const SizedBox(width: 8),
+                  Tooltip(
+                    message: reason ?? coreLabel,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: runnable
+                            ? c.info.withValues(alpha: 0.12)
+                            : c.warning.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: runnable
+                              ? c.info.withValues(alpha: 0.4)
+                              : c.warning.withValues(alpha: 0.5),
+                        ),
                       ),
-                ),
-                const SizedBox(width: 14),
-                Tooltip(
-                  message: healthLabel,
-                  child: StatusDot(color: healthColor),
-                ),
-              ],
+                      child: Text(
+                        isAndroid
+                            ? AndroidNodeSupport.shortBadge(profile)
+                            : profile.effectiveCore.name,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: runnable ? c.info : c.warning,
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 64,
+                    child: Text(
+                      lat == null ? '—' : '$lat ms',
+                      textAlign: TextAlign.end,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: latColor,
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Tooltip(
+                    message: healthLabel,
+                    child: StatusDot(color: healthColor),
+                  ),
+                ],
+              ),
             ),
           ),
         ),

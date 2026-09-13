@@ -14,6 +14,11 @@ import '../core/runtime/binary_manager.dart';
 import '../core/runtime/core_manager.dart';
 import '../protocols/importer.dart';
 import '../routing/builtin_profiles.dart';
+import '../settings/app_settings.dart';
+import '../settings/routing_settings.dart';
+import '../settings/runtime_config_bridge.dart';
+import '../settings/vpn_session.dart';
+import '../platform/vault_factory.dart';
 import '../warp/warp_http.dart';
 import '../warp/warp_registrar.dart';
 
@@ -41,7 +46,9 @@ class AppDependencies {
         directory: Directory('${baseDir.path}${Platform.pathSeparator}.nexus'
             '${Platform.pathSeparator}data'),
         schemaVersion: 1);
-    deps.vault = InMemoryVault();
+    // v0.4.1 §41: OS-backed secure storage on mobile/desktop; memory only as
+    // a test fallback. Fixes: profile credentials lost after app restart.
+    deps.vault = createPlatformVault();
     await deps.store.load();
 
     deps.profiles = ProfileRepository(deps.store, deps.vault);
@@ -49,11 +56,22 @@ class AppDependencies {
     deps.chains = ChainRepository(deps.store);
     deps.routingRep = RoutingRepository(deps.store);
     deps.settings = SettingsRepository(deps.store);
+    // v0.4.1: the REAL settings models (§7/§9) — persisted, runtime-honored.
+    deps.appSettingsRepo = AppSettingsRepository(deps.store);
+    deps.routingSettingsRepo = RoutingSettingsRepository(deps.store);
 
     await deps.profiles.load();
     await deps.subscriptions.load();
     await deps.chains.load();
     await deps.routingRep.load();
+    await deps.appSettingsRepo.load();
+    await deps.routingSettingsRepo.load();
+    deps.appSettings = deps.appSettingsRepo.current;
+    deps.routingSettings = deps.routingSettingsRepo.current;
+    deps.configBridge = RuntimeConfigBridge(
+      settings: deps.appSettings,
+      routing: deps.routingSettings,
+    );
 
     deps.binaryManager = BinaryManager(
       // TODO(v0.3): read from Settings â†’ Cores (user override dir).
@@ -64,6 +82,9 @@ class AppDependencies {
     deps.cores = CoreManager(
       binaryManager: deps.binaryManager,
       workDir: Directory('$baseDir/.nexus/runtime'),
+      // v0.4.1 §2: on Android the front sing-box config MUST include the tun
+      // inbound (libbox owns the tunnel via PlatformInterface.OpenTun).
+      enableTun: Platform.isAndroid || Platform.isIOS,
     );
 
     deps.tester = LatencyTester();
@@ -93,6 +114,11 @@ class AppDependencies {
       importer: deps.importer,
     );
 
+    // v0.4.1 §2 — the Android VPN session owns the platform-channel
+    // controller; Connect on Android routes through it, never the
+    // desktop core path.
+    deps.vpnSession = VpnSession(deps: deps);
+
     // Seed builtin routing profiles on first run.
     if (deps.routingRep.all.isEmpty) {
       for (final p in BuiltinRoutingProfiles.all()) {
@@ -113,6 +139,14 @@ class AppDependencies {
   late final ChainRepository chains;
   late final RoutingRepository routingRep;
   late final SettingsRepository settings;
+  // v0.4.1 — real settings + runtime bridge (§7/§9/§31).
+  late final AppSettingsRepository appSettingsRepo;
+  late final RoutingSettingsRepository routingSettingsRepo;
+  late AppSettings appSettings;
+  late RoutingSettings routingSettings;
+  late RuntimeConfigBridge configBridge;
+  // v0.4.1 §2 — the Android VPN session (platform-channel backed).
+  late final VpnSession vpnSession;
   late final BinaryManager binaryManager;
   late final CoreManager cores;
   late final LatencyTester tester;

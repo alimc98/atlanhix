@@ -70,6 +70,13 @@ class Logger {
     _buffer.add(line);
     if (_buffer.length > _maxBuffer) _buffer.removeAt(0);
     if (!_controller.isClosed) _controller.add(line);
+    // Device E2E observability (debug builds only): mirror to logcat so the
+    // Dart pipeline stages are reconstructable alongside native ATX traces.
+    assert(() {
+      // ignore: avoid_print
+      print('ATX-DART [$scope] ${line.message}');
+      return true;
+    }());
   }
 
   void trace(String scope, String msg) => log(LogLevel.trace, scope, msg);

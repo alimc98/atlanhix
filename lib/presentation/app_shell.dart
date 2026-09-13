@@ -1,15 +1,18 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../application/dependencies.dart';
 import '../application/connection_controller.dart';
 import '../domain/entities/proxy_profile.dart';
 import '../localization/generated/app_localizations.dart';
 import '../theme/theme.dart';
+import '../settings/app_settings.dart';
+import '../platform/android_vpn.dart' show AndroidVpnPhase;
 import 'screens/dashboard_screen.dart';
 import 'screens/nodes_screen.dart';
 import 'screens/subscriptions_screen.dart';
 import 'screens/warp_screen.dart';
-import 'screens/routing_screen.dart';
+import 'screens/routing_editor_screen.dart';
 import 'screens/logs_screen.dart';
 import 'screens/settings_screen.dart';
 import 'widgets/common_widgets.dart';
@@ -38,6 +41,11 @@ class _AppShellState extends State<AppShell> {
   ConnectionPhase _phase = ConnectionPhase.disconnected;
   ProxyProfile? _active;
   StreamSubscription? _sub;
+  StreamSubscription? _vpnSub;
+  AppSettings? _settings;
+
+  /// v0.4.1: on Android the VpnSession owns the connect lifecycle.
+  static final bool isAndroid = Platform.isAndroid;
 
   static const _icons = [
     (Icons.dashboard_outlined, Icons.dashboard),
@@ -59,11 +67,25 @@ class _AppShellState extends State<AppShell> {
         _active = s.activeProfile;
       });
     });
+    // v0.4.1 §5: on Android the VpnSession state machine is authoritative —
+    // it overrides whatever the desktop controller reports.
+    if (isAndroid) {
+      _vpnSub = widget.deps.vpnSession.states.listen((_) {
+        if (!mounted) return;
+        setState(() {
+          _phase = widget.deps.vpnSession.uiPhase;
+          _active = widget.deps.vpnSession.selectedNode;
+        });
+      });
+      _phase = widget.deps.vpnSession.uiPhase;
+      _active = widget.deps.vpnSession.selectedNode;
+    }
   }
 
   @override
   void dispose() {
     _sub?.cancel();
+    _vpnSub?.cancel();
     super.dispose();
   }
 
@@ -85,7 +107,15 @@ class _AppShellState extends State<AppShell> {
       NodesScreen(deps: widget.deps),
       SubscriptionsScreen(deps: widget.deps),
       WarpScreen(deps: widget.deps),
-      RoutingScreen(deps: widget.deps),
+      RoutingEditorScreen(
+        routingRepo: widget.deps.routingSettingsRepo,
+        routing: widget.deps.routingSettings,
+        onChanged: () {
+          // v0.4.1: routing edits apply on the NEXT connect (no live rewrite).
+          if (isAndroid) widget.deps.vpnSession.pendingApply = true;
+          if (mounted) setState(() {});
+        },
+      ),
       LogsScreen(deps: widget.deps),
       SettingsScreen(
         deps: widget.deps,
@@ -261,10 +291,58 @@ class _AppShellState extends State<AppShell> {
 
   Future<void> _toggleConnect() async {
     final c = widget.deps.connection;
+    // v0.4.1 §2: on Android, connect flows through the VpnSession (real
+    // VpnService.prepare → consent → TUN → engine → probe). The desktop
+    // core path is not used on Android (no sing-box binary in-app).
+    if (isAndroid) {
+      final vpn = widget.deps.vpnSession;
+      if (vpn.isConnected) {
+        await vpn.disconnect();
+      } else {
+        final ok = await vpn.connect();
+        if (!ok && mounted) {
+          final phase = vpn.phase;
+          final message = switch (phase) {
+            AndroidVpnPhase.permissionDenied =>
+              'VPN permission is required to establish the connection.',
+            AndroidVpnPhase.revoked =>
+              'VPN permission was revoked. Press Connect to grant it again.',
+            _ => 'Connection failed: ${vpn.controller.lastErrorCode ?? ''}\n'
+                '${vpn.controller.lastDetail ?? ''}',
+          };
+          _showConnectError(message, phase == AndroidVpnPhase.permissionDenied);
+        }
+      }
+      if (mounted) setState(() {});
+      return;
+    }
     if (_phase == ConnectionPhase.connected) {
       await c.disconnect();
     } else {
       await c.smartConnect();
     }
+  }
+
+  void _showConnectError(String message, bool permissionIssue) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(permissionIssue ? 'VPN permission denied' : 'Connection failed'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _toggleConnect(); // §3 Retry
+            },
+            child: const Text('Retry'),
+          ),
+        ],
+      ),
+    );
   }
 }

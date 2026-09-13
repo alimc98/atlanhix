@@ -169,10 +169,14 @@ class SingBoxConfigGenerator {
           // v0.3.2 (live validation finding): loopback/private destinations
           // must never be routed through a proxy node — the loopback E2E
           // probes (127.0.0.1 mock destinations) exposed this regression.
-          {
-            'ip_is_private': true,
-            'outbound': 'direct',
-          },
+          // OPT-IN: injected ONLY when the profile actually carries user
+          // rules (routing enabled); a default-off config ships no rules
+          // beyond the engine minimum, per the routing-is-opt-in contract.
+          if (routing.rules.isNotEmpty)
+            {
+              'ip_is_private': true,
+              'outbound': 'direct',
+            },
           ..._compiler.singBoxRules(routing),
         ],
         'final': 'proxy',
