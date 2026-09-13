@@ -73,29 +73,38 @@ class CoreDetector {
     var xraySignals = 0;
     var singboxSignals = 0;
 
+    // ENGINE CAPABILITY MATRIX (verified against sing-box 1.14 source and
+    // Xray-core trees, 2026-09-13): sing-box natively runs vless/vmess/
+    // trojan/shadowsocks INCLUDING security=reality and flow=xtls-rprx-*.
+    // The ONLY upstream-Xray-exclusive transports in our protocol set are
+    // xhttp/splithttp and mKCP. Reality or flow must NOT steer a node to
+    // Xray — doing so locked working vless+reality nodes out of Android
+    // (device bug: 6 subscription nodes badged "Xray desktop only" and
+    // were skipped, while sing-box could run every one of them).
     if (p.transport == Transport.xhttp) {
       xraySignals += 3;
       reasons.add('XHTTP transport is an Xray-specific transport');
+      // Xray-only mode params on xhttp add confidence, nothing else does.
+      if (p.rawParams['mode'] != null) xraySignals += 1;
+    }
+    if (p.rawParams['type'] == 'mkcp' || p.rawParams['type'] == 'kcp') {
+      xraySignals += 3;
+      reasons.add('mKCP transport is Xray-only');
     }
     if (p.flow != null && p.flow!.isNotEmpty) {
-      xraySignals += 3;
-      reasons.add('XTLS flow (${p.flow}) requires Xray');
+      singboxSignals += 1;
+      reasons.add('XTLS flow ${p.flow} — supported by both engines, '
+          'sing-box runs it natively');
     }
     if (p.security == Security.reality) {
-      // Reality is implemented by both engines; Xray is reference impl.
-      xraySignals += 1;
-      reasons.add('Reality detected');
+      singboxSignals += 1;
+      reasons.add('Reality detected — implemented by sing-box too');
     }
     if (p.rawParams['host'] != null && p.transport == Transport.ws) {
       singboxSignals += 1;
     }
     if (p.rawParams['path'] != null && p.transport == Transport.ws) {
       singboxSignals += 1;
-    }
-
-    // Xray-only transports not yet handled above.
-    if (p.rawParams['mode'] != null && p.transport == Transport.xhttp) {
-      xraySignals += 1;
     }
 
     if (p.protocol == ProxyProtocol.vmess && (p.alterId ?? 0) > 0) {

@@ -13,7 +13,25 @@ class AndroidNodeSupport {
 
   /// True when the Android engine (sing-box / libbox) can run this node.
   static bool isRunnable(ProxyProfile p) {
-    if (p.effectiveCore == CoreKind.xray || p.transport == Transport.xhttp) {
+    // Capability matrix verified against sing-box 1.14 source (transport
+    // enum: http/ws/quic/grpc/httpupgrade) and Xray-core, 2026-09-13:
+    //   * ONLY xhttp/splithttp and mKCP are upstream-Xray-exclusive;
+    //     vless+reality+xtls-rprx-vision, vmess, trojan, ss, hysteria2,
+    //     tuic, anytls all run on the bundled sing-box.
+    //   * An Xray DETECTION therefore must not lock a node out — Auto
+    //     nodes fall through to the engine matrix below.
+    //   * A USER-PINNED Xray core stays blocked honestly: Android ≥10
+    //     refuses exec() of extracted binaries and Xray has no gomobile
+    //     export, so there is no in-app Xray runtime (never a silent
+    //     swap to another engine — the pin is the user's explicit choice).
+    if (p.transport == Transport.xhttp || p.rawParams['type'] == 'mkcp' ||
+        p.rawParams['type'] == 'kcp') {
+      return false;
+    }
+    if (p.userPinnedCore == CoreKind.xray) {
+      return false;
+    }
+    if (p.effectiveCore == CoreKind.xray && p.userPinnedCore != null) {
       return false;
     }
     return switch (p.protocol) {
@@ -46,7 +64,11 @@ class AndroidNodeSupport {
         p.amnezia?.isNotEmpty == true) {
       return 'Amnezia (not bundled on Android)';
     }
-    if (p.effectiveCore == CoreKind.xray || p.transport == Transport.xhttp) {
+    if (p.transport == Transport.xhttp || p.rawParams['type'] == 'mkcp' ||
+        p.rawParams['type'] == 'kcp') {
+      return 'Xray-only transport';
+    }
+    if (p.userPinnedCore == CoreKind.xray) {
       return 'Xray (desktop only)';
     }
     if (!isRunnable(p)) {
@@ -72,6 +94,7 @@ class AndroidNodeSupport {
     final reason = notRunnableReason(p);
     if (reason == null) return 'sing-box';
     if (reason.startsWith('Amnezia')) return 'Amnezia · not bundled';
+    if (reason.startsWith('Xray-only')) return 'Xray · xhttp only';
     if (reason.startsWith('Xray')) return 'Xray · desktop only';
     if (reason.startsWith('MDVPN')) return 'MDVPN · desktop only';
     return 'not on Android';
@@ -115,8 +138,12 @@ class AndroidNodeSupport {
         p.amnezia?.isNotEmpty == true) {
       return 'amnezia_wg: AmneziaWG core (amneziawg-go daemon) is not bundled on Android';
     }
-    if (p.effectiveCore == CoreKind.xray || p.transport == Transport.xhttp) {
-      return 'xray: Xray-owned node (e.g. vless+xhttp / XTLS flow) needs the Xray upstream, which does not run on Android';
+    if (p.transport == Transport.xhttp || p.rawParams['type'] == 'mkcp' ||
+        p.rawParams['type'] == 'kcp') {
+      return 'xray_transport: ${p.transport.name} is upstream-Xray-only; the bundled sing-box cannot express it';
+    }
+    if (p.userPinnedCore == CoreKind.xray) {
+      return 'xray_pinned: user pinned the Xray core, which has no in-app Android runtime';
     }
     if (p.effectiveCore == CoreKind.masterDnsVpn ||
         p.protocol == ProxyProtocol.masterDnsVpn) {

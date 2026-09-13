@@ -1,4 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nexus/core/android_node_support.dart';
+import 'package:nexus/core/core_detector.dart';
 import 'package:nexus/core/node_core_choice.dart';
 import 'package:nexus/data/profile_codec_write.dart';
 import 'package:nexus/data/secure_vault.dart';
@@ -81,6 +83,50 @@ void main() {
       expect(prof.effectiveCore, CoreKind.xray);
       final json = profileToStorable(prof, InMemoryVault(), 'salt');
       expect(json['userPinnedCore'], 'xray');
+    });
+  });
+
+group('engine capability matrix (device bug: reality nodes were locked out)', () {
+    test('vless+reality+vision over grpc/wS/tcp is sing-box on Android', () {
+      for (final tp in [Transport.grpc, Transport.ws, Transport.tcp]) {
+        final prof = ProxyProfile(
+          id: 'r-$tp', name: 'r', server: 'example.invalid', port: 443,
+          protocol: ProxyProtocol.vless, transport: tp,
+          security: Security.reality, flow: 'xtls-rprx-vision',
+          uuid: 'u', realityPublicKey: 'k',
+        );
+        final d = CoreDetector().detect(prof);
+        expect(d.core, CoreKind.singbox,
+            reason: 'sing-box 1.14 implements reality + vision + $tp');
+        expect(AndroidNodeSupport.notRunnableReason(prof), isNull,
+            reason: 'auto-classified nodes run on-device ($tp)');
+      }
+    });
+
+    test('xhttp transport stays Xray-only (honest lock)', () {
+      final prof = ProxyProfile(
+        id: 'x', name: 'x', server: 'example.invalid', port: 443,
+        protocol: ProxyProtocol.vless, transport: Transport.xhttp,
+        security: Security.tls, uuid: 'u',
+      );
+      expect(CoreDetector().detect(prof).core, CoreKind.xray);
+      expect(AndroidNodeSupport.isRunnable(prof), isFalse);
+      expect(AndroidNodeSupport.notRunnableReason(prof),
+          'Xray-only transport');
+    });
+
+    test('USER-PINNED Xray keeps its honest Android lock', () {
+      final prof = ProxyProfile(
+        id: 'pin', name: 'pin', server: 'example.invalid', port: 443,
+        protocol: ProxyProtocol.trojan, transport: Transport.tcp,
+        password: 'p',
+      ).copyWith(userPinnedCore: CoreKind.xray);
+      expect(AndroidNodeSupport.isRunnable(prof), isFalse,
+          reason: 'a pin is an explicit choice — never swapped silently');
+      expect(AndroidNodeSupport.notRunnableReason(prof),
+          'Xray (desktop only)');
+      expect(AndroidNodeSupport.androidExclusionReason(prof),
+          contains('xray_pinned'));
     });
   });
 
