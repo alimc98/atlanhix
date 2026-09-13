@@ -129,6 +129,14 @@ class RoutingCompiler {
       case DnsMode.automatic:
         servers.add({'tag': 'local', 'type': 'local'});
         servers.add({'tag': 'remote', 'type': 'https', 'server': '1.1.1.1'});
+        // DEVICE EVIDENCE (Mi 9T / MCI): with both servers racing and no rule,
+        // the carrier `local` resolver answered blocked domains first with a
+        // private sinkhole IP (graph.facebook.com -> 10.10.34.36, TTL 600) —
+        // poisoned responses won the race for every app query through the
+        // tunnel. Automatic means "works on hostile networks": pin all traffic
+        // DNS to the clean resolver. Users who want carrier-local resolution
+        // pick DnsMode.system explicitly.
+        rules.add({'server': 'remote'});
     }
     final dnsObj = <String, dynamic>{'servers': servers};
     if (dns.mode == DnsMode.fakeip) {
