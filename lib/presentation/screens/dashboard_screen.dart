@@ -415,7 +415,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: Theme.of(context).textTheme.titleMedium),
+          Text(Localizations.localeOf(context).languageCode == 'fa'
+              ? title
+              : title.toUpperCase(),
+              style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 12),
           child,
         ],

@@ -16,6 +16,7 @@ import 'screens/routing_editor_screen.dart';
 import 'screens/logs_screen.dart';
 import 'screens/settings_screen.dart';
 import 'widgets/common_widgets.dart';
+import 'widgets/atlanhix_logo.dart';
 
 /// Responsive shell: desktop sidebar (§52) / mobile bottom navigation (§51).
 class AppShell extends StatefulWidget {
@@ -136,7 +137,9 @@ class _AppShellState extends State<AppShell> {
       appBar: wide
           ? null
           : AppBar(
-              title: Text(labels[_index]),
+              title: Text(Localizations.localeOf(context).languageCode == 'fa'
+                  ? labels[_index]
+                  : labels[_index].toUpperCase()),
               actions: [
                 Padding(
                   padding: const EdgeInsets.only(right: 12),
@@ -217,25 +220,9 @@ class _AppShellState extends State<AppShell> {
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Row(
         children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [colors.accent, colors.info],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(Icons.bolt, color: Colors.white, size: 20),
-          ),
+          AtlanhixMark(size: 30, strokeColor: colors.textPrimary),
           const SizedBox(width: 10),
-          Text('ATLANHIX',
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(letterSpacing: 1.2)),
+          AtlanhixLogo(height: 15, strokeColor: colors.textPrimary),
         ],
       ),
     );

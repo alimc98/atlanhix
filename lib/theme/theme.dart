@@ -39,39 +39,42 @@ class NexusColors {
   final Color borderStrong;
   final Color overlayScrim;
 
+  // v0.4.2 "line-type" design language (user mockup): near-black matte page,
+  // charcoal frosted surfaces, cool off-white ink, mint/lavender as the only
+  // accent pair, hairline borders.
   static const dark = NexusColors(
-    background: Color(0xFF0B0F14),
-    surface: Color(0xFF111820),
-    surfaceElevated: Color(0xFF1A2430),
-    surfaceSunken: Color(0xFF080C10),
-    textPrimary: Color(0xFFE8EEF5),
-    textSecondary: Color(0xFF9AA7B4),
-    textMuted: Color(0xFF5C6B7A),
-    accent: Color(0xFF4F8CFF),
-    accentSoft: Color(0x244F8CFF),
-    success: Color(0xFF34D399),
-    warning: Color(0xFFFBBF24),
-    error: Color(0xFFF87171),
-    info: Color(0xFF38BDF8),
-    border: Color(0x12FFFFFF),
-    borderStrong: Color(0x24FFFFFF),
+    background: Color(0xFF0A0B0E),
+    surface: Color(0xFF1C1F26),
+    surfaceElevated: Color(0xFF242832),
+    surfaceSunken: Color(0xFF12141A),
+    textPrimary: Color(0xFFE8E9ED),
+    textSecondary: Color(0xFF9EA3AF),
+    textMuted: Color(0xFF7A7E89),
+    accent: Color(0xFF4FE0B7),
+    accentSoft: Color(0x244FE0B7),
+    success: Color(0xFF4FE0B7),
+    warning: Color(0xFFE0C34F),
+    error: Color(0xFFE86A6A),
+    info: Color(0xFF9B6CFF),
+    border: Color(0x14FFFFFF),
+    borderStrong: Color(0x26FFFFFF),
     overlayScrim: Color(0x8C000000),
   );
 
   static const oled = NexusColors(
     background: Color(0xFF000000),
-    surface: Color(0xFF0A0A0C),
-    surfaceElevated: Color(0xFF131318),
+    surface: Color(0xFF0B0C0F),
+    surfaceElevated: Color(0xFF15171D),
     surfaceSunken: Color(0xFF000000),
-    textPrimary: Color(0xFFE8EEF5),
-    textSecondary: Color(0xFF9AA7B4),
-    textMuted: Color(0xFF5C6B7A),
-    accent: Color(0xFF4F8CFF),
-    accentSoft: Color(0x244F8CFF),
+    textPrimary: Color(0xFFE8E9ED),
+    textSecondary: Color(0xFF9EA3AF),
+    textMuted: Color(0xFF7A7E89),
+    accent: Color(0xFF4FE0B7),
+    accentSoft: Color(0x244FE0B7),
     success: Color(0xFF34D399),
     warning: Color(0xFFFBBF24),
     error: Color(0xFFF87171),
-    info: Color(0xFF38BDF8),
+    info: Color(0xFF9B6CFF),
     border: Color(0x1FFFFFFF),
     borderStrong: Color(0x33FFFFFF),
     overlayScrim: Color(0xB3000000),
@@ -82,15 +85,15 @@ class NexusColors {
     surface: Color(0xFFFFFFFF),
     surfaceElevated: Color(0xFFFFFFFF),
     surfaceSunken: Color(0xFFEEF2F6),
-    textPrimary: Color(0xFF0B1220),
-    textSecondary: Color(0xFF47536B),
-    textMuted: Color(0xFF8A94A6),
-    accent: Color(0xFF2563EB),
-    accentSoft: Color(0x1A2563EB),
-    success: Color(0xFF059669),
-    warning: Color(0xFFB45309),
-    error: Color(0xFFDC2626),
-    info: Color(0xFF0284C7),
+    textPrimary: Color(0xFF101216),
+    textSecondary: Color(0xFF4A4F5A),
+    textMuted: Color(0xFF8A8F9A),
+    accent: Color(0xFF0E9E78),
+    accentSoft: Color(0x1A0E9E78),
+    success: Color(0xFF0E9E78),
+    warning: Color(0xFFA8790B),
+    error: Color(0xFFC23B3B),
+    info: Color(0xFF6D3FD4),
     border: Color(0x140B1220),
     borderStrong: Color(0x290B1220),
     overlayScrim: Color(0x52000000),
@@ -117,27 +120,41 @@ class NexusTypography {
         : NexusColors.light.textPrimary;
     final fa = locale?.startsWith('fa') == true;
     final family = fa ? _fontFa : _fontLatin;
+    // Persian glyphs must stay cursive-joined: wide tracking would break the
+    // shaping, so letter-spacing is Latin-only (mockup headers are LTR caps).
+    double ls(double v) => fa ? 0 : v;
+    // v0.4.2 mockup typography: geometric sans, section headers ALL-CAPS
+    // with wide tracking, big semi-bold metrics, light secondary text.
     final base = TextTheme(
       displayLarge: TextStyle(
-          fontSize: 32,
-          height: 40 / 32,
+          fontSize: 30,
+          height: 36 / 30,
           fontWeight: FontWeight.w600,
-          letterSpacing: -0.5),
+          letterSpacing: ls(-0.2)),
       titleLarge: TextStyle(
-          fontSize: 20, height: 28 / 20, fontWeight: FontWeight.w600),
+          fontSize: 19,
+          height: 26 / 19,
+          fontWeight: FontWeight.w500,
+          letterSpacing: ls(0.8)),
       titleMedium: TextStyle(
-          fontSize: 16, height: 24 / 16, fontWeight: FontWeight.w600),
+          fontSize: 15,
+          height: 20 / 15,
+          fontWeight: FontWeight.w500,
+          letterSpacing: ls(1.4)),
       bodyLarge: TextStyle(
-          fontSize: 14, height: 20 / 14, fontWeight: FontWeight.w400),
+          fontSize: 14, height: 21 / 14, fontWeight: FontWeight.w400),
       bodyMedium: TextStyle(
-          fontSize: 14, height: 20 / 14, fontWeight: FontWeight.w500),
+          fontSize: 13, height: 19 / 13, fontWeight: FontWeight.w400),
       bodySmall: TextStyle(
-          fontSize: 12, height: 16 / 12, fontWeight: FontWeight.w500),
+          fontSize: 11,
+          height: 15 / 11,
+          fontWeight: FontWeight.w300,
+          letterSpacing: ls(0.2)),
       labelSmall: TextStyle(
           fontSize: 11,
           height: 14 / 11,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 0.7),
+          fontWeight: FontWeight.w500,
+          letterSpacing: ls(1.6)),
     );
     return base.apply(
       fontFamily: family,
@@ -170,7 +187,7 @@ class NexusTheme {
       colorScheme: ColorScheme(
         brightness: brightness,
         primary: c.accent,
-        onPrimary: Colors.white,
+        onPrimary: _onAccent(c),
         secondary: c.info,
         onSecondary: Colors.black,
         surface: c.surface,
@@ -182,6 +199,13 @@ class NexusTheme {
         outlineVariant: c.border,
       ),
       textTheme: text,
+      appBarTheme: AppBarTheme(
+        backgroundColor: c.background,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        titleTextStyle: text.titleLarge,
+      ),
       cardTheme: CardThemeData(
         color: c.surface,
         elevation: 0,
@@ -213,7 +237,7 @@ class NexusTheme {
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           backgroundColor: c.accent,
-          foregroundColor: Colors.white,
+          foregroundColor: _onAccent(c),
           textStyle: text.bodyMedium,
           minimumSize: const Size(0, 44),
           shape: RoundedRectangleBorder(
@@ -285,6 +309,10 @@ class NexusSpacing {
   static const radiusChip = 8.0;
   static const radiusInput = 12.0;
 }
+
+/// Mint on dark needs dark ink; the blue it replaced needed white.
+Color _onAccent(NexusColors c) =>
+    c.accent.computeLuminance() > 0.45 ? const Color(0xFF0A0B0E) : Colors.white;
 
 /// Widget-tree accessor for the semantic tokens (resolved per theme).
 class ThemeExt extends ThemeExtension<ThemeExt> {
