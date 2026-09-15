@@ -455,7 +455,14 @@ interface AtlanhixPlatformInterface : PlatformInterface {
     override fun autoDetectInterfaceControl(fd: Int) {
         // Protect the engine's own sockets from the VPN (upstream connections
         // must leave via the physical NIC, not the tunnel).
-        (this as? android.net.VpnService)?.protect(fd)
+        android.util.Log.i("AtlanhixVpn", "AUTO_DETECT_PROTECT fd=$fd this=${this.javaClass.simpleName}")
+        val vpn = this as? android.net.VpnService
+        if (vpn == null) {
+            android.util.Log.w("AtlanhixVpn", "AUTO_DETECT_PROTECT_FAILED: platformInterface is not VpnService")
+            return
+        }
+        vpn.protect(fd)
+        android.util.Log.i("AtlanhixVpn", "AUTO_DETECT_PROTECT_OK fd=$fd")
     }
 
     override fun useProcFS(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q

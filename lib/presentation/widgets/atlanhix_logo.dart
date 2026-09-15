@@ -225,3 +225,54 @@ class _ShieldPainter extends CustomPainter {
   @override
   bool shouldRepaint(_ShieldPainter old) => old.ink != ink;
 }
+
+/// v0.4.4 brand-sheet icon: the standalone geometric 'A' — two thick
+/// angled strokes that deliberately DON'T touch at the apex + a mint
+/// crossbar. Monoline, no fills; matches the launcher adaptive icon.
+class AtlanhixAMark extends StatelessWidget {
+  const AtlanhixAMark({super.key, this.size = 26, this.color});
+
+  final double size;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = color ?? Theme.of(context).textTheme.titleMedium?.color ??
+        const Color(0xFFE8E9ED);
+    return CustomPaint(
+      size: Size.square(size),
+      painter: _AMarkPainter(ink),
+    );
+  }
+}
+
+class _AMarkPainter extends CustomPainter {
+  const _AMarkPainter(this.ink);
+  final Color ink;
+
+  @override
+  void paint(Canvas canvas, Size s) {
+    final w = s.width;
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..color = ink
+      ..strokeWidth = w * 0.10;
+    final mint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..color = const Color(0xFF4FE0B7)
+      ..strokeWidth = w * 0.085;
+    final apexGap = w * 0.085, spread = w * 0.36, cx = w / 2;
+    canvas.drawLine(Offset(cx - apexGap, w * 0.14),
+        Offset(cx - spread, w * 0.88), stroke);
+    canvas.drawLine(Offset(cx + apexGap, w * 0.14),
+        Offset(cx + spread, w * 0.88), stroke);
+    final y = w * 0.62;
+    canvas.drawLine(Offset(cx - spread * 0.62, y),
+        Offset(cx + spread * 0.62, y), mint);
+  }
+
+  @override
+  bool shouldRepaint(_AMarkPainter old) => old.ink != ink;
+}

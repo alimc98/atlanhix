@@ -371,26 +371,45 @@ class OutboundBuilders {
     switch (p.security) {
       case Security.reality:
         s['security'] = 'reality';
-        // FinalMask / xmux (Xray 26.x): links smuggle them as raw JSON
-        // params — forward verbatim when present.
-        s['realitySettings'] = _withLinkExtras(p, {
+        s['realitySettings'] = ({
           'show': false,
           'serverName': p.sni ?? p.host,
           'publicKey': p.realityPublicKey,
           'shortId': p.realityShortId ?? '',
           if (p.realitySpiderX != null) 'spiderX': p.realitySpiderX,
           'fingerprint': p.fingerprint ?? 'chrome',
+          if ((p.rawParams['mldsa65Verify'] ?? '').isNotEmpty)
+            'mldsa65Verify': p.rawParams['mldsa65Verify'],
         });
       case Security.tls:
         s['security'] = 'tls';
-        s['tlsSettings'] = _withLinkExtras(p, {
+        s['tlsSettings'] = ({
           'serverName': p.sni ?? p.host,
           'allowInsecure': p.allowInsecure,
-          if (p.alpn.isNotEmpty) 'alpn': p.alpn,
+          // ALPN default (3x-ui audit, engine-verified): xhttp over plain
+          // TLS is HTTP/1.1-shaped; emitting no alpn lets Xray default to
+          // h2, which fronts (nginx/CDN serving http/1.1 on /api) reset in
+          // handshake — the Ghodrat signature.
+          'alpn': p.alpn.isNotEmpty
+              ? p.alpn
+              : (p.transport == Transport.xhttp
+                  ? const ['http/1.1']
+                  : const []),
           if (p.fingerprint != null) 'fingerprint': p.fingerprint,
-        });
+        }..removeWhere((k, v) => v is List && v.isEmpty));
       case Security.none:
         break;
+    }
+    // FinalMask (Xray 26.x late-layer obfuscation): lives at
+    // streamSettings.finalmask (lowercase) — verified against the bundled
+    // 26.3.27 binary (sudoku/noise shapes OK). Inside tlsSettings it is a
+    // silent no-op (also verified) — hence this placement.
+    final fmRaw = p.rawParams['finalmask'] ?? p.rawParams['finalMask'];
+    if (fmRaw != null && fmRaw.trim().isNotEmpty) {
+      try {
+        final j = jsonDecode(fmRaw);
+        if (j is Map || j is List) s['finalmask'] = j;
+      } catch (_) {/* malformed — omit; node still dials without the mask */}
     }
     switch (p.transport) {
       case Transport.ws:
@@ -427,24 +446,6 @@ class OutboundBuilders {
   /// present ({mode, xPaddingBytes, xPaddingHeader, ...}) and layer the
   /// flat params over it — this is the shape the XTLS spec documents and
   /// what these subscription links actually require.
-  /// Merge link-level JSON extras into a TLS settings map (Xray 26.x).
-  static Map<String, dynamic> _withLinkExtras(
-      ProxyProfile p, Map<String, dynamic> base) {
-    final m = <String, dynamic>{};
-    for (final key in ['finalmask', 'finalMask', 'xmux']) {
-      final raw = p.rawParams[key];
-      if (raw == null || raw.trim().isEmpty) continue;
-      try {
-        final j = jsonDecode(raw);
-        if (key.toLowerCase() == 'finalmask') {
-          m['finalMask'] = j; // spec: JSON array/string of masks
-        } else if (j is Map<String, dynamic>) {
-          m['xmux'] = j;
-        }
-      } catch (_) {/* not JSON — skip; node still connects without extras */}
-    }
-    return base..addAll(m);
-  }
 
 
   static Map<String, dynamic> _xhttpSettings(ProxyProfile p) {
@@ -454,17 +455,51 @@ class OutboundBuilders {
       try {
         final j = jsonDecode(extra);
         if (j is Map) {
+          // KEEP nested values (headers{}, xmux{}, downloadSettings{}) —
+          // 3x-ui nests them in extra; scalar-only filtering used to drop
+          // xmux silently.
           j.forEach((k, v) {
-            if (k is String && (v is String || v is num || v is bool)) {
-              m[k] = v;
-            }
+            if (k is String) m[k] = v;
           });
         }
       } catch (_) {/* malformed extra — flat params still emitted below */}
     }
-    m['mode'] = p.rawParams['mode'] ?? m['mode'] ?? 'auto';
-    final padding = p.rawParams['x_padding_bytes'];
-    if (padding != null) m['xPaddingBytes'] = padding;
+    var mode = p.rawParams['mode'] ?? m['mode'];
+    // INCY-era spellings → engine enums (26.3.27 hard-rejects the old ones).
+    mode = switch (mode) {
+      'packet' => 'packet-up',
+      'connect' => 'stream-one',
+      _ => mode,
+    };
+    // Xray resolves 'auto' per security layer (REALITY→stream-one/H2,
+    // TLS→packet-up). When the link left it unspecified on plain TLS,
+    // XTLS guidance is stream-one — emit it explicitly, never 'auto'.
+    if (mode == null && p.security == Security.tls) mode = 'stream-one';
+    if (mode != null) m['mode'] = mode;
+    // Flat padding param spellings actually produced in the wild.
+    for (final pair in const [
+      ['x_padding_bytes', 'xPaddingBytes'],
+      ['xpaddingsize', 'xPaddingBytes'],
+      ['xpaddingbytes', 'xPaddingBytes'],
+      ['xpaddingkey', 'xPaddingKey'],
+      ['xpaddingheader', 'xPaddingHeader'],
+      ['xpaddingplacement', 'xPaddingPlacement'],
+      ['xpaddingmethod', 'xPaddingMethod'],
+    ]) {
+      final v = p.rawParams[pair[0]] ?? p.rawParams[pair[1]];
+      if (v != null && v.isNotEmpty) m[pair[1]] = v;
+    }
+    // xmux: engine name inside xhttpSettings (verified OK); link-level
+    // camelCase spellings (MaxConcurrentUploads…) are NOT engine names.
+    if (!m.containsKey('xmux')) {
+      final xmuxRaw = p.rawParams['xmux'];
+      if (xmuxRaw != null && xmuxRaw.trim().isNotEmpty) {
+        try {
+          final j = jsonDecode(xmuxRaw);
+          if (j is Map<String, dynamic>) m['xmux'] = j;
+        } catch (_) {}
+      }
+    }
     if (p.path != null) m['path'] = p.path;
     // `host` = HTTP Host header; Xray accepts the SNI/default when absent.
     final h = p.host ?? p.sni;

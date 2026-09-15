@@ -172,7 +172,17 @@ class SingBoxConfigGenerator {
     });
     // NOTE: sing-box ≥1.13 removed the deprecated `block`/`dns` outbounds —
     // blocking/DNS-hijack are handled by route rule actions instead.
-    outbounds.add({'type': 'direct', 'tag': 'direct'});
+    // `connect_timeout` is NOT cosmetic: sing-box marks a direct outbound
+    // EMPTY (IsEmpty, v1.14 protocol/direct/outbound.go) when its dialer
+    // options are all defaults, and then REFUSES any DNS server that
+    // detours through it — "detour to an empty direct outbound makes no
+    // sense" killed every engine start on the Mi 9T (2026-09-15). A real
+    // dialer option makes the outbound usable as the bootstrap detour.
+    outbounds.add({
+      'type': 'direct',
+      'tag': 'direct',
+      'connect_timeout': '5s',
+    });
 
     final dnsObj = _compiler.singBoxDns(dns);
     // Ensure the server referenced by default_domain_resolver exists.
@@ -208,7 +218,12 @@ class SingBoxConfigGenerator {
             'address': ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
             'mtu': options.tunMtu,
             'auto_route': true,
-            'strict_route': true,
+            // strict_route false (device 2026-09-15): its netfilter rules
+          // apply to the app uid INCLUDING the protected sockets that
+          // dial the node itself → SYN routed back into tun0 → dial
+          // i/o timeouts while a shell `nc` connects instantly. The
+          // engine's own protect() keeps loop bypass safe without it.
+          'strict_route': false,
             'stack': 'mixed',
           },
       ],
@@ -221,17 +236,21 @@ class SingBoxConfigGenerator {
             'protocol': 'dns',
             'action': 'hijack-dns',
           },
-          // v0.3.2 (live validation finding): loopback/private destinations
-          // must never be routed through a proxy node — the loopback E2E
-          // probes (127.0.0.1 mock destinations) exposed this regression.
-          // OPT-IN: injected ONLY when the profile actually carries user
-          // rules (routing enabled); a default-off config ships no rules
-          // beyond the engine minimum, per the routing-is-opt-in contract.
-          if (routing.rules.isNotEmpty)
-            {
-              'ip_is_private': true,
-              'outbound': 'direct',
-            },
+          // ALWAYS-ON (v0.4.4 device fix, 2026-09-15): private/LAN
+          // destinations must never be routed through a proxy node — and
+          // the clean DNS servers now carry `detour: direct`, which
+          // sing-box 1.14 refuses when NOTHING references the direct
+          // outbound ("start dns/udp[remote]: detour to an empty direct
+          // outbound makes no sense"). This rule both fixes the engine
+          // startup failure and keeps LAN/loopback honest (the old
+          // opt-in gating by routing.rules.isNotEmpty left configs
+          // without user rules with an EMPTY direct set — the exact
+          // shape that crashed on the phone).
+          {
+            'action': 'route',
+            'ip_is_private': true,
+            'outbound': 'direct',
+          },
           ..._compiler.singBoxRules(routing),
         ],
         'final': 'proxy',

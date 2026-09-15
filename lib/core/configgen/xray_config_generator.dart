@@ -54,12 +54,17 @@ class XrayConfigGenerator {
 
     return {
       'log': {
-        'loglevel': 'warning',
+        'loglevel': 'info',
         if (accessLogPath != null) 'access': accessLogPath,
       },
       'dns': {
         'servers': [dnsServer, 'localhost'],
-        'queryStrategy': 'UseIP',
+        // v0.4.4 audit fix: UseIP asks for A+AAAA — on IR mobile the AAAA
+        // answers for domain-addressed nodes embed the 10.10.34.x sinkhole
+        // over 6to4, so Xray itself dials a dead address and the TLS
+        // handshake dies (Ghodrat root-cause #1). IPv4-only dialing; the
+        // front sing-box already prefers IPv4 too.
+        'queryStrategy': 'UseIPv4',
       },
       'inbounds': [
         {

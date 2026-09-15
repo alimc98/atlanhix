@@ -147,20 +147,20 @@ class RoutingCompiler {
         // Legacy-format servers RACE in parallel and the first answer wins,
         // so `local` must NOT be in the list at all (the user picks it
         // explicitly via DnsMode.system). prefer_ipv4 sidesteps the
-        // 6to4-embedded AAAA sinkhole class. (A `detour` on these servers is
-        // NOT usable: sing-box 1.14 rejects "detour to an empty direct
-        // outbound" in configs without a direct outbound — caught by the
-        // desktop E2E.)
-        // Defaults are platform-aware: Android ships for IR mobile data
-        // (Shecan/Begzar, measured reachable+clean from MCI); desktop dev
-        // machines are typically NOT on an Iranian network where those IPs
-        // route, so they keep the universal global resolvers.
+        // 6to4-embedded AAAA sinkhole class.
+        // v0.4.4 REGRESSION FIX (device 2026-09-15): DNS servers dialed
+        // WITHOUT a detour resolve THROUGH the tunnel they own →
+        // `lookup ro.hixyz.ir: context deadline exceeded` killed every
+        // hostname-addressed node (Shadowsocks/ro) while IP-addressed ones
+        // still connected. The earlier "detour to an empty direct outbound"
+        // rejection no longer applies — the generator always ships a
+        // 'direct' outbound (verified with sing-box 1.14 `check`).
         if (Platform.isAndroid) {
-          servers.add({'tag': 'remote', 'type': 'udp', 'server': '178.22.122.100'});
-          servers.add({'tag': 'remote2', 'type': 'udp', 'server': '185.55.226.26'});
+          servers.add({'tag': 'remote', 'type': 'udp', 'server': '178.22.122.100', 'detour': 'direct'});
+          servers.add({'tag': 'remote2', 'type': 'udp', 'server': '185.55.226.26', 'detour': 'direct'});
         } else {
-          servers.add({'tag': 'remote', 'type': 'udp', 'server': '1.1.1.1'});
-          servers.add({'tag': 'remote2', 'type': 'udp', 'server': '8.8.8.8'});
+          servers.add({'tag': 'remote', 'type': 'udp', 'server': '1.1.1.1', 'detour': 'direct'});
+          servers.add({'tag': 'remote2', 'type': 'udp', 'server': '8.8.8.8', 'detour': 'direct'});
         }
         // Manual overrides (Settings → DNS): a user-entered resolver REPLACES
         // the default for its role; scheme-aware (udp ip / https URL /

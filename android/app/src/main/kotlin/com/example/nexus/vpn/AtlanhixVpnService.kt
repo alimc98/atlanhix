@@ -63,6 +63,11 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
             ACTION_START -> {
                 // Foreground first — Android requires it before long work.
                 startForeground(NOTIFY_ID, buildNotification())
+                // Adopt THIS connect's generation atomically with the first
+                // state it produces (main-thread serialization), then run
+                // the state machine below.
+                generation = pendingConfig?.optString("generation", null)
+                    ?.takeIf { it.isNotEmpty() }
                 val s = state
                 if (s == State.VALIDATING) {
                     // Reconnect intent while a half-open session is still
@@ -75,7 +80,13 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
                     startTunnel()
                     return START_STICKY
                 }
-                if (s != State.IDLE && s != State.STOPPED && s != State.FAILED) {
+                if (s != State.IDLE && s != State.STOPPED && s != State.FAILED &&
+                    s != State.REVOKED) {
+                    // REVOKED (system killed the tunnel earlier) must NOT
+                    // wedge future connects — device 2026-09-15: after one
+                    // failed xhttp attempt every later tap died with
+                    // "start while REVOKED — session already active",
+                    // including previously-working Shadowsocks nodes.
                     setState(State.FAILED, "start while $s — session already active", ERR_SERVICE_START_FAILED)
                     return START_NOT_STICKY
                 }
@@ -487,6 +498,15 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
         @Volatile var stateDetail: String? = null
         @Volatile var errorCode: String? = null
         @Volatile var pendingConfig: JSONObject? = null
+
+        // Pipeline-audit fix #3 (device 2026-09-15): Dart stamps a
+        // per-connect `generation` into the start payload; it is echoed in
+        // every state response so a poll that lands BEFORE onStartCommand
+        // runs (the intent is queued on the main looper) is recognized as
+        // the PREVIOUS session's state and skipped — that race made a
+        // stale CONNECTED read "succeed" on a dying tunnel and a stale
+        // FAILED read abort (then stop) a fresh session mid-boot.
+        @Volatile var generation: String? = null
 
         const val ERR_PERMISSION_DENIED = "VPN_PERMISSION_DENIED"
         const val ERR_TUN_CREATE_FAILED = "TUN_CREATE_FAILED"

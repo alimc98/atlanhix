@@ -42,6 +42,12 @@ class TrojanParser {
         path: (q['path'] ?? '').isEmpty ? null : Uri.decodeFull(q['path']!),
         host: (q['host'] ?? '').isEmpty ? null : Uri.decodeFull(q['host']!),
         serviceName: (q['serviceName'] ?? '').isEmpty ? null : q['serviceName'],
+        // reality keys — audit (2026-09-15): trojan+reality links died with
+        // publicKey: null because these were never parsed.
+        realityPublicKey: (q['pbk'] ?? '').isEmpty ? null : q['pbk'],
+        realityShortId: (q['sid'] ?? '').isEmpty ? null : q['sid'],
+        realitySpiderX:
+            (q['spx'] ?? '').isEmpty ? null : Uri.decodeFull(q['spx']!),
         rawParams: q,
         rawConfig: raw,
         source: ProfileSource.uriImport,

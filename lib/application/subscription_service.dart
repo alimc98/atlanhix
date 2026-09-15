@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../core/logger.dart';
+import '../core/net/clean_dns_client.dart';
 import '../domain/entities/proxy_profile.dart';
 import '../domain/entities/subscription.dart';
 import '../domain/errors/app_error.dart';
@@ -17,7 +18,7 @@ class SubscriptionService {
     required this.profiles,
     required this.importer,
     http.Client? client,
-  }) : _client = client ?? http.Client();
+  }) : _client = client ?? CleanDnsClient();
 
   final SubscriptionRepository subscriptions;
   final ProfileRepository profiles;
@@ -30,6 +31,44 @@ class SubscriptionService {
   static const _userAgent =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) nexus/0.1';
 
+  /// Fetch supporting BOTH schemes (user request 2026-09-15): tries the URL
+  /// as saved first; on any transport failure (TLS reset, timeout — MCI
+  /// kills some https endpoints) retries the SAME host:port under the other
+  /// scheme, and finally the other scheme on its default port. A server that
+  /// switched http↔https without changing the link keeps updating.
+  Future<http.Response> _getDualScheme(Uri uri) async {
+    final alt = uri.scheme == 'https'
+        ? uri.replace(scheme: 'http')
+        : uri.replace(scheme: 'https');
+    final candidates = <Uri>[
+      uri,
+      alt,
+      if (!uri.hasPort) alt.replace(port: null),
+    ];
+    final seen = <String>{};
+    Object? lastError;
+    for (final u in candidates) {
+      final key = '${u.scheme}://${u.authority}';
+      if (!seen.add(key)) continue;
+      try {
+        final resp = await _client
+            .get(u, headers: {'User-Agent': _userAgent})
+            .timeout(const Duration(seconds: 20));
+        if (resp.statusCode == 200) return resp;
+        lastError = SubscriptionFetchError(
+          'The server responded with HTTP ${resp.statusCode}.',
+          statusCode: resp.statusCode,
+        );
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    if (lastError is http.Response) return lastError;
+    if (lastError is SubscriptionFetchError) throw lastError;
+    throw SubscriptionFetchError('Subscription fetch failed: $lastError',
+        statusCode: null);
+  }
+
   /// Fetches and applies one subscription. Never throws — failures are
   /// recorded on the subscription and surfaced via [progress].
   Future<SubscriptionUpdateEvent> update(Subscription sub) async {
@@ -41,9 +80,7 @@ class SubscriptionService {
         throw SubscriptionFetchError('Subscription URL must be http(s).',
             statusCode: null);
       }
-      final resp = await _client
-          .get(uri, headers: {'User-Agent': _userAgent})
-          .timeout(const Duration(seconds: 20));
+      final resp = await _getDualScheme(uri);
       if (resp.statusCode != 200) {
         throw SubscriptionFetchError(
           'The server responded with HTTP ${resp.statusCode}.',

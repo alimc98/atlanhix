@@ -136,9 +136,22 @@ class _AppShellState extends State<AppShell> {
       appBar: wide
           ? null
           : AppBar(
-              title: Text(Localizations.localeOf(context).languageCode == 'fa'
-                  ? labels[_index]
-                  : labels[_index].toUpperCase()),
+              // v0.4.4 brand sheet: geometric 'A' mark + wide-tracked
+              // wordmark leads the header, page name follows.
+              title: Row(
+                children: [
+                  const AtlanhixAMark(size: 26),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Text(
+                      Localizations.localeOf(context).languageCode == 'fa'
+                          ? labels[_index]
+                          : labels[_index].toUpperCase(),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
               actions: [
                 Padding(
                   padding: const EdgeInsets.only(right: 12),

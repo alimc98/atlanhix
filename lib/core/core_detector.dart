@@ -81,6 +81,15 @@ class CoreDetector {
     // Xray — doing so locked working vless+reality nodes out of Android
     // (device bug: 6 subscription nodes badged "Xray desktop only" and
     // were skipped, while sing-box could run every one of them).
+    // Post-quantum VLESS ('mlkem768x25519plus…' encryption) is Xray-only:
+    // sing-box 1.14 has no `encryption` outbound field at all (audited vs
+    // bundled engine 2026-09-15) — it would silently negotiate 'none'.
+    final enc = (p.encryption ?? p.rawParams['encryption'] ?? '');
+    if (enc.contains('mlkem') || enc.contains('mldsa')) {
+      reasons.add('post-quantum encryption (Xray-only)');
+      return CoreDecision(core: CoreKind.xray, confidence: 1.0,
+          reasons: reasons);
+    }
     if (p.transport == Transport.xhttp) {
       xraySignals += 3;
       reasons.add('XHTTP transport is an Xray-specific transport');

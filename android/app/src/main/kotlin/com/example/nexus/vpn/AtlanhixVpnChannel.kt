@@ -26,6 +26,7 @@ class AtlanhixVpnChannel(private val activity: Activity) {
         "stop" -> stop()
         "state" -> JSONObject()
             .put("state", AtlanhixVpnService.state.name)
+            .put("generation", AtlanhixVpnService.generation ?: JSONObject.NULL)
             .put(
                 "detail",
                 AtlanhixVpnService.stateDetail ?: JSONObject.NULL
@@ -69,6 +70,9 @@ class AtlanhixVpnChannel(private val activity: Activity) {
         JSONObject().put("granted", granted)
 
     private fun start(config: JSONObject): JSONObject {
+        // NOTE: the generation is adopted inside onStartCommand (not here) —
+        // echoing it before the service processes the intent would let a
+        // poll pair the NEW nonce with the OLD session's state.
         AtlanhixVpnService.pendingConfig = config
         val intent = Intent(activity, AtlanhixVpnService::class.java)
             .setAction(AtlanhixVpnService.ACTION_START)

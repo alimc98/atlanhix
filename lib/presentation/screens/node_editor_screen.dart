@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import '../../application/dependencies.dart';
 import '../../domain/entities/proxy_profile.dart';
@@ -39,6 +41,14 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
   late final TextEditingController _obfs;
   late final TextEditingController _upMbps;
   late final TextEditingController _downMbps;
+  // 3x-ui-aligned extras (all ride in rawParams → engine builders):
+  late final TextEditingController _encryption;
+  late final TextEditingController _xhttpMode;
+  late final TextEditingController _xhttpExtra;
+  late final TextEditingController _finalMask;
+  late final TextEditingController _xPadding;
+  late final TextEditingController _xmux;
+  late final TextEditingController _realitySpx;
   bool _allowInsecure = false;
 
   @override
@@ -68,6 +78,14 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
     _obfs = tc(p?.hysteriaObfsPassword);
     _upMbps = tc(p?.hysteriaUpMbps?.toString());
     _downMbps = tc(p?.hysteriaDownMbps?.toString());
+    final rp = p?.rawParams ?? const {};
+    _encryption = tc(p?.encryption ?? rp['encryption']);
+    _xhttpMode = tc(rp['mode']);
+    _xhttpExtra = tc(rp['extra']);
+    _finalMask = tc(rp['finalmask'] ?? rp['finalMask']);
+    _xPadding = tc(rp['xPaddingBytes'] ?? rp['x_padding_bytes']);
+    _xmux = tc(rp['xmux']);
+    _realitySpx = tc(p?.realitySpiderX ?? rp['spx']);
   }
 
   @override
@@ -75,6 +93,8 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
     for (final c in [
       _name, _server, _port, _uuid, _password, _alterId, _path, _host, _sni,
       _fp, _alpn, _flow, _pubKey, _shortId, _ssMethod, _obfs, _upMbps, _downMbps,
+      _encryption, _xhttpMode, _xhttpExtra, _finalMask, _xPadding, _xmux,
+      _realitySpx,
     ]) {
       c.dispose();
     }
@@ -106,6 +126,29 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
     if (_name.text.trim().isEmpty) {
       _toast('Give the node a name');
       return;
+    }
+    // 3x-ui-style extras ride in rawParams (case-insensitive lookup feeds
+    // both Xray xhttpSettings/finalmask and the core detector).
+    final extras = <String, String>{
+      ...?widget.profile?.rawParams,
+      if (_encryption.text.trim().isNotEmpty) 'encryption': _encryption.text.trim(),
+      if (_xhttpMode.text.trim().isNotEmpty) 'mode': _xhttpMode.text.trim(),
+      if (_xhttpExtra.text.trim().isNotEmpty) 'extra': _xhttpExtra.text.trim(),
+      if (_finalMask.text.trim().isNotEmpty) 'finalmask': _finalMask.text.trim(),
+      if (_xPadding.text.trim().isNotEmpty) 'xPaddingBytes': _xPadding.text.trim(),
+      if (_xmux.text.trim().isNotEmpty) 'xmux': _xmux.text.trim(),
+      if (_realitySpx.text.trim().isNotEmpty) 'spx': _realitySpx.text.trim(),
+    };
+    for (final key in ['extra', 'finalmask', 'xmux']) {
+      final v = extras[key];
+      if (v != null && v.isNotEmpty) {
+        try {
+          jsonDecode(v);
+        } catch (_) {
+          _toast('"$key" is not valid JSON');
+          return;
+        }
+      }
     }
     final profile = ProxyProfile(
       id: widget.profile?.id ?? Ids.newId(),
@@ -140,7 +183,10 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
       hysteriaDownMbps: int.tryParse(_downMbps.text.trim()),
       source: widget.profile?.source ?? ProfileSource.manual,
       subscriptionId: widget.profile?.subscriptionId,
-      rawParams: widget.profile?.rawParams ?? const {},
+      encryption: _encryption.text.trim().isEmpty
+          ? widget.profile?.encryption
+          : _encryption.text.trim(),
+      rawParams: extras,
     );
     await widget.deps.profiles.update(profile);
     if (!mounted) return;
@@ -247,20 +293,35 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
                 _transport == Transport.xhttp ||
                 _transport == Transport.httpupgrade)
               _field(context, _path, 'Path (e.g. /api)'),
-            if (_transport == Transport.xhttp)
-              _field(context, _host, 'Host / authority'),
+            if (_transport == Transport.xhttp) ...[
+              _field(context, _host, 'xhttp Host / authority'),
+              _field(context, _xhttpMode,
+                  'xhttp mode (auto | stream-one | stream-up | packet-up)'),
+              _field(context, _xPadding, 'xPaddingBytes (e.g. 100-1000)'),
+              _field(context, _xmux, 'xmux raw JSON — {…} (optional)'),
+              _field(context, _xhttpExtra,
+                  'xhttp extra raw JSON — {XHTTPObject} (optional)'),
+            ],
             if (_security != Security.none) ...[
               _field(context, _sni, 'SNI (server name)'),
               _field(context, _alpn, 'ALPN (comma separated, e.g. h2,http/1.1)'),
               if (_security == Security.tls)
                 _field(context, _fp, 'uTLS fingerprint (chrome/edge/…)'),
               if (_security == Security.reality) ...[
-                _field(context, _pubKey, 'Reality public key'),
-                _field(context, _shortId, 'Reality short-id'),
+                _field(context, _pubKey, 'Reality public key (pbk)'),
+                _field(context, _shortId, 'Reality short-id (sid)'),
+                _field(context, _realitySpx, 'Reality spiderX (spx)'),
               ],
+              // FinalMask — Xray 26.x late-layer obfuscation, raw JSON.
+              _field(context, _finalMask,
+                  'FinalMask raw JSON — {FinalMaskObject} (optional)'),
             ],
-            if (_protocol == ProxyProtocol.vless && _security == Security.none)
-              _field(context, _flow, 'Flow (e.g. xtls-rprx-vision)'),
+            if (_protocol == ProxyProtocol.vless) ...[
+              _field(context, _encryption,
+                  'encryption (none / mlkem768x25519plus…)'),
+              _field(context, _flow,
+                  'flow (xtls-rprx-vision or mlkem768x25519plus variant)'),
+            ],
           ],
           if (_isHysteria) ...[
             _field(context, _password, 'Password'),

@@ -184,6 +184,7 @@ class ProxyProfile {
 
   ProxyProfile copyWith({
     String? name,
+    String? server,
     CoreKind? core,
     CoreKind? userPinnedCore,
     String? subscriptionId,
@@ -201,7 +202,7 @@ class ProxyProfile {
     return ProxyProfile(
       id: p.id,
       name: name ?? p.name,
-      server: p.server,
+      server: server ?? p.server,
       port: port ?? p.port,
       protocol: p.protocol,
       transport: p.transport,

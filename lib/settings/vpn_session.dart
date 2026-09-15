@@ -5,6 +5,7 @@ import 'dart:io';
 import '../core/android_node_support.dart';
 import '../core/runtime/core_process.dart';
 import '../core/logger.dart';
+import '../core/net/bootstrap_dns.dart';
 import '../core/health/latency_tester.dart';
 import '../domain/entities/health.dart';
 import '../domain/entities/proxy_profile.dart';
@@ -117,6 +118,11 @@ class VpnSession {
 
   /// "Applied after reconnect" flag (§31): true when settings changed in
   /// ways the running tunnel cannot hot-apply.
+  /// Hostname whose bootstrap-pinned IP is currently dialed —
+  /// the failure path evicts THIS, not profile.server (which by then
+  /// holds the pinned IP itself).
+  String? _bootedHost;
+
   bool pendingApply = false;
   String? lastError; // last fatal connect error code (UI-facing)
 
@@ -247,6 +253,15 @@ class VpnSession {
           '$trace FAILED stage=CORE_SELECTED node=${profile.name} core=${profile.effectiveCore.name} reason=non-sing-box core has no in-app runtime (single-core guarantee)');
       return false;
     }
+    // ── BOOTSTRAP PIN (v0.4.4 device regression) ──
+    // Node hostnames are resolved HERE, outside the tunnel. Left to the
+    // engine, the lookup goes through the tunnel the engine owns and
+    // deadlocks (`lookup <node>: context deadline exceeded`, Mi 9T
+    // 2026-09-15) or returns the carrier sinkhole. The pinned public IPv4
+    // replaces `server`; SNI/server_name keep the hostname so TLS,
+    // Reality and Host headers are byte-for-byte unchanged.
+    profile = await _withBootstrappedAddress(profile, trace);
+
     // xhttp / mKCP: the front sing-box CANNOT express them — the Xray
     // runtime (:xray process + libv2ray AAR) must serve the node. Started
     // as a local SOCKS upstream below; the front config references it via
@@ -308,6 +323,19 @@ class VpnSession {
       );
       Logger.instance.info(
           'vpn-session', ok ? '$trace CONNECTED' : '$trace FAILED stage=controller.connect (see prior stages)');
+      if (!ok) {
+        // NOTE (v0.4.4): we deliberately do NOT evict the bootstrap pin
+        // here. A health-check failure is usually protocol/DPI/transport,
+        // not a stale IP — and evicting a WORKING pin turns the next
+        // connect into a race against a flaky instant re-resolve (device
+        // trace 2026-09-15: attempt 1 pinned a good IP but timed out for
+        // another reason; eviction made attempt 2 unpinned → engine
+        // deadlock). Rotation is handled by the TTL + stale-while-error.
+        if (_bootedHost != null) {
+          Logger.instance.info('vpn-session',
+              '$trace BOOT pin kept host=$_bootedHost (failure not DNS-shaped)');
+        }
+      }
       return ok;
     } catch (e, st) {
       Logger.instance.error('vpn-session',
@@ -334,6 +362,39 @@ class VpnSession {
   /// Also emits a redacted structural summary of the FINAL config (§7):
   /// inbound types/ports, outbound tags/types, selector members, route
   /// final/rules — the same view the native side logs, pre-handoff.
+  /// Resolves [profile]'s hostname outside the tunnel and returns a
+  /// profile whose `server` is the verified public IP (SNI/Host fields
+  /// backfilled with the original name so nothing TLS-facing changes).
+  /// Non-routable answers and lookup failures leave the profile as-is.
+  Future<ProxyProfile> _withBootstrappedAddress(
+      ProxyProfile profile, String trace) async {
+    final host = profile.server.trim();
+    if (host.isEmpty || BootstrapResolver.isPublicV4(host)) return profile;
+    final sw = Stopwatch()..start();
+    String? ip;
+    try {
+      ip = await BootstrapResolver.instance.addressFor(profile);
+    } catch (_) {
+      ip = null;
+    }
+    sw.stop();
+    if (ip == null || ip == host) {
+      Logger.instance.info('vpn-session',
+          '$trace BOOT host=$host pinned=false ms=${sw.elapsedMilliseconds}');
+      return profile;
+    }
+    Logger.instance.info('vpn-session',
+        '$trace BOOT host=$host pinned=$ip ms=${sw.elapsedMilliseconds}');
+    _bootedHost = host;
+    return profile.copyWith(
+      server: ip,
+      // Preserve the hostname for every identity field the cores use:
+      // SNI, TLS server_name, Reality serverName, HTTP Host header.
+      sni: profile.sni ?? host,
+      host: profile.host ?? host,
+    );
+  }
+
   Future<String?> _buildEngineConfig(ProxyProfile profile, String trace) async {
     try {
       final bridge = deps.configBridge;

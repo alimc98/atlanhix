@@ -97,6 +97,10 @@ class DnsProbeResult {
 class DnsScanner {
   DnsScanner({this.timeout = const Duration(seconds: 3)});
 
+  /// Clean domestic resolver measured reachable over UDP/53 from MCI mobile
+  /// data (Shecan) — used to resolve carrier-poisoned node/subscription hosts.
+  static const cleanResolverIp = '178.22.122.100';
+
   final Duration timeout;
 
   /// Public hostnames whose REAL answers are always public unicast space.
@@ -376,6 +380,91 @@ class DnsScanner {
         (a == 192 && b == 168) ||
         (a == 100 && b >= 64 && b <= 127) ||
         (a == 198 && (b == 18 || b == 19));
+  }
+
+  /// Direct A-record lookup of [name] through a (clean) resolver — the
+  /// subscription path needs real IPs for domains the carrier poisons
+  /// (MCI returns 10.10.34.36 or times out for blocked hosts). Returns
+  /// public IPv4 answers only; empty on failure.
+  Future<List<String>> resolve(String name,
+      {String server = '178.22.122.100', int port = 53, bool tcp = false}) async {
+    final answers = <String>[];
+    try {
+      final host = InternetAddress(server);
+      final q = _buildQuery(name, 1);
+      if (tcp) {
+        // TCP/53: MCI transparently intercepts UDP/53 (answers with the
+        // sinkhole) but leaves TCP DNS alone (device-verified 2026-09-15:
+        // Shecan UDP='no answer' while the same name resolves over TCP).
+        final sock = await Socket.connect(host, port, timeout: timeout);
+        try {
+          sock.add([q.bytes.length >> 8, q.bytes.length & 0xFF]);
+          sock.add(q.bytes);
+          await sock.flush();
+          final buf = BytesBuilder();
+          final deadline = DateTime.now().add(timeout);
+          await for (final chunk in sock
+              .timeout(timeout, onTimeout: (s) => s.close())) {
+            buf.add(chunk);
+            // TCP DNS servers keep the connection OPEN — without an
+            // early exit every lookup burned the full timeout even
+            // though the answer had arrived (device: 3.0s of pure
+            // stall, then flaky 3.1s failures raced the connect
+            // deadline). Parse what's buffered and bail on the first
+            // real answer.
+            if (DateTime.now().isAfter(deadline)) break;
+            final data = buf.toBytes();
+            var probeOff = 0;
+            var ready = false;
+            while (probeOff + 2 <= data.length) {
+              final ml = (data[probeOff] << 8) | data[probeOff + 1];
+              if (ml == 0 || probeOff + 2 + ml > data.length) break;
+              final probe = <String>[];
+              _absorb(
+                  data.sublist(probeOff + 2, probeOff + 2 + ml), probe, () {});
+              if (probe.isNotEmpty) {
+                answers.addAll(probe);
+                ready = true;
+                break;
+              }
+              probeOff += 2 + ml;
+            }
+            if (ready) break;
+          }
+          final data = buf.takeBytes();
+          var off = 0;
+          while (off + 2 <= data.length) {
+            final mlen = (data[off] << 8) | data[off + 1];
+            if (mlen == 0 || off + 2 + mlen > data.length) break;
+            _absorb(data.sublist(off + 2, off + 2 + mlen), answers, () {});
+            off += 2 + mlen;
+          }
+        } finally {
+          sock.destroy();
+        }
+      } else {
+        final sock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+        final done = Completer<void>();
+        try {
+          sock.listen((e) {
+            if (e != RawSocketEvent.read) return;
+            final dg = sock.receive();
+            if (dg == null || dg.data.length < 13) return;
+            _absorb(dg.data, answers, () {});
+            // MCI's transparent UDP/53 interceptor sometimes answers with a
+            // ZERO-ANSWER packet first (device 2026-09-15: app saw 'no
+            // answer' while `nc` to the same resolver got ANCOUNT=2). Only
+            // a real answer completes the wait — keep listening otherwise.
+            if (answers.isNotEmpty && !done.isCompleted) done.complete();
+          });
+          sock.send(q.bytes, host, port);
+          await done.future.timeout(timeout, onTimeout: () {});
+        } finally {
+          sock.close();
+        }
+      }
+    } catch (_) {/* unreachable resolver — caller falls back */}
+    return answers.where((a) => !isNonPublic(a)).toList();
   }
 
   static _Query _buildQuery(String name, int type) {

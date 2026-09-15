@@ -211,14 +211,40 @@ class AndroidVpnController {
       // local mixed port and Android's global http_proxy routes traffic.
       if (!proxyMode && !await requestPermission()) return false;
       _set(AndroidVpnPhase.preparing);
+      final generation =
+          DateTime.now().microsecondsSinceEpoch.toRadixString(36);
       await _channel.invokeMethod<String>(
-          'start', jsonEncode(buildHandoff()));
+          'start', jsonEncode(buildHandoff()..['generation'] = generation));
       _set(AndroidVpnPhase.starting);
 
       final deadline = DateTime.now().add(startupTimeout);
+      var generationAcked = false;
       while (DateTime.now().isBefore(deadline)) {
         final s = await _call('state');
         final native = (s['state'] as String? ?? 'IDLE').toUpperCase();
+        // Race fix (audit #3): the start intent is QUEUED on the main
+        // looper — a state read before onStartCommand runs shows the
+        // PREVIOUS session (CONNECTED → celebrate on a dying tunnel;
+        // FAILED → our stop() queues ACTION_STOP behind our own
+        // ACTION_START and kills the fresh session). The service adopts
+        // this connect's generation INSIDE onStartCommand and echoes it;
+        // any payload with a different generation is the previous session
+        // and must be skipped. The starting/preparing mirror is the
+        // accepted floor: the native side always lands on one of them.
+        final echoed = s['generation'] as String?;
+        if (echoed != generation) {
+          final prior = native == 'IDLE' ||
+              native == 'PREPARING' ||
+              native == 'STARTING' ||
+              (native == 'FAILED' &&
+                  (s['detail'] as String? ?? '').contains('generation'));
+          if (!prior) {
+            await Future<void>.delayed(const Duration(milliseconds: 200));
+            continue;
+          }
+        } else {
+          generationAcked = true;
+        }
         final detail = s['detail'] as String?;
         final code = s['errorCode'] as String?;
         if (detail != null && detail.isNotEmpty) lastDetail = detail;
@@ -270,6 +296,13 @@ class AndroidVpnController {
       return false;
     } catch (e) {
       _set(AndroidVpnPhase.failed, detail: 'connect failed: $e');
+      // Device-wedge fix (pipeline audit 2026-09-15): a probe that THROWS
+      // (TimeoutException — the probe budget and startup budget were the
+      // same clock) skipped the teardown the `ok==false` branch does. The
+      // engine kept the TUN fd, the mixed port and libbox alive; the next
+      // connect died on `bind: address already in use` and every retry
+      // failed until a force-restart. Always best-effort stop on failure.
+      await stop();
       return false;
     }
   }
