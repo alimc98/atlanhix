@@ -7,6 +7,9 @@ import '../core/logger.dart';
 import '../core/health/latency_tester.dart';
 import '../domain/entities/health.dart';
 import '../domain/entities/proxy_profile.dart';
+import '../core/configgen/xray_config_generator.dart';
+import '../core/engine_availability.dart';
+import '../platform/xray_bridge.dart';
 import '../warp/warp_registrar.dart';
 import 'app_settings.dart';
 import '../platform/android_vpn.dart';
@@ -39,6 +42,43 @@ class VpnSession {
 
   /// The node chosen for the current/next connection (set by the UI).
   ProxyProfile? selectedNode;
+
+  /// Local SOCKS port of the running :xray upstream (0 = not running).
+  int _xrayUpstreamPort = 0;
+
+  /// Generate the node's Xray config and boot the :xray process with it.
+  Future<bool> _startXrayUpstream(ProxyProfile profile, String trace) async {
+    try {
+      final port = 2080;
+      final xrayJson = XrayConfigGenerator().generate(
+        profile: profile,
+        routing: deps.configBridge.routingProfile(),
+        localSocksPort: port,
+        // xray resolves the sing-box-forwarded remote domains ITSELF —
+        // 1.1.1.1 (the generator default) is dead on IR mobile data
+        // (measured Mi 9T 2026-09-13); use the same clean domestic resolver
+        // the front config uses.
+        dnsServer: Platform.isAndroid ? '178.22.122.100' : '1.1.1.1',
+      );
+      final ok = await XrayBridge.instance
+          .start(jsonEncode(xrayJson), port);
+      if (!ok) {
+        lastError = 'XRAY_START_FAILED';
+        Logger.instance.error('vpn-session',
+            '$trace FAILED stage=XRAY_UPSTREAM node=${profile.name} reason=:xray process refused start');
+        return false;
+      }
+      _xrayUpstreamPort = port;
+      Logger.instance.info('vpn-session',
+          '$trace XRAY_UPSTREAM node=${profile.name} socks=$port');
+      return true;
+    } catch (e) {
+      lastError = 'XRAY_START_FAILED';
+      Logger.instance.error('vpn-session',
+          '$trace FAILED stage=XRAY_UPSTREAM exception=${e.runtimeType} msg=${Logger.redact(e.toString())}');
+      return false;
+    }
+  }
 
   /// v0.4.1 §5: selection CHANGED without a state-machine event (the user
   /// tapped a node card while disconnected — no [states] emission). The UI
@@ -199,14 +239,22 @@ class VpnSession {
           '$trace FAILED stage=CORE_SELECTED node=${profile.name} core=${profile.effectiveCore.name} reason=non-sing-box core has no in-app runtime (single-core guarantee)');
       return false;
     }
-    if (profile.transport == Transport.xhttp) {
-      // Defensive pairing with CoreDetector/OutboundBuilders: an xhttp
-      // profile must never be built as a native sing-box outbound — it
-      // requires the Xray core, which does not run on Android.
-      lastError = 'NODE_NOT_RUNNABLE_ON_ANDROID';
-      Logger.instance.error('vpn-session',
-          '$trace FAILED stage=CORE_SELECTED node=${profile.name} transport=xhttp reason=xhttp requires the Xray core (single-core guarantee)');
-      return false;
+    // xhttp / mKCP: the front sing-box CANNOT express them — the Xray
+    // runtime (:xray process + libv2ray AAR) must serve the node. Started
+    // as a local SOCKS upstream below; the front config references it via
+    // socksUpstreams (v2rayNG/NekoBox architecture). When the runtime is
+    // off this fails with the honest reason, never a silent swap.
+    if (profile.transport == Transport.xhttp ||
+        profile.rawParams['type'] == 'mkcp' ||
+        profile.rawParams['type'] == 'kcp') {
+      if (!XrayCoreState.instance.runtimeLoaded) {
+        lastError = 'XRAY_RUNTIME_UNAVAILABLE';
+        Logger.instance.error('vpn-session',
+            '$trace FAILED stage=CORE_SELECTED node=${profile.name} transport=${profile.transport.name} reason=xray runtime not loaded (sing-box on, Xray off)');
+        return false;
+      }
+      final ok = await _startXrayUpstream(profile, trace);
+      if (!ok) return false;
     }
 
     try {
@@ -251,7 +299,13 @@ class VpnSession {
 
   /// §3 — clean disconnect; permission state is preserved by Android, so a
   /// subsequent connect skips the consent dialog (§37.12).
-  Future<void> disconnect() => controller.stop();
+  Future<void> disconnect() async {
+    await controller.stop();
+    if (_xrayUpstreamPort > 0) {
+      _xrayUpstreamPort = 0;
+      await XrayBridge.instance.stop();
+    }
+  }
 
   /// Attempts full validation of a config by running the engine binary if
   /// present (desktop) — on Android, config validity is checked by the
@@ -276,8 +330,16 @@ class VpnSession {
       // means the selection gates above were bypassed — fail loudly instead
       // of generating a merged dual-core config.
       assert(() {
-        if (!AndroidNodeSupport.coreAllowedOnAndroid(profile.effectiveCore) ||
-            profile.transport == Transport.xhttp) {
+        final needsXrayUpstream = profile.transport == Transport.xhttp ||
+            profile.rawParams['type'] == 'mkcp' ||
+            profile.rawParams['type'] == 'kcp';
+        if (needsXrayUpstream && _xrayUpstreamPort == 0) {
+          throw StateError(
+              'xhttp profile without a live Xray upstream reached config build');
+        }
+        if (!needsXrayUpstream &&
+            !AndroidNodeSupport.coreAllowedOnAndroid(
+                profile.effectiveCore)) {
           throw StateError(
               'single-core violation: ${profile.effectiveCore.name}/${profile.transport.name} '
               'profile reached Android config generation');
@@ -302,11 +364,25 @@ class VpnSession {
           }
         }
       }
+      // Upstream Xray (xhttp/mKCP nodes): expose the node as a local SOCKS
+      // stub inside the front config; the tunnel is sing-box TUN -> socks ->
+      // :xray process -> node. Real traffic, both cores cooperating per-node.
+      final upstreams = <String, ({String host, int port})>{};
+      final _needsXray = profile.transport == Transport.xhttp ||
+          profile.rawParams['type'] == 'mkcp' ||
+          profile.rawParams['type'] == 'kcp';
+      if (_xrayUpstreamPort > 0 && _needsXray) {
+        upstreams[profile.id] =
+            (host: '127.0.0.1', port: _xrayUpstreamPort);
+      }
       final cfg = cores.front.buildConfig(
         [profile],
         selectedProfileId: profile.id,
         routing: routing,
         dns: dns,
+        socksUpstreams: {
+          ...upstreams,
+        },
         warpProfile: warpProfile,
         chainWarpOutside:
             warpProfile != null && selectedWarpTag == null,

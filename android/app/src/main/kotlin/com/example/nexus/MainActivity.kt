@@ -6,6 +6,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
 import com.example.nexus.vpn.AtlanhixVpnChannel
+import com.example.nexus.vpn.AtlanhixXrayChannel
 
 class MainActivity : FlutterActivity() {
 
@@ -14,6 +15,21 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AtlanhixXrayChannel.CHANNEL
+        ).setMethodCallHandler { call, result ->
+            // v0.4.3: Xray runtime control (`:xray` process). JSON-string
+            // contract mirrors the VPN channel.
+            try {
+                val rawArg: Any? = call.arguments()
+                val arg: JSONObject? =
+                    if (rawArg == null) null else JSONObject(rawArg.toString())
+                result.success(xrayChannelOrNew().handle(call.method, arg).toString())
+            } catch (e: Exception) {
+                result.error("xray_channel", e.message, null)
+            }
+        }
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             AtlanhixVpnChannel.CHANNEL
@@ -52,6 +68,10 @@ class MainActivity : FlutterActivity() {
 
     private fun vpnChannelOrNew(): AtlanhixVpnChannel =
         vpnChannel ?: AtlanhixVpnChannel(this).also { vpnChannel = it }
+
+    private var xrayChannel: AtlanhixXrayChannel? = null
+    private fun xrayChannelOrNew(): AtlanhixXrayChannel =
+        xrayChannel ?: AtlanhixXrayChannel(this).also { xrayChannel = it }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)

@@ -112,7 +112,7 @@ group('engine capability matrix (device bug: reality nodes were locked out)', ()
       expect(CoreDetector().detect(prof).core, CoreKind.xray);
       expect(AndroidNodeSupport.isRunnable(prof), isFalse);
       expect(AndroidNodeSupport.notRunnableReason(prof),
-          'Xray-only transport');
+          'Xray-only transport · Xray core off (sing-box cannot run it)');
     });
 
     test('USER-PINNED Xray keeps its honest Android lock', () {
@@ -124,7 +124,7 @@ group('engine capability matrix (device bug: reality nodes were locked out)', ()
       expect(AndroidNodeSupport.isRunnable(prof), isFalse,
           reason: 'a pin is an explicit choice — never swapped silently');
       expect(AndroidNodeSupport.notRunnableReason(prof),
-          'Xray (desktop only)');
+          'Xray core off — not available in this build');
       expect(AndroidNodeSupport.androidExclusionReason(prof),
           contains('xray_pinned'));
     });

@@ -31,13 +31,19 @@ class AndroidNodeSupport {
     if (p.transport == Transport.xhttp ||
         p.rawParams['type'] == 'mkcp' ||
         p.rawParams['type'] == 'kcp') {
-      return XrayCoreState.instance.aarLoaded;
+      return XrayCoreState.instance.runtimeLoaded;
     }
     if (p.userPinnedCore == CoreKind.xray) {
-      return XrayCoreState.instance.aarLoaded;
+      return XrayCoreState.instance.runtimeLoaded;
+    }
+    // AmneziaWG needs its patched WireGuard kernel/userspace fork — not
+    // bundled in any engine we ship, in either state (mirrors
+    // notRunnableReason so the two gates can never disagree).
+    if (p.amnezia?.isNotEmpty == true || p.effectiveCore == CoreKind.amneziaWg) {
+      return false;
     }
     if (p.effectiveCore == CoreKind.xray && p.userPinnedCore != null) {
-      return XrayCoreState.instance.aarLoaded;
+      return XrayCoreState.instance.runtimeLoaded;
     }
     return switch (p.protocol) {
       ProxyProtocol.vmess ||
@@ -71,12 +77,12 @@ class AndroidNodeSupport {
     }
     if (p.transport == Transport.xhttp || p.rawParams['type'] == 'mkcp' ||
         p.rawParams['type'] == 'kcp') {
-      return XrayCoreState.instance.aarLoaded
+      return XrayCoreState.instance.runtimeLoaded
           ? null
           : 'Xray-only transport · Xray core off (sing-box cannot run it)';
     }
     if (p.userPinnedCore == CoreKind.xray) {
-      return XrayCoreState.instance.aarLoaded
+      return XrayCoreState.instance.runtimeLoaded
           ? null
           : 'Xray core off — not available in this build';
     }
@@ -95,13 +101,26 @@ class AndroidNodeSupport {
   static String androidCoreLabel(ProxyProfile p) {
     final reason = notRunnableReason(p);
     if (reason != null) return reason;
+    // Runnable via the Xray upstream: say so — never claim sing-box dials it.
+    if (_xrayOnly(p) || p.userPinnedCore == CoreKind.xray) {
+      return 'Xray (upstream process)';
+    }
     return 'sing-box';
   }
+
+  static bool _xrayOnly(ProxyProfile p) =>
+      p.transport == Transport.xhttp ||
+      p.rawParams['type'] == 'mkcp' ||
+      p.rawParams['type'] == 'kcp';
 
   /// Compact badge text for tight node-card rows (full reason in tooltip).
   static String shortBadge(ProxyProfile p) {
     final reason = notRunnableReason(p);
-    if (reason == null) return 'sing-box';
+    if (reason == null) {
+      // runnable — but WHICH core actually dials it?
+      if (_xrayOnly(p) || p.userPinnedCore == CoreKind.xray) return 'Xray';
+      return 'sing-box';
+    }
     if (reason.startsWith('Amnezia')) return 'no core · Amnezia off';
     if (reason.startsWith('Xray-only')) return 'Xray off · xhttp';
     if (reason.startsWith('Xray')) return 'Xray off';
@@ -130,7 +149,7 @@ class AndroidNodeSupport {
         CoreKind.wireguardSingbox ||
         CoreKind.unknown =>
           true,
-        CoreKind.xray => XrayCoreState.instance.aarLoaded,
+        CoreKind.xray => XrayCoreState.instance.runtimeLoaded,
         CoreKind.amneziaWg ||
         CoreKind.masterDnsVpn =>
           false,
@@ -149,12 +168,12 @@ class AndroidNodeSupport {
     }
     if (p.transport == Transport.xhttp || p.rawParams['type'] == 'mkcp' ||
         p.rawParams['type'] == 'kcp') {
-      return XrayCoreState.instance.aarLoaded
+      return XrayCoreState.instance.runtimeLoaded
           ? null
           : 'xray_transport: ${p.transport.name} is upstream-Xray-only; the Xray runtime is not loaded';
     }
     if (p.userPinnedCore == CoreKind.xray) {
-      return XrayCoreState.instance.aarLoaded
+      return XrayCoreState.instance.runtimeLoaded
           ? null
           : 'xray_pinned: user pinned the Xray core, but it is not available in this build';
     }
@@ -172,13 +191,18 @@ class AndroidNodeSupport {
   /// generic "Connection failed" wording). Kept next to the codes emitted by
   /// the connect pipeline so the mapping cannot drift from the emitter.
   static String? connectErrorHint(String? code) => switch (code) {
+        'XRAY_RUNTIME_UNAVAILABLE' =>
+          'This node needs the Xray core (xhttp/mKCP) — sing-box is on, '
+              'Xray is off in this build',
+        'XRAY_START_FAILED' =>
+          'The Xray process refused to start — check the engine logs',
         'NO_RUNNABLE_NODE' =>
           'No node on this device can run yet — Xray (xhttp), AmneziaWG and '
               'MDVPN nodes need their desktop cores',
         'NODE_NOT_RUNNABLE_ON_ANDROID' ||
         'CORE_NOT_RUNNABLE_ON_ANDROID' =>
-          'This node needs a core that does not run on Android yet '
-              '(Xray xhttp / AmneziaWG / MDVPN)',
+          'This node needs a core that cannot run here '
+              '(Xray off / AmneziaWG / MDVPN not bundled)',
         _ => null,
       };
 }

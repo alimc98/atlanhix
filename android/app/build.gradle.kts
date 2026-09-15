@@ -21,6 +21,14 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    packaging {
+        jniLibs {
+            // libxray_core.so must be a real executable file in the native
+            // lib dir — a compressed/packed .so cannot be exec()'d (v0.4.3).
+            useLegacyPackaging = true
+        }
+    }
+
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.nexus"

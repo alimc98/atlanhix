@@ -1,7 +1,9 @@
 ﻿import 'package:flutter/material.dart';
 
 import 'application/dependencies.dart';
+import 'core/engine_availability.dart';
 import 'localization/generated/app_localizations.dart';
+import 'platform/xray_bridge.dart';
 import 'presentation/app_shell.dart';
 import 'presentation/screens/warp_screen.dart';
 import 'presentation/screens/apps_routing_screen.dart';
@@ -13,6 +15,11 @@ import 'theme/theme.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final deps = await AppDependencies.bootstrap();
+  // v0.4.3: learn the TRUTH about the Xray runtime (exec'd native binary in
+  // the :xray process) before the UI paints a single badge — honest engine
+  // states start here, never from a hardcoded assumption.
+  await XrayBridge.instance.probe();
+  XrayCoreState.instance.setRuntimeLoaded(XrayBridge.instance.available);
   runApp(AtlanhixApp(deps: deps));
 }
 

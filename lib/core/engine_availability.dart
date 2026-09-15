@@ -94,12 +94,12 @@ class XrayCoreState {
   XrayCoreState._();
   static final XrayCoreState instance = XrayCoreState._();
 
-  bool _aarLoaded = false;
-  bool get aarLoaded => _aarLoaded;
+  bool _runtimeLoaded = false;
+  bool get runtimeLoaded => _runtimeLoaded;
 
-  void setAarLoaded(bool v) {
-    if (_aarLoaded == v) return;
-    _aarLoaded = v;
+  void setRuntimeLoaded(bool v) {
+    if (_runtimeLoaded == v) return;
+    _runtimeLoaded = v;
     VpnRefresh.notify();
   }
 }
