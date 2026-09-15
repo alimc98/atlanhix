@@ -1,124 +1,200 @@
 import 'package:flutter/material.dart';
 
-/// Atlanhix monoline line-type wordmark, drawn as pure strokes (no fills, no
-/// gradients) — the "مشکی خطی" type logo: geometric single-weight letters with
-/// round caps, uppercase, wide tracking. [strokeColor] decides the ink
-/// (black on light surfaces, off-white on dark ones).
+/// Atlanhix line-type brand (v0.4.3 "مشکی خطی" spec): a monoline **ATHIX**
+/// monogram whose letterforms deliberately overlap into an ambiguous weave —
+/// pure strokes, no fills, no gradients, no globe. The crossing strokes are
+/// cut through the black with a transparent gap and re-drawn in brand blue,
+/// which makes the whole mark read as one glyph-cluster instead of five
+/// letters. Tune [overlap] for density.
 class AtlanhixLogo extends StatelessWidget {
   const AtlanhixLogo({
     super.key,
-    this.height = 18,
-    this.strokeColor,
-    this.word = 'ATLANHIX',
-    this.tracking = 0.28,
-    this.strokeWidthFactor = 0.085,
+    this.height = 22,
+    this.inkColor,
+    this.lineColor,
+    this.overlap = 0.38,
   });
 
   final double height;
-  final Color? strokeColor;
-  final String word;
+  final Color? inkColor;
+  final Color? lineColor;
 
-  /// Letter advance as a fraction of cap height (wide-tracking look).
-  final double tracking;
-  final double strokeWidthFactor;
+  /// 0 = spaced letters, .5 = dense interlocked weave.
+  final double overlap;
 
   @override
   Widget build(BuildContext context) {
-    final ink = strokeColor ?? Theme.of(context).textTheme.titleMedium?.color;
+    final ink = inkColor ?? Theme.of(context).textTheme.titleMedium?.color;
+    final lines = lineColor ?? Theme.of(context).colorScheme.primary;
     return CustomPaint(
-      size: _AtlasMetrics.size(word, height, tracking),
-      painter: _WordmarkPainter(
-        word: word,
+      size: _Metrics.size(height, overlap),
+      painter: _WeavePainter(
+        ink: ink ?? const Color(0xFF101216),
+        lines: lines,
         capHeight: height,
-        ink: ink ?? const Color(0xFFE8E9ED),
-        tracking: tracking,
-        strokeWidthFactor: strokeWidthFactor,
+        overlap: overlap,
       ),
     );
   }
 }
 
-/// Monoline brand mark: a thin-line globe ("atlas") with a meridian cross,
-/// pure strokes, round caps — sits where the filled bolt badge used to be.
-class AtlanhixMark extends StatelessWidget {
-  const AtlanhixMark({super.key, this.size = 22, this.strokeColor});
+/// Glyph grid: every letter lives in a box [gw] wide, [gh] = cap height.
+class _Metrics {
+  static const gh = 100.0;
+  static const _w = <String, double>{
+    'A': 66, 'T': 62, 'H': 68, 'I': 22, 'X': 64,
+  };
+
+  static double advance(String ch) => _w[ch] ?? 66;
+  static const word = 'ATHIX';
+
+  static double total(double overlap) {
+    var x = 0.0;
+    for (var i = 0; i < word.length; i++) {
+      final adv = advance(word[i]);
+      x += i == word.length - 1 ? adv : adv * (1 - overlap);
+    }
+    return x;
+  }
+
+  static Size size(double capHeight, double overlap) =>
+      Size(total(overlap) * capHeight / gh, capHeight * 1.12);
+}
+
+class _WeavePainter extends CustomPainter {
+  const _WeavePainter({
+    required this.ink,
+    required this.lines,
+    required this.capHeight,
+    required this.overlap,
+  });
+
+  final Color ink;
+  final Color lines;
+  final double capHeight;
+  final double overlap;
+
+  static const _blue = {'T', 'X'};
+
+  /// Strokes of one glyph in its local box (0..w, 0..gh).
+  static List<List<double>> _strokes(String ch) {
+    const gh = _Metrics.gh;
+    final w = _Metrics.advance(ch);
+    switch (ch) {
+      case 'A':
+        return [
+          [0, gh, w / 2, 0],
+          [w / 2, 0, w, gh],
+          [w * 0.18, gh * 0.62, w * 0.82, gh * 0.62],
+        ];
+      case 'T':
+        return [
+          [0, 0, w, 0],
+          [w / 2, 0, w / 2, gh],
+        ];
+      case 'H':
+        return [
+          [0, 0, 0, gh],
+          [w, 0, w, gh],
+          [0, gh / 2, w, gh / 2],
+        ];
+      case 'I':
+        return [
+          [w / 2, 0, w / 2, gh],
+        ];
+      case 'X':
+        return [
+          [0, 0, w, gh],
+          [w, 0, 0, gh],
+        ];
+    }
+    return const [];
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = capHeight * 0.085;
+    final base = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..strokeWidth = stroke;
+    final cutter = Paint()
+      ..blendMode = BlendMode.clear
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = stroke * 2.4;
+
+    canvas.save();
+    canvas.translate(0, capHeight * 0.06);
+    canvas.scale(capHeight / _Metrics.gh);
+    // Weave needs its own layer so BlendMode.clear punches the ink, not bg.
+    final bounds = Rect.fromLTWH(-2, -12, _Metrics.total(overlap) + 4,
+        _Metrics.gh + 24);
+    canvas.saveLayer(bounds, Paint());
+
+    final xs = <String, double>{};
+    var x = 0.0;
+    for (var i = 0; i < _Metrics.word.length; i++) {
+      final ch = _Metrics.word[i];
+      xs[ch] = x;
+      x += _Metrics.advance(ch) * (1 - overlap);
+    }
+
+    // Pass 1 — ink glyphs.
+    base.color = ink;
+    for (var i = 0; i < _Metrics.word.length; i++) {
+      final ch = _Metrics.word[i];
+      if (_blue.contains(ch)) continue;
+      _glyph(canvas, base, ch, xs[ch]!);
+    }
+    // Pass 2 — blue strokes: first punch a gap through the ink, then draw.
+    for (final ch in _blue) {
+      _glyph(canvas, cutter, ch, xs[ch]!);
+    }
+    base.color = lines;
+    for (final ch in _blue) {
+      _glyph(canvas, base, ch, xs[ch]!);
+    }
+    canvas.restore(); // layer
+    canvas.restore();
+  }
+
+  void _glyph(Canvas c, Paint p, String ch, double ox) {
+    for (final s in _strokes(ch)) {
+      c.drawLine(Offset(ox + s[0], s[1]), Offset(ox + s[2], s[3]), p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WeavePainter old) =>
+      old.ink != ink ||
+      old.lines != lines ||
+      old.capHeight != capHeight ||
+      old.overlap != overlap;
+}
+
+/// Small monoline shield used by the WARP chain card — pure stroke, same
+/// design language as the wordmark.
+class AtlanhixShieldMark extends StatelessWidget {
+  const AtlanhixShieldMark({super.key, this.size = 22, this.color});
 
   final double size;
-  final Color? strokeColor;
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
-    final ink = strokeColor ?? Theme.of(context).textTheme.titleMedium?.color;
+    final ink = color ?? Theme.of(context).textTheme.titleMedium?.color;
     return CustomPaint(
       size: Size.square(size),
-      painter: _MarkPainter(ink ?? const Color(0xFFE8E9ED)),
+      painter: _ShieldPainter(ink ?? const Color(0xFF101216)),
     );
   }
 }
 
-class _MarkPainter extends CustomPainter {
-  const _MarkPainter(this.ink);
+class _ShieldPainter extends CustomPainter {
+  const _ShieldPainter(this.ink);
   final Color ink;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final p = Paint()
-      ..color = ink
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = size.width * 0.085;
-    final r = Rect.fromLTWH(p.strokeWidth, p.strokeWidth,
-        size.width - 2 * p.strokeWidth, size.height - 2 * p.strokeWidth);
-    final c = r.center;
-    // outer circle
-    canvas.drawCircle(c, r.width / 2, p);
-    // vertical meridian (narrow ellipse)
-    canvas.drawOval(
-        Rect.fromCenter(
-            center: c, width: r.width * 0.42, height: r.height), p);
-    // horizontal equator chord
-    canvas.drawLine(Offset(r.left + r.width * 0.06, c.dy),
-        Offset(r.right - r.width * 0.06, c.dy), p);
-  }
-
-  @override
-  bool shouldRepaint(_MarkPainter old) => old.ink != ink;
-}
-
-class _AtlasMetrics {
-  /// One em-grid: every glyph lives in a 0..GW wide, 0..GH tall box.
-  static const gh = 100.0;
-  static const gw = 62.0;
-
-  static const _advance = <String, double>{
-    'A': 66, 'T': 62, 'L': 56, 'N': 70, 'H': 68, 'I': 24, 'X': 64, ' ': 34,
-  };
-
-  static double advance(String ch) => (_advance[ch] ?? 66) / gh;
-
-  static Size size(String word, double capHeight, double tracking) {
-    final w = word.codeUnits
-            .map((u) => advance(String.fromCharCode(u)) + tracking)
-            .fold<double>(0, (a, b) => a + b) *
-        capHeight;
-    return Size(w, capHeight);
-  }
-}
-
-class _WordmarkPainter extends CustomPainter {
-  const _WordmarkPainter({
-    required this.word,
-    required this.capHeight,
-    required this.ink,
-    required this.tracking,
-    required this.strokeWidthFactor,
-  });
-
-  final String word;
-  final double capHeight;
-  final Color ink;
-  final double tracking;
-  final double strokeWidthFactor;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -127,60 +203,25 @@ class _WordmarkPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
-      ..strokeWidth = capHeight * strokeWidthFactor;
-    canvas.save();
-    canvas.scale(capHeight / _AtlasMetrics.gh);
-    var x = p.strokeWidth / 2;
-    for (final ch in word.split('')) {
-      _glyph(canvas, p, ch, x);
-      x += (_AtlasMetrics.advance(ch) * _AtlasMetrics.gh) +
-          tracking * _AtlasMetrics.gh;
-    }
-    canvas.restore();
-  }
-
-  void _glyph(Canvas c, Paint p, String ch, double ox) {
-    final g = _AtlasMetrics.gw;
-    final h = _AtlasMetrics.gh;
-    void line(double x1, double y1, double x2, double y2) =>
-        c.drawLine(Offset(ox + x1, y1), Offset(ox + x2, y2), p);
-    switch (ch) {
-      case 'A':
-        line(0, h, g * .5, 0);
-        line(g * .5, 0, g, h);
-        line(g * .18, h * .62, g * .82, h * .62);
-      case 'T':
-        line(0, 0, g, 0);
-        line(g / 2, 0, g / 2, h);
-      case 'L':
-        line(0, 0, 0, h);
-        line(0, h, g * .88, h);
-      case 'N':
-        line(0, h, 0, 0);
-        line(0, 0, g, h);
-        line(g, h, g, 0);
-      case 'H':
-        line(0, 0, 0, h);
-        line(g, 0, g, h);
-        line(0, h / 2, g, h / 2);
-      case 'I':
-        line(0, 0, 0, h);
-      case 'X':
-        line(0, 0, g, h);
-        line(g, 0, 0, h);
-      case ' ':
-        break;
-      default:
-        line(0, h, g * .5, 0);
-        line(g * .5, 0, g, h);
-    }
+      ..strokeWidth = size.width * 0.09;
+    final w = size.width, h = size.height;
+    final path = Path()
+      ..moveTo(w * .5, h * .06)
+      ..lineTo(w * .92, h * .22)
+      ..lineTo(w * .92, h * .5)
+      ..cubicTo(w * .92, h * .74, w * .74, h * .9, w * .5, h * .97)
+      ..cubicTo(w * .26, h * .9, w * .08, h * .74, w * .08, h * .5)
+      ..lineTo(w * .08, h * .22)
+      ..close();
+    canvas.drawPath(path, p);
+    // inner tick
+    canvas.drawPath(
+        Path()
+          ..moveTo(w * .3, h * .5)
+          ..lineTo(w * .45, h * .66)
+          ..lineTo(w * .72, h * .34), p);
   }
 
   @override
-  bool shouldRepaint(_WordmarkPainter old) =>
-      old.word != word ||
-      old.capHeight != capHeight ||
-      old.ink != ink ||
-      old.tracking != tracking ||
-      old.strokeWidthFactor != strokeWidthFactor;
+  bool shouldRepaint(_ShieldPainter old) => old.ink != ink;
 }

@@ -7,6 +7,8 @@ import '../core/logger.dart';
 import '../core/health/latency_tester.dart';
 import '../domain/entities/health.dart';
 import '../domain/entities/proxy_profile.dart';
+import '../warp/warp_registrar.dart';
+import 'app_settings.dart';
 import '../platform/android_vpn.dart';
 import '../application/connection_controller.dart';
 import '../application/dependencies.dart';
@@ -283,11 +285,32 @@ class VpnSession {
         return true;
       }());
 
+      // WARP chain (v0.4.3): the Settings toggle is authoritative on Android
+      // too. chainMode == chain → the user-requested "config → WARP →
+      // Cloudflare IP" (WARP last hop); warpAsOutbound → WARP outer tunnel.
+      ProxyProfile? warpProfile;
+      String? selectedWarpTag;
+      final st = deps.appSettings;
+      if (st.warpEnabled) {
+        final acct = deps.warpRepo.account;
+        if (acct != null &&
+            acct.privateKey.isNotEmpty &&
+            acct.peerPublicKey.isNotEmpty) {
+          warpProfile = WarpRegistrar.profileFor(acct);
+          if (st.warpChainMode == WarpChainMode.chain) {
+            selectedWarpTag = 'warp';
+          }
+        }
+      }
       final cfg = cores.front.buildConfig(
         [profile],
         selectedProfileId: profile.id,
         routing: routing,
         dns: dns,
+        warpProfile: warpProfile,
+        chainWarpOutside:
+            warpProfile != null && selectedWarpTag == null,
+        selectedWarpTag: selectedWarpTag,
       );
       // §8 diagnostic split: make sing-box log ITS OWN view (startups, dial
       // errors, fatals) to an adb-readable file. External files dir matches

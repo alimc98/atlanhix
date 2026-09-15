@@ -12,6 +12,9 @@ import '../../domain/errors/app_error.dart';
 import '../../localization/generated/app_localizations.dart';
 import '../../theme/theme.dart';
 import '../widgets/common_widgets.dart';
+import '../widgets/warp_chain_card.dart';
+import 'node_editor_screen.dart';
+import 'subscriptions_screen.dart';
 
 /// Node list (§31): information-dense, filterable, sortable.
 class NodesScreen extends StatefulWidget {
@@ -28,6 +31,8 @@ enum _NodeFilter { all, healthy, fast }
 class _NodesScreenState extends State<NodesScreen> {
   String _query = '';
   _NodeFilter _filter = _NodeFilter.all;
+  /// v0.4.3: Subscriptions merged into this tab — 0 = nodes, 1 = subs.
+  int _section = 0;
   String _sortBy = 'latency';
   List<ProxyProfile> _profiles = const [];
   String? _selectedId;
@@ -60,9 +65,26 @@ class _NodesScreenState extends State<NodesScreen> {
     final l = AppLocalizations.of(context)!;
     final c = ThemeExt.of(context);
     final nodes = _filterSort(_profiles);
+    final fa = Localizations.localeOf(context).languageCode == 'fa';
+
+    // v0.4.3: one tab instead of two — the WARP chain card rides at the top
+    // of the node list (it modifies nodes), subscriptions live in a segment.
+    if (_section == 1) {
+      return Column(
+        children: [
+          _sectionBar(c, fa),
+          Expanded(
+            child: SubscriptionsScreen(
+                deps: widget.deps, embedded: true),
+          ),
+        ],
+      );
+    }
 
     return Column(
       children: [
+        _sectionBar(c, fa),
+        WarpChainCard(deps: widget.deps),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: Row(
@@ -82,6 +104,13 @@ class _NodesScreenState extends State<NodesScreen> {
                 tooltip: l.import,
                 onPressed: () => _showImportDialog(context),
                 icon: const Icon(Icons.download_rounded),
+              ),
+              // v0.4.3: manual node creation (pick protocol, fill fields).
+              IconButton.filledTonal(
+                tooltip: 'Add node manually',
+                onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => NodeEditorScreen(deps: widget.deps))),
+                icon: const Icon(Icons.add),
               ),
               IconButton.filledTonal(
                 tooltip: l.testAllNodes,
@@ -147,6 +176,12 @@ class _NodesScreenState extends State<NodesScreen> {
                       isAndroid: Platform.isAndroid,
                       onConnect: () => _onNodeTap(context, p),
                       onCoreTap: () => _showCorePicker(context, p),
+                      onEdit: () async {
+                        await Navigator.of(context).push(MaterialPageRoute(
+                            builder: (_) => NodeEditorScreen(
+                                deps: widget.deps, profile: p)));
+                        if (mounted) setState(() {});
+                      },
                     );
                   },
                 ),
@@ -160,6 +195,27 @@ class _NodesScreenState extends State<NodesScreen> {
         ),
         const SizedBox(height: 12),
       ],
+    );
+  }
+
+  Widget _sectionBar(ThemeExt c, bool fa) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
+      child: SegmentedButton<int>(
+        segments: [
+          ButtonSegment(
+              value: 0,
+              icon: const Icon(Icons.hub_outlined, size: 18),
+              label: Text(fa ? 'نودها' : 'Nodes')),
+          ButtonSegment(
+              value: 1,
+              icon: const Icon(Icons.rss_feed_outlined, size: 18),
+              label: Text(fa ? 'اشتراک‌ها' : 'Subscriptions')),
+        ],
+        selected: {_section},
+        onSelectionChanged: (v) => setState(() => _section = v.first),
+        style: const ButtonStyle(visualDensity: VisualDensity.compact),
+      ),
     );
   }
 
@@ -411,6 +467,7 @@ class _NodeTile extends StatelessWidget {
     required this.stats,
     required this.onConnect,
     required this.onCoreTap,
+    this.onEdit,
     this.selected = false,
     this.isAndroid = false,
   });
@@ -418,6 +475,8 @@ class _NodeTile extends StatelessWidget {
   final ProxyProfile profile;
   final NodeHealthStats? stats;
   final VoidCallback onConnect;
+  /// v0.4.3: long-press (or menu) → edit this node's fields in place.
+  final VoidCallback? onEdit;
   /// v0.4.1: tap on the core badge opens the per-node core picker
   /// (Auto / sing-box / Xray).
   final VoidCallback onCoreTap;
@@ -494,6 +553,7 @@ class _NodeTile extends StatelessWidget {
           child: InkWell(
             borderRadius: BorderRadius.circular(NexusSpacing.radiusInput),
             onTap: onConnect,
+            onLongPress: onEdit,
             child: Container(
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(NexusSpacing.radiusInput),

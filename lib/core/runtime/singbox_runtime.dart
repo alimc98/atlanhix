@@ -88,6 +88,7 @@ class SingBoxRuntime implements CoreRuntime {
     Map<String, ({String host, int port})> socksUpstreams = const {},
     ProxyProfile? warpProfile,
     bool chainWarpOutside = true,
+    String? selectedWarpTag,
   }) {
     return SingBoxConfigGenerator().generate(
       runnableProfiles: profiles,
@@ -103,6 +104,7 @@ class SingBoxRuntime implements CoreRuntime {
       socksUpstreams: socksUpstreams,
       warpProfile: warpProfile,
       chainWarpOutside: chainWarpOutside,
+      selectedWarpTag: selectedWarpTag,
     );
   }
 

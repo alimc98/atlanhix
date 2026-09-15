@@ -10,8 +10,7 @@ import '../settings/app_settings.dart';
 import '../platform/android_vpn.dart' show AndroidVpnPhase;
 import 'screens/dashboard_screen.dart';
 import 'screens/nodes_screen.dart';
-import 'screens/subscriptions_screen.dart';
-import 'screens/warp_screen.dart';
+import 'screens/warp_screen.dart'; // reached via Settings -> /warp
 import 'screens/routing_editor_screen.dart';
 import 'screens/logs_screen.dart';
 import 'screens/settings_screen.dart';
@@ -51,8 +50,6 @@ class _AppShellState extends State<AppShell> {
   static const _icons = [
     (Icons.dashboard_outlined, Icons.dashboard),
     (Icons.hub_outlined, Icons.hub),
-    (Icons.rss_feed_outlined, Icons.rss_feed),
-    (Icons.shield_outlined, Icons.shield),
     (Icons.alt_route_outlined, Icons.alt_route),
     (Icons.terminal_outlined, Icons.terminal),
     (Icons.settings_outlined, Icons.settings),
@@ -94,11 +91,11 @@ class _AppShellState extends State<AppShell> {
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 900;
     final l = AppLocalizations.of(context)!;
+    // v0.4.3: 7 tabs -> 5. Subscriptions merged into Nodes (segmented);
+    // WARP merged into Settings (plus the inline chain card in Nodes/Dash).
     final labels = [
       l.navDashboard,
       l.navNodes,
-      l.navSubscriptions,
-      l.navWarp,
       l.navRouting,
       l.navLogs,
       l.navSettings,
@@ -106,8 +103,6 @@ class _AppShellState extends State<AppShell> {
     final screens = <Widget>[
       DashboardScreen(deps: widget.deps),
       NodesScreen(deps: widget.deps),
-      SubscriptionsScreen(deps: widget.deps),
-      WarpScreen(deps: widget.deps),
       RoutingEditorScreen(
         routingRepo: widget.deps.routingSettingsRepo,
         routing: widget.deps.routingSettings,
@@ -126,6 +121,8 @@ class _AppShellState extends State<AppShell> {
       ),
     ];
 
+    // Settings -> WARP row pushes /warp; the shell owns the Navigator.
+    // (registered in main.dart routes)
     final body = Row(
       children: [
         if (wide) _buildRail(labels),
@@ -219,10 +216,8 @@ class _AppShellState extends State<AppShell> {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Row(
-        children: [
-          AtlanhixMark(size: 30, strokeColor: colors.textPrimary),
-          const SizedBox(width: 10),
-          AtlanhixLogo(height: 15, strokeColor: colors.textPrimary),
+        children: const [
+          AtlanhixLogo(height: 22, overlap: 0.42),
         ],
       ),
     );

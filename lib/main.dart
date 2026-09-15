@@ -3,6 +3,7 @@
 import 'application/dependencies.dart';
 import 'localization/generated/app_localizations.dart';
 import 'presentation/app_shell.dart';
+import 'presentation/screens/warp_screen.dart';
 import 'presentation/screens/apps_routing_screen.dart';
 import 'presentation/screens/routing_diagnostics_screen.dart';
 import 'presentation/screens/routing_editor_screen.dart';
@@ -60,6 +61,11 @@ class _AtlanhixAppState extends State<AtlanhixApp> {
             ),
         '/routing/diagnostics': (ctx) =>
             RoutingDiagnosticsScreen(deps: widget.deps),
+        // v0.4.3: WARP demoted from a bottom tab to a Settings sub-page.
+        '/warp': (ctx) => Scaffold(
+              appBar: AppBar(),
+              body: WarpScreen(deps: widget.deps),
+            ),
       },
       onGenerateRoute: (settings) {
         if (settings.name == '/routing/legacy') {

@@ -87,10 +87,25 @@ class SingBoxConfigGenerator {
     final tags = <String>[];
 
     // Materialize the WARP endpoint first if chaining is enabled.
+    //
+    // Two directions:
+    //  * chainWarpOutside=true  — the NODE dials through WARP (`detour: warp`
+    //    on the node outbound): WARP is the outer tunnel.
+    //  * selectedWarpTag != null — the v0.4.3 user-requested chain
+    //    "config → WARP → Cloudflare IP": the node connects DIRECT and the
+    //    WARP endpoint itself detours through it, so WARP is the LAST hop and
+    //    the observed exit IP is Cloudflare's. The selector then defaults to
+    //    the warp endpoint tag (route final = proxy = warp = node = internet).
     var warpTag = '';
+    final warpAsLastHop = selectedWarpTag != null;
     if (warpProfile != null) {
       warpTag = 'warp';
-      final wEp = builders.singBoxWireguardEndpoint(warpProfile, tag: warpTag);
+      final firstNodeTag = runnableProfiles.isEmpty
+          ? null
+          : 'node:${runnableProfiles.first.id}';
+      final wEp = builders.singBoxWireguardEndpoint(warpProfile,
+          tag: warpTag,
+          detourTag: warpAsLastHop ? firstNodeTag : null);
       if (wEp != null) endpoints.add(wEp);
     }
 
@@ -98,7 +113,12 @@ class SingBoxConfigGenerator {
       final tag = 'node:${p.id}';
       final o = builders.singBoxOutbound(p, tag: tag,
           // Chained: the node's outbound dials through WARP (WARP outside).
-          detourTag: warpProfile != null && chainWarpOutside ? warpTag : null);
+          // Not when WARP is the LAST hop — then the plain node is the detour.
+          detourTag: warpProfile != null &&
+                  chainWarpOutside &&
+                  !warpAsLastHop
+              ? warpTag
+              : null);
       if (o != null) {
         outbounds.add(o);
         tags.add(tag);
@@ -118,18 +138,26 @@ class SingBoxConfigGenerator {
           'server': up.host,
           'server_port': up.port,
           'version': '5',
-          if (warpProfile != null && chainWarpOutside) 'detour': warpTag,
+          if (warpProfile != null &&
+                  chainWarpOutside &&
+                  !warpAsLastHop)
+            'detour': warpTag,
         });
         tags.add(tag);
       }
     }
 
+    // Last-hop chain: the warp endpoint joins the selector and wins by
+    // default, so every session flows node → WARP → internet (Cloudflare IP).
+    final members = [...tags, if (warpAsLastHop && warpTag.isNotEmpty) warpTag];
+    final defaultTag = warpAsLastHop && warpTag.isNotEmpty && members.contains(warpTag)
+        ? warpTag
+        : (tags.contains(selectedTag) ? selectedTag : (tags.firstOrNull ?? 'direct'));
     outbounds.add({
       'type': 'selector',
       'tag': 'proxy',
-      'outbounds': tags.isEmpty ? ['direct'] : tags,
-      'default':
-          tags.contains(selectedTag) ? selectedTag : (tags.firstOrNull ?? 'direct'),
+      'outbounds': members.isEmpty ? ['direct'] : members,
+      'default': defaultTag,
       'interrupt_exist_connections': true,
     });
     // NOTE: sing-box ≥1.13 removed the deprecated `block`/`dns` outbounds —

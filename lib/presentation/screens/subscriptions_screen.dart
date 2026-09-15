@@ -6,9 +6,12 @@ import '../../localization/generated/app_localizations.dart';
 import '../../theme/theme.dart';
 
 class SubscriptionsScreen extends StatelessWidget {
-  const SubscriptionsScreen({super.key, required this.deps});
+  /// v0.4.3: [embedded] renders without its own Scaffold/FAB so it can live
+  /// inside the merged Nodes tab's segment control.
+  const SubscriptionsScreen({super.key, required this.deps, this.embedded = false});
 
   final AppDependencies deps;
+  final bool embedded;
 
   @override
   Widget build(BuildContext context) {
@@ -19,14 +22,7 @@ class SubscriptionsScreen extends StatelessWidget {
       stream: deps.subscriptions.changes,
       builder: (context, snapshot) {
         final items = snapshot.data ?? deps.subscriptions.all;
-        return Scaffold(
-          backgroundColor: Colors.transparent,
-          floatingActionButton: FloatingActionButton.extended(
-            onPressed: () => _addDialog(context),
-            icon: const Icon(Icons.add),
-            label: Text(l.addSubscription),
-          ),
-          body: items.isEmpty
+        final Widget content = items.isEmpty
               ? Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -55,7 +51,33 @@ class SubscriptionsScreen extends StatelessWidget {
                   itemCount: items.length,
                   itemBuilder: (context, i) =>
                       _SubCard(sub: items[i], deps: deps),
+                );
+        if (embedded) {
+          return Column(
+            children: [
+              Align(
+                alignment: AlignmentDirectional.centerEnd,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
+                  child: TextButton.icon(
+                    onPressed: () => _addDialog(context),
+                    icon: const Icon(Icons.add, size: 18),
+                    label: Text(l.addSubscription),
+                  ),
                 ),
+              ),
+              Expanded(child: content),
+            ],
+          );
+        }
+        return Scaffold(
+          backgroundColor: Colors.transparent,
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: () => _addDialog(context),
+            icon: const Icon(Icons.add),
+            label: Text(l.addSubscription),
+          ),
+          body: content,
         );
       },
     );
