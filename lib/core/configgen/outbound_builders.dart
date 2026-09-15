@@ -6,7 +6,12 @@ import '../../domain/entities/proxy_profile.dart';
 /// Split from the full-config generators so chains can embed outbounds with
 /// custom tags/detours.
 class OutboundBuilders {
-  const OutboundBuilders();
+  /// v0.4.4 mockup pill (TLS Fragment): when true every TCP-TLS outbound
+  /// carries `tls.fragment: true` (sing-box ≥1.11 boolean form — schema
+  /// verified against the bundled 1.14 engine via `sing-box check`).
+  const OutboundBuilders({this.tlsFragment = false});
+
+  final bool tlsFragment;
 
   // ---------------------------------------------------------------- sing-box
 
@@ -149,6 +154,8 @@ class OutboundBuilders {
       // transport; the imported `fp=` hint is not applicable there.
       if (p.fingerprint != null && !quic)
         'utls': {'enabled': true, 'fingerprint': p.fingerprint},
+      // TLS Fragment pill: TCP-TLS only (QUIC stacks reject it).
+      if (tlsFragment && !quic) 'fragment': true,
       // ECH (Encrypted ClientHello): subscriptions carry it as the `ech=`
       // URI param (base64 DER ECHConfigList) or `echBase64` in clash-style
       // tls objects. sing-box consumes it as a PEM block typed exactly
@@ -290,7 +297,17 @@ class OutboundBuilders {
                 'users': [
                   {
                     'id': p.uuid,
-                    'encryption': p.encryption ?? 'none',
+                    // v0.4.4 fix: forward verbatim — the 26.x links carry a
+                    // post-quantum string ('mlkem768x25519plus.native.0rtt.…')
+                    // that Xray 26.3.27 REQUIRES to match the server. Fallback
+                    // is 'none': 'auto' is VMESS-only and 26.3.27 hard-rejects
+                    // it for VLESS (phone log: unsupported "encryption": auto).
+                    // Profiles stored BEFORE the encryption-codec fix keep it
+                    // only in rawParams — read from there too, else these
+                    // nodes (all 4 PQ Reality ones) die in config parse.
+                    'encryption': p.encryption ??
+                        p.rawParams['encryption'] ??
+                        'none',
                     if (p.flow != null) 'flow': p.flow,
                   }
                 ],
@@ -354,22 +371,24 @@ class OutboundBuilders {
     switch (p.security) {
       case Security.reality:
         s['security'] = 'reality';
-        s['realitySettings'] = {
+        // FinalMask / xmux (Xray 26.x): links smuggle them as raw JSON
+        // params — forward verbatim when present.
+        s['realitySettings'] = _withLinkExtras(p, {
           'show': false,
           'serverName': p.sni ?? p.host,
           'publicKey': p.realityPublicKey,
           'shortId': p.realityShortId ?? '',
           if (p.realitySpiderX != null) 'spiderX': p.realitySpiderX,
           'fingerprint': p.fingerprint ?? 'chrome',
-        };
+        });
       case Security.tls:
         s['security'] = 'tls';
-        s['tlsSettings'] = {
+        s['tlsSettings'] = _withLinkExtras(p, {
           'serverName': p.sni ?? p.host,
           'allowInsecure': p.allowInsecure,
           if (p.alpn.isNotEmpty) 'alpn': p.alpn,
           if (p.fingerprint != null) 'fingerprint': p.fingerprint,
-        };
+        });
       case Security.none:
         break;
     }
@@ -395,17 +414,62 @@ class OutboundBuilders {
           if (p.host != null) 'host': p.host,
         };
       case Transport.xhttp:
-        s['xhttpSettings'] = {
-          'path': p.path ?? '/',
-          'host': p.host,
-          'mode': p.rawParams['mode'] ?? 'auto',
-        };
+        s['xhttpSettings'] = _xhttpSettings(p);
       case Transport.tcp:
       case Transport.quic:
       case Transport.none:
         break;
     }
     return s;
+  }
+
+  /// Xray 26.x xhttpSettings: honor the link's `extra` JSON object when
+  /// present ({mode, xPaddingBytes, xPaddingHeader, ...}) and layer the
+  /// flat params over it — this is the shape the XTLS spec documents and
+  /// what these subscription links actually require.
+  /// Merge link-level JSON extras into a TLS settings map (Xray 26.x).
+  static Map<String, dynamic> _withLinkExtras(
+      ProxyProfile p, Map<String, dynamic> base) {
+    final m = <String, dynamic>{};
+    for (final key in ['finalmask', 'finalMask', 'xmux']) {
+      final raw = p.rawParams[key];
+      if (raw == null || raw.trim().isEmpty) continue;
+      try {
+        final j = jsonDecode(raw);
+        if (key.toLowerCase() == 'finalmask') {
+          m['finalMask'] = j; // spec: JSON array/string of masks
+        } else if (j is Map<String, dynamic>) {
+          m['xmux'] = j;
+        }
+      } catch (_) {/* not JSON — skip; node still connects without extras */}
+    }
+    return base..addAll(m);
+  }
+
+
+  static Map<String, dynamic> _xhttpSettings(ProxyProfile p) {
+    final m = <String, dynamic>{};
+    final extra = p.rawParams['extra'];
+    if (extra != null && extra.trim().isNotEmpty) {
+      try {
+        final j = jsonDecode(extra);
+        if (j is Map) {
+          j.forEach((k, v) {
+            if (k is String && (v is String || v is num || v is bool)) {
+              m[k] = v;
+            }
+          });
+        }
+      } catch (_) {/* malformed extra — flat params still emitted below */}
+    }
+    m['mode'] = p.rawParams['mode'] ?? m['mode'] ?? 'auto';
+    final padding = p.rawParams['x_padding_bytes'];
+    if (padding != null) m['xPaddingBytes'] = padding;
+    if (p.path != null) m['path'] = p.path;
+    // `host` = HTTP Host header; Xray accepts the SNI/default when absent.
+    final h = p.host ?? p.sni;
+    if (h != null) m['host'] = h;
+    return m;
   }
 
   static String _xrNetwork(Transport t) => switch (t) {

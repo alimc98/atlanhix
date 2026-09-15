@@ -1,5 +1,8 @@
 package com.example.nexus.vpn
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Intent
 import android.app.Service
 import android.os.IBinder
@@ -29,10 +32,31 @@ class XrayCoreService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        // v0.4.4: MIUI/Android kills plain background services ('Stopping
+        // service due to app idle' — measured on Mi 9T 2026-09-15, THE root
+        // cause of xhttp nodes never connecting on the phone while PC's
+        // xray.exe worked). Foreground + notification = untouchable.
+        if (android.os.Build.VERSION.SDK_INT >= 26) {
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID, "Xray core", NotificationManager
+                        .IMPORTANCE_MIN))
+        }
+        val notif = Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle("Atlanhix core")
+            .setContentText("Secure engine running")
+            .setSmallIcon(applicationInfo.icon)
+            .build()
+        startForeground(NOTIFY_ID, notif)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> handleStart(intent)
-            ACTION_STOP -> handleStop()
+            ACTION_STOP -> { handleStop(); stopSelf() }
         }
         return START_NOT_STICKY
     }
@@ -129,6 +153,8 @@ class XrayCoreService : Service() {
     }
 
     companion object {
+        private const val CHANNEL_ID = "atlanhix_xray_fg"
+        private const val NOTIFY_ID = 4102
         const val ACTION_START = "com.example.nexus.xray.START"
         const val ACTION_STOP = "com.example.nexus.xray.STOP"
         const val EXTRA_CONFIG = "config"

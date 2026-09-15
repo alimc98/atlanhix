@@ -44,11 +44,11 @@ class NexusColors {
   // accent pair, hairline borders.
   static const dark = NexusColors(
     background: Color(0xFF0A0B0E),
-    surface: Color(0xFF1C1F26),
+    surface: Color(0xFF1A1D22),          // brand sheet Surface
     surfaceElevated: Color(0xFF242832),
     surfaceSunken: Color(0xFF12141A),
     textPrimary: Color(0xFFE8E9ED),
-    textSecondary: Color(0xFF9EA3AF),
+    textSecondary: Color(0xFFA0A6B3),     // brand sheet Text
     textMuted: Color(0xFF7A7E89),
     accent: Color(0xFF4FE0B7),
     accentSoft: Color(0x244FE0B7),
@@ -56,7 +56,7 @@ class NexusColors {
     warning: Color(0xFFE0C34F),
     error: Color(0xFFE86A6A),
     info: Color(0xFF9B6CFF),
-    border: Color(0x14FFFFFF),
+    border: Color(0xFF2E333A),            // brand sheet Border
     borderStrong: Color(0x26FFFFFF),
     overlayScrim: Color(0x8C000000),
   );
@@ -67,7 +67,7 @@ class NexusColors {
     surfaceElevated: Color(0xFF15171D),
     surfaceSunken: Color(0xFF000000),
     textPrimary: Color(0xFFE8E9ED),
-    textSecondary: Color(0xFF9EA3AF),
+    textSecondary: Color(0xFFA0A6B3),     // brand sheet Text
     textMuted: Color(0xFF7A7E89),
     accent: Color(0xFF4FE0B7),
     accentSoft: Color(0x244FE0B7),

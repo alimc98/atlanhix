@@ -12,7 +12,12 @@ class SingBoxOptions {
     this.enableTun = false,
     this.tunMtu = 9000,
     this.logLevel = 'info',
+    this.tlsFragment = false,
   });
+
+  /// v0.4.4 mockup pill: TLS client-hello fragmentation (sing-box >=1.11
+  /// `tls.fragment`) applied to TCP-TLS outbounds when the user opts in.
+  final bool tlsFragment;
 
   final int mixedPort;
   final int clashApiPort;
@@ -82,6 +87,11 @@ class SingBoxConfigGenerator {
     bool chainWarpOutside = true,
     String? selectedWarpTag,
   }) {
+    // v0.4.4: the TLS-fragment pill flows in via options — rebuild the
+    // builders with it (stateless, deterministic).
+    final builders = options.tlsFragment
+        ? const OutboundBuilders(tlsFragment: true)
+        : this.builders;
     final outbounds = <Map<String, dynamic>>[];
     final endpoints = <Map<String, dynamic>>[];
     final tags = <String>[];

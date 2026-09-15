@@ -611,4 +611,40 @@ class AppLocalizationsFa extends AppLocalizations {
   String engineMissingHint(String engine) {
     return 'فایل $engine را در پوشه هسته‌ها بگذارید یا مسیر آن را در تنظیمات مشخص کنید.';
   }
+
+  @override
+  String get quickSettings => 'تنظیمات سریع';
+
+  @override
+  String get recommendedNodes => 'نودهای پیشنهادی';
+
+  @override
+  String get tapToConnect => 'برای اتصال بزن';
+
+  @override
+  String get download => 'دانلود';
+
+  @override
+  String get upload => 'آپلود';
+
+  @override
+  String get time => 'زمان';
+
+  @override
+  String get pillIranApps => 'اپ‌های ایرانی';
+
+  @override
+  String get pillAds => 'تبلیغات';
+
+  @override
+  String get pillProxyMode => 'حالت پراکسی';
+
+  @override
+  String get pillTlsFragment => 'Split HTTPS';
+
+  @override
+  String get modeTun => 'TUN';
+
+  @override
+  String get modeProxy => 'پراکسی';
 }

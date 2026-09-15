@@ -56,6 +56,18 @@ import java.net.NetworkInterface
  *   COMMAND_SERVER_READY → CONFIG_ACCEPTED → TUN_REQUESTED → TUN_ESTABLISHED →
  *   LIBBOX_STARTED → ENGINE_LOGS → status/probe → CONNECTED | FAILED(stage).
  */
+/** Latest engine status counters (libbox pushes these every second). */
+object AtlanhixTraffic {
+    @Volatile var up = 0L
+    @Volatile var down = 0L
+    @Volatile var conns = 0L
+    fun reset() {
+        up = 0
+        down = 0
+        conns = 0
+    }
+}
+
 object AtlanhixTrace {
     @Volatile var id: String = "ATX-CONNECT-0000"
     fun new(): String {
@@ -333,11 +345,16 @@ class LibboxEngine(
             val connectionsIn = status.connectionsIn
             val connectionsOut = status.connectionsOut
             // Log deltas only — real-traffic evidence without spam (§9).
+            // v0.4.4 §user-2: publish the engine's REAL counters so the
+            // channel's state() can surface them to Dart every poll — the
+            // dashboard DOWNLOAD/UPLOAD/speed graph finally move on device
+            // (previously the desktop Clash-API polling was all there was,
+            // and libbox never had it — the read was always null/0).
+            AtlanhixTraffic.up = up
+            AtlanhixTraffic.down = down
+            AtlanhixTraffic.conns =
+                (connectionsIn + connectionsOut).toLong()
             if (up != lastUplink || down != lastDownlink) {
-                AtlanhixTrace.log(
-                    "TRAFFIC up+${up - lastUplink}B down+${down - lastDownlink}B connIn=$connectionsIn connOut=$connectionsOut"
-                )
-                EngineLogFile.append("status: up=$up down=$down connIn=$connectionsIn connOut=$connectionsOut")
                 lastUplink = up
                 lastDownlink = down
             }

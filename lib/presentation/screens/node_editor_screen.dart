@@ -52,7 +52,7 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
     TextEditingController tc(String? v) => TextEditingController(text: v ?? '');
     _name = tc(p?.name);
     _server = tc(p?.server);
-    _port = tc(p?.port?.toString());
+    _port = tc(p == null ? '' : p.port.toString());
     _uuid = tc(p?.uuid ?? p?.tuicUuid);
     _password = tc(p?.password);
     _alterId = tc(p?.alterId?.toString() ?? '0');

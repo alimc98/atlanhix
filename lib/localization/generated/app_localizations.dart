@@ -1273,6 +1273,78 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Place the {engine} binary in the cores folder or set its path in Settings.'**
   String engineMissingHint(String engine);
+
+  /// No description provided for @quickSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Quick Settings'**
+  String get quickSettings;
+
+  /// No description provided for @recommendedNodes.
+  ///
+  /// In en, this message translates to:
+  /// **'Recommended Nodes'**
+  String get recommendedNodes;
+
+  /// No description provided for @tapToConnect.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap to connect'**
+  String get tapToConnect;
+
+  /// No description provided for @download.
+  ///
+  /// In en, this message translates to:
+  /// **'Download'**
+  String get download;
+
+  /// No description provided for @upload.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload'**
+  String get upload;
+
+  /// No description provided for @time.
+  ///
+  /// In en, this message translates to:
+  /// **'Time'**
+  String get time;
+
+  /// No description provided for @pillIranApps.
+  ///
+  /// In en, this message translates to:
+  /// **'Iran Apps'**
+  String get pillIranApps;
+
+  /// No description provided for @pillAds.
+  ///
+  /// In en, this message translates to:
+  /// **'Ads'**
+  String get pillAds;
+
+  /// No description provided for @pillProxyMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Proxy Mode'**
+  String get pillProxyMode;
+
+  /// No description provided for @pillTlsFragment.
+  ///
+  /// In en, this message translates to:
+  /// **'Split HTTPS'**
+  String get pillTlsFragment;
+
+  /// No description provided for @modeTun.
+  ///
+  /// In en, this message translates to:
+  /// **'TUN'**
+  String get modeTun;
+
+  /// No description provided for @modeProxy.
+  ///
+  /// In en, this message translates to:
+  /// **'Proxy'**
+  String get modeProxy;
 }
 
 class _AppLocalizationsDelegate

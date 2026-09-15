@@ -221,6 +221,51 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
           ),
+          // v0.4.4 §user-5: TUN vs Proxy mode — explicit, persisted.
+          ListTile(
+            dense: true,
+            title: const Text('Tunnel mode'),
+            subtitle: Text(s.proxyMode
+                ? 'Proxy — apps that honor the system proxy only'
+                : 'TUN — full-device tunnel (recommended)'),
+            trailing: SegmentedButton<bool>(
+              style: const ButtonStyle(visualDensity: VisualDensity.compact),
+              segments: const [
+                ButtonSegment(value: false, label: Text('TUN')),
+                ButtonSegment(value: true, label: Text('Proxy')),
+              ],
+              selected: {s.proxyMode},
+              onSelectionChanged: (sel) => _save(s..proxyMode = sel.first),
+            ),
+          ),
+          // v0.4.4 §user-4: the local mixed-proxy port (was hardcoded 2080).
+          ListTile(
+            dense: true,
+            title: const Text('Local proxy port'),
+            subtitle: Text(s.localPort == 0
+                ? 'Auto (any free port)'
+                : '${s.localPort} — TUN off + Proxy mode binds here'),
+            trailing: SizedBox(
+              width: 110,
+              child: TextFormField(
+                key: ValueKey('lport-${s.localPort}'),
+                initialValue: s.localPort == 0 ? null : s.localPort.toString(),
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(hintText: 'Auto'),
+                onFieldSubmitted: (v) {
+                  final n = int.tryParse(v.trim());
+                  if (v.trim().isEmpty) {
+                    _save(s..localPort = 0);
+                  } else if (n == null || n < 1 || n > 65535) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Port must be 1–65535, or empty for Auto')));
+                  } else {
+                    _save(s..localPort = n);
+                  }
+                },
+              ),
+            ),
+          ),
           SwitchListTile(
             dense: true,
             title: const Text('Auto reconnect'),

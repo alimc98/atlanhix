@@ -34,6 +34,13 @@ class AppSettings {
     this.routingMode = RoutingMode.rule,
     // ---- Core (§7 Core) ----
     this.corePreference = CorePreference.auto,
+    // ---- v0.4.4 user items 4/5: local port + proxy/TUN mode ----
+    this.localPort = 2080, // local mixed proxy port (0 = auto)
+    this.proxyMode = false, // true = system-proxy (no TUN), false = TUN
+    // ---- v0.4.4 mockup: QUICK SETTINGS pills (opt-in, never silent) ----
+    this.iranAppsDirect = false, // Iranian services bypass the tunnel
+    this.adsBlock = false, // kill ads domains at DNS level
+    this.tlsFragment = false, // Xray/sing-box fragmentation for deep drops
     // ---- WARP (§30) ----
     this.warpEnabled = false,
     this.warpChainMode = WarpChainMode.warpAsOutbound,
@@ -74,6 +81,21 @@ class AppSettings {
   // Core
   CorePreference corePreference;
 
+  /// v0.4.4 mockup pills — each is an explicit user switch (routing stays
+  /// opt-in per the no-predefined-rules rule; these are the shortcuts).
+  bool iranAppsDirect;
+  bool adsBlock;
+  bool tlsFragment;
+
+  /// v0.4.4 §user-4: local proxy/mixed port shared by every mode
+  /// (TUN front inbound, proxy-mode system proxy, health probes). 0=auto.
+  int localPort;
+
+  /// v0.4.4 §user-5: 'Proxy Mode' pill — VPN with NO TUN inbound; the
+  /// session sets Android's global http proxy to localPort instead
+  /// (API 28+; Mi 9T = API 30). false = full-device TUN tunnel.
+  bool proxyMode;
+
   // WARP
   bool warpEnabled;
   WarpChainMode warpChainMode;
@@ -106,6 +128,11 @@ class AppSettings {
         'connectionTimeoutSeconds': connectionTimeoutSeconds,
         'routingMode': routingMode.name,
         'corePreference': corePreference.name,
+        'iranAppsDirect': iranAppsDirect,
+        'adsBlock': adsBlock,
+        'tlsFragment': tlsFragment,
+        'localPort': localPort,
+        'proxyMode': proxyMode,
         'warpEnabled': warpEnabled,
         'warpChainMode': warpChainMode.name,
         'trafficStats': trafficStats,
@@ -138,6 +165,11 @@ class AppSettings {
         corePreference: CorePreference.values.firstWhere(
             (e) => e.name == j['corePreference'],
             orElse: () => CorePreference.auto),
+        iranAppsDirect: j['iranAppsDirect'] as bool? ?? false,
+        adsBlock: j['adsBlock'] as bool? ?? false,
+        tlsFragment: j['tlsFragment'] as bool? ?? false,
+        localPort: j['localPort'] as int? ?? 2080,
+        proxyMode: j['proxyMode'] as bool? ?? false,
         warpEnabled: j['warpEnabled'] as bool? ?? false,
         warpChainMode: WarpChainMode.values.firstWhere(
             (e) => e.name == j['warpChainMode'],

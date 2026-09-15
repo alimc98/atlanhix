@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../../application/connection_controller.dart';
 import '../../application/dependencies.dart';
 import '../../core/android_node_support.dart';
+import '../../settings/app_settings.dart';
 import '../../domain/entities/health.dart';
 import '../../domain/entities/proxy_profile.dart';
 import '../../localization/generated/app_localizations.dart';
@@ -70,9 +72,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (widget.deps.vpnSession.controller.isAndroid) {
       _vpnSub = widget.deps.vpnSession.states.listen((_) {
         if (!mounted) return;
+        final vs = widget.deps.vpnSession;
         setState(() {
-          _phase = widget.deps.vpnSession.uiPhase;
-          _active = widget.deps.vpnSession.selectedNode;
+          _phase = vs.uiPhase;
+          _active = vs.selectedNode;
+          if (vs.lastLatencyMs != null) _latencyMs = vs.lastLatencyMs;
         });
       });
       // Selection changed without a phase event (tap while disconnected):
@@ -101,7 +105,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
     _clock = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && _phase == ConnectionPhase.connected) {
-        setState(() {}); // session clock
+        // v0.4.4 §user-2: on Android there is no Clash-API polling — the
+        // engine's REAL counters ride the vpn controller (native state
+        // poll). Fold them into the same speed graph the desktop uses.
+        if (_onAndroid) {
+          final c = widget.deps.vpnSession.controller;
+          final upSpeed =
+              _lastUp == null ? 0.0 : (c.upBytes - _lastUp!).clamp(0, 1 << 30).toDouble();
+          final downSpeed = _lastDown == null
+              ? 0.0
+              : (c.downBytes - _lastDown!).clamp(0, 1 << 30).toDouble();
+          _lastUp = c.upBytes;
+          _lastDown = c.downBytes;
+          _down
+            ..removeAt(0)
+            ..add(downSpeed);
+          _up
+            ..removeAt(0)
+            ..add(upSpeed);
+        }
+        setState(() {}); // session clock + metrics
       }
     });
   }
@@ -166,8 +189,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Center(
-                child: ConnectRing(
+                child: _RingWithLatencyBadge(
+                  latencyMs: _latencyMs,
                   phase: _phase,
+                  ring: ConnectRing(
+                    phase: _phase,
                   // v0.4.1 §2: on Android the connect path is the VPN session
                   // (VpnService.prepare → libbox); desktop keeps smartConnect.
                   onToggle: () async {
@@ -196,6 +222,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       }
                     }
                   },
+                  ),
                 ),
               ),
               const SizedBox(height: 20),
@@ -323,7 +350,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 borderRadius: BorderRadius.circular(NexusSpacing.radiusCard),
                 child: SpeedGraph(downSamples: _down, upSamples: _up),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
+              // v0.4.4 mockup: QUICK SETTINGS — user pills. Iran Apps /
+              // Ads / Proxy Mode / TLS Fragment. Every pill is an explicit
+              // opt-in toggle (never silently preset); changes persist via
+              // the settings repo and take effect on the next connect.
+              _sectionCard(
+                context,
+                title: l.quickSettings,
+                child: _QuickPills(settings: widget.deps.appSettingsRepo),
+              ),
+              const SizedBox(height: 16),
               _sectionCard(
                 context,
                 title: l.currentNode,
@@ -393,6 +430,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ],
                 ),
+              ),
+              const SizedBox(height: 16),
+              // v0.4.4 mockup: RECOMMENDED NODES — top 3 by measured
+              // latency (never made up); tap selects AND connects.
+              _sectionCard(
+                context,
+                title: l.recommendedNodes,
+                child: _RecommendedNodes(deps: widget.deps, phase: _phase,
+                    selectedId: (_onAndroid
+                        ? widget.deps.vpnSession.selectedNode?.id
+                        : null)),
               ),
               const SizedBox(height: 32),
             ],
@@ -470,4 +518,286 @@ class _DashboardScreenState extends State<DashboardScreen> {
         NodeHealth.configError => l.healthConfigError,
         _ => l.healthUnknown,
       };
+}
+
+/// v0.4.4 mockup: latency pill riding the top edge of the connect ring.
+class _RingWithLatencyBadge extends StatelessWidget {
+  const _RingWithLatencyBadge(
+      {required this.latencyMs, required this.phase, required this.ring});
+
+  final int? latencyMs;
+  final ConnectionPhase phase;
+  final Widget ring;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    final connected = phase == ConnectionPhase.connected;
+    final label = latencyMs == null
+        ? (connected ? '— ms' : '0 ms')
+        : '$latencyMs ms';
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        ring,
+        Positioned(
+          top: 6,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            decoration: BoxDecoration(
+              color: c.surfaceElevated,
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: c.border),
+            ),
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: (latencyMs ?? 999) < 300 ? c.success : c.textSecondary,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.5),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// v0.4.4 mockup widgets
+// ---------------------------------------------------------------------------
+
+/// QUICK SETTINGS pills (mockup center panel): Iran Apps · Ads · Proxy Mode ·
+/// TLS Fragment. Rounded full pills, purple when active, hairline when off.
+class _QuickPills extends StatelessWidget {
+  const _QuickPills({required this.settings});
+
+  final AppSettingsRepository settings;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    final l = AppLocalizations.of(context)!;
+    final s = settings.current;
+    final isAndroid = defaultTargetPlatform == TargetPlatform.android;
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      children: [
+        _pill(context, l.pillIranApps, s.iranAppsDirect,
+            () => settings.save(settings.current..iranAppsDirect = !s.iranAppsDirect),
+            tooltip: 'Iranian domains & apps bypass the tunnel (opt-in)'),
+        _pill(context, l.pillAds, s.adsBlock,
+            () => settings.save(settings.current..adsBlock = !s.adsBlock),
+            tooltip: 'Block ad domains through the tunnel (opt-in)'),
+        _pill(context, l.pillProxyMode, s.proxyMode,
+            () => settings.save(settings.current..proxyMode = !s.proxyMode),
+            tooltip: isAndroid
+                ? 'Proxy: system http_proxy instead of full TUN (Android, next connect)'
+                : 'Proxy mode is Android-only',
+            enabled: isAndroid),
+        _pill(context, l.pillTlsFragment, s.tlsFragment,
+            () => settings.save(settings.current..tlsFragment = !s.tlsFragment),
+            tooltip: 'Fragment the TLS handshake (sing-box tls.fragment, next connect)'),
+      ],
+    );
+  }
+
+  Widget _pill(BuildContext context, String label, bool on, VoidCallback onTap,
+      {String? tooltip, bool enabled = true}) {
+    final c = ThemeExt.of(context);
+    final usable = enabled ? on : false;
+    final pill = Opacity(
+      opacity: enabled ? 1 : 0.45,
+      child: Material(
+        color: usable ? c.accent.withValues(alpha: 0.18) : c.surfaceSunken,
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(999),
+          onTap: enabled ? onTap : null,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: usable ? c.accent : c.border,
+                width: usable ? 1.4 : 1,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  on && enabled ? Icons.check_circle : Icons.radio_button_unchecked,
+                  size: 15,
+                  color: on && enabled ? c.accent : c.textMuted,
+                ),
+                const SizedBox(width: 7),
+                Text(label,
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        color: on && enabled ? c.accent : c.textSecondary,
+                        fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    return tooltip == null ? pill : Tooltip(message: tooltip, child: pill);
+  }
+}
+
+/// RECOMMENDED NODES rows (mockup): green shield mark + name + "tap to
+/// connect", right side CONNECTED badge (purple) / latency pill. Ranked by
+/// REAL measured latency only — nodes never probed sort last.
+class _RecommendedNodes extends StatelessWidget {
+  const _RecommendedNodes(
+      {required this.deps, required this.phase, this.selectedId});
+
+  final AppDependencies deps;
+  final ConnectionPhase phase;
+  final String? selectedId;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    final l = AppLocalizations.of(context)!;
+    final nodes = deps.profiles.all.where((p) => p.port > 0).toList();
+    if (nodes.isEmpty) {
+      return Text(l.noNodes,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: c.textMuted));
+    }
+    final ranked = [...nodes]..sort((a, b) {
+      final la = deps.healthStore.statsOf(a.id)?.lastLatencyMs ?? (1 << 30);
+      final lb = deps.healthStore.statsOf(b.id)?.lastLatencyMs ?? (1 << 30);
+      return la.compareTo(lb);
+    });
+    final top = ranked.take(3).toList();
+    final connected = phase == ConnectionPhase.connected;
+    return Column(
+      children: [
+        for (final (i, p) in top.indexed) ...[
+          if (i > 0) const SizedBox(height: 8),
+          _row(context, p, connected && p.id == selectedId,
+              () => _pick(context, p)),
+        ],
+      ],
+    );
+  }
+
+  Future<void> _pick(BuildContext context, ProxyProfile p) async {
+    // Select immediately (UI ticks at once), then connect.
+    if (deps.vpnSession.controller.isAndroid) {
+      if (!AndroidNodeSupport.isRunnable(p)) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                '${p.name}: ${AndroidNodeSupport.notRunnableReason(p) ?? 'cannot run on this device'}')));
+        return;
+      }
+      deps.vpnSession.selectNode(p);
+      final ok = await deps.vpnSession.connect();
+      if (!ok && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(AndroidNodeSupport.connectErrorHint(
+                    deps.vpnSession.lastError) ??
+                'Connection failed')));
+      }
+    } else {
+      await deps.connection.connect(p);
+    }
+  }
+
+  Widget _row(BuildContext context, ProxyProfile p, bool isConnected,
+      VoidCallback onTap) {
+    final c = ThemeExt.of(context);
+    final l = AppLocalizations.of(context)!;
+    final stats = deps.healthStore.statsOf(p.id);
+    final lat = stats?.lastLatencyMs;
+    final latColor = lat == null
+        ? c.textMuted
+        : lat < 300
+            ? c.success
+            : lat < 900
+                ? c.warning
+                : c.error;
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(NexusSpacing.radiusInput),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(NexusSpacing.radiusInput),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+          child: Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: c.success.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: c.success.withValues(alpha: 0.4)),
+                ),
+                child: Icon(Icons.bolt, size: 18, color: c.success),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(p.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w600)),
+                    Text(
+                      isConnected ? l.connected : l.tapToConnect,
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(
+                              color: isConnected ? c.success : c.textMuted,
+                              letterSpacing: 0.4),
+                    ),
+                  ],
+                ),
+              ),
+              if (isConnected)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: c.accent.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: c.accent),
+                  ),
+                  child: Text(l.connected.toUpperCase(),
+                      style: Theme.of(context)
+                          .textTheme
+                          .labelSmall
+                          ?.copyWith(
+                              color: c.accent, fontWeight: FontWeight.w700)),
+                )
+              else if (lat != null)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: c.border),
+                  ),
+                  child: Text('$lat ms',
+                      style: Theme.of(context)
+                          .textTheme
+                          .labelSmall
+                          ?.copyWith(color: latColor)),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

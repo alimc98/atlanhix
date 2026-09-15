@@ -35,6 +35,20 @@ class SingBoxRuntime implements CoreRuntime {
   ManagedProcess? _process;
   ClashApiClient? _api;
   int _mixedPort = 2080;
+
+  /// v0.4.4 §user-4: local mixed port preference (settings.localPort). On
+  /// Android this IS the final port (libbox uses the config as written);
+  /// desktop still negotiates a free one from this preference.
+  int get mixedPortPreference => _mixedPort;
+  set mixedPortPreference(int p) {
+    if (p >= 1 && p <= 65535) _mixedPort = p;
+  }
+
+  /// v0.4.4 §user-5: proxy mode = build WITHOUT the tun inbound.
+  bool tunEnabled = true;
+
+  /// v0.4.4 mockup pill: TLS fragmentation preference (settings-driven).
+  bool tlsFragment = false;
   int _apiPort = 9097;
   File? _configFile;
   RuntimeStatus _status = RuntimeStatus.idle;
@@ -70,7 +84,7 @@ class SingBoxRuntime implements CoreRuntime {
   @override
   Future<void> prepare() async {
     await workDir.create(recursive: true);
-    _mixedPort = await PortAllocator.freePort(prefer: 2080);
+    _mixedPort = await PortAllocator.freePort(prefer: _mixedPort);
     _apiPort = await PortAllocator.freePort(prefer: 9097);
     _binary = await binaryManager.inspect(CoreBinaryKind.singbox);
     if (_binary!.status != 'available') {
@@ -98,7 +112,8 @@ class SingBoxRuntime implements CoreRuntime {
         mixedPort: _mixedPort,
         clashApiPort: _apiPort,
         clashApiSecret: clashSecret,
-        enableTun: enableTun,
+        enableTun: enableTun && tunEnabled,
+        tlsFragment: tlsFragment,
       ),
       selectedTag: '$tagPrefix$selectedProfileId',
       socksUpstreams: socksUpstreams,

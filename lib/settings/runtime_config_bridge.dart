@@ -24,7 +24,45 @@ class RuntimeConfigBridge {
   final RoutingSettings routing;
 
   /// The compiled rule profile for the engine config generators.
-  RoutingProfile routingProfile() => routing.toRoutingProfile();
+  /// v0.4.4 mockup pills: QUICK-SETTINGS shortcuts are merged as EXPLICIT
+  /// user rules (tapping a pill IS opting in), even when the general
+  /// routing mode stays off — but nothing is ever applied silently.
+  RoutingProfile routingProfile() {
+    final base = routing.toRoutingProfile();
+    final pills = <RoutingRule>[];
+    var k = 0;
+    if (settings.iranAppsDirect) {
+      pills.add(RoutingRule(
+        id: 'pill-ir-${k++}',
+        matchType: RuleMatchType.domainSuffix,
+        patterns: const [
+          '.ir', 'irancell.ir', 'mci.ir', 'shaparak.ir', 'digikala.com',
+          'snapp.ir', 'tbank.ir', 'idpay.ir', 'hamrahcart.ir',
+        ],
+        action: RoutingAction.direct,
+        comment: 'Iran Apps pill → direct',
+      ));
+    }
+    if (settings.adsBlock) {
+      pills.add(RoutingRule(
+        id: 'pill-ads-${k++}',
+        matchType: RuleMatchType.domainKeyword,
+        patterns: const [
+          'ads.', 'doubleclick', 'googlesyndication', 'google-analytics',
+          'facebook.net', 'adservice', 'moatads', 'inmobile.co',
+        ],
+        action: RoutingAction.block,
+        comment: 'Ads pill → block',
+      ));
+    }
+    if (pills.isEmpty) return base;
+    return RoutingProfile(
+      id: base.id,
+      name: base.name,
+      isBuiltin: base.isBuiltin,
+      rules: [...pills, ...base.rules],
+    );
+  }
 
   /// DNS settings consumed by RoutingCompiler.singBoxDns (§21/§22).
   /// UI modes map onto the engine-level DnsSettings:

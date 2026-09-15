@@ -61,6 +61,21 @@ class AndroidVpnController {
   final _stateController = StreamController<AndroidVpnPhase>.broadcast();
   Stream<AndroidVpnPhase> get states => _stateController.stream;
 
+  /// v0.4.4 §user-2: the engine's real cumulative counters, mirrored from
+  /// the native `state` poll (libbox writeStatus). The dashboard turns these
+  /// into DOWNLOAD/UPLOAD/speed — previously the on-device path had no
+  /// traffic source at all (only desktop Clash-API polling fed it), so the
+  /// metrics sat at 0 forever on the phone.
+  int upBytes = 0;
+  int downBytes = 0;
+  int connections = 0;
+
+  /// v0.4.4 §user-5: when true the session runs engine-only (no TUN) and
+  /// the OS global http_proxy points at [proxyPort].
+  bool _proxyMode = false;
+  bool get isProxyMode => _proxyMode;
+  int proxyPort = 0;
+
   bool get isConnected => phase == AndroidVpnPhase.connected;
   bool get isBusy =>
       phase == AndroidVpnPhase.preparing ||
@@ -93,6 +108,9 @@ class AndroidVpnController {
         final s = await _call('state');
         final native = (s['state'] as String? ?? '').toUpperCase();
         final code = s['errorCode'] as String?;
+        upBytes = (s['up'] as num?)?.toInt() ?? upBytes;
+        downBytes = (s['down'] as num?)?.toInt() ?? downBytes;
+        connections = (s['conns'] as num?)?.toInt() ?? connections;
         switch (native) {
           case 'REVOKED':
             _set(AndroidVpnPhase.revoked,
@@ -183,10 +201,15 @@ class AndroidVpnController {
   Future<bool> connect({
     required Future<bool> Function() probeTunnel,
     Duration startupTimeout = const Duration(seconds: 12),
+    bool proxyMode = false,
   }) async {
     if (isBusy) return false;
+    _proxyMode = proxyMode;
     try {
-      if (!await requestPermission()) return false;
+      // v0.4.4 §user-5: PROXY MODE skips the TUN entirely — no consent
+      // dialog (VpnService never calls establish), the engine serves the
+      // local mixed port and Android's global http_proxy routes traffic.
+      if (!proxyMode && !await requestPermission()) return false;
       _set(AndroidVpnPhase.preparing);
       await _channel.invokeMethod<String>(
           'start', jsonEncode(buildHandoff()));
@@ -217,6 +240,17 @@ class AndroidVpnController {
             _set(AndroidVpnPhase.validating);
             final ok = await probeTunnel().timeout(startupTimeout);
             if (ok) {
+              if (_proxyMode) {
+                final set = await _call('setProxy', {'port': proxyPort});
+                if (set['ok'] != true) {
+                  _set(AndroidVpnPhase.failed,
+                      detail: set['error'] as String? ??
+                          'global proxy refused by Android',
+                      errorCode: VpnErrorCode.unknown);
+                  await stop();
+                  return false;
+                }
+              }
               _set(AndroidVpnPhase.connected);
               _startWatcher();
               return true;
@@ -246,6 +280,12 @@ class AndroidVpnController {
   Future<void> stop() async {
     _watcher?.cancel();
     _watcher = null;
+    if (_proxyMode) {
+      _proxyMode = false;
+      try {
+        await _call('clearProxy');
+      } catch (_) {}
+    }
     if (phase == AndroidVpnPhase.idle || phase == AndroidVpnPhase.stopped) {
       return;
     }

@@ -77,6 +77,7 @@ Future<ProxyProfile> _profileFromStorable(
     uuid: await secret(j['uuid'] as String?),
     password: await secret(j['password'] as String?),
     alterId: j['alterId'] as int?,
+    encryption: j['encryption'] as String?,
     flow: j['flow'] as String?,
     path: j['path'] as String?,
     host: j['host'] as String?,

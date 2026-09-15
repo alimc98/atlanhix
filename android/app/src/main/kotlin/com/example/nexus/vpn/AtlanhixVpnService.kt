@@ -64,9 +64,20 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
                 // Foreground first — Android requires it before long work.
                 startForeground(NOTIFY_ID, buildNotification())
                 val s = state
+                if (s == State.VALIDATING) {
+                    // Reconnect intent while a half-open session is still
+                    // probing (device 2026-09-15: slow provider quarantine
+                    // kept VALIDATING for 15s, and every fresh tap died with
+                    // "session already active"). The Dart side already gave
+                    // up on that attempt — replace it: tear down, rebuild.
+                    setState(State.RECONNECTING)
+                    shutdownTunnelOnly()
+                    startTunnel()
+                    return START_STICKY
+                }
                 if (s != State.IDLE && s != State.STOPPED && s != State.FAILED) {
                     setState(State.FAILED, "start while $s — session already active", ERR_SERVICE_START_FAILED)
-                    return START_STICKY
+                    return START_NOT_STICKY
                 }
                 setState(State.PREPARING)
                 startTunnel()
@@ -373,6 +384,7 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
     }
 
     private fun shutdownTunnelOnly() {
+        AtlanhixTraffic.reset()
         try {
             engine?.stop()
         } catch (_: Exception) {}

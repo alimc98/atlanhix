@@ -611,4 +611,40 @@ class AppLocalizationsEn extends AppLocalizations {
   String engineMissingHint(String engine) {
     return 'Place the $engine binary in the cores folder or set its path in Settings.';
   }
+
+  @override
+  String get quickSettings => 'Quick Settings';
+
+  @override
+  String get recommendedNodes => 'Recommended Nodes';
+
+  @override
+  String get tapToConnect => 'Tap to connect';
+
+  @override
+  String get download => 'Download';
+
+  @override
+  String get upload => 'Upload';
+
+  @override
+  String get time => 'Time';
+
+  @override
+  String get pillIranApps => 'Iran Apps';
+
+  @override
+  String get pillAds => 'Ads';
+
+  @override
+  String get pillProxyMode => 'Proxy Mode';
+
+  @override
+  String get pillTlsFragment => 'Split HTTPS';
+
+  @override
+  String get modeTun => 'TUN';
+
+  @override
+  String get modeProxy => 'Proxy';
 }

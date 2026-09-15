@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../core/android_node_support.dart';
+import '../core/runtime/core_process.dart';
 import '../core/logger.dart';
 import '../core/health/latency_tester.dart';
 import '../domain/entities/health.dart';
@@ -46,10 +47,17 @@ class VpnSession {
   /// Local SOCKS port of the running :xray upstream (0 = not running).
   int _xrayUpstreamPort = 0;
 
+  /// v0.4.4: last successful tunnel-probe latency (dashboard tile).
+  int? lastLatencyMs;
+
   /// Generate the node's Xray config and boot the :xray process with it.
   Future<bool> _startXrayUpstream(ProxyProfile profile, String trace) async {
     try {
-      final port = 2080;
+      // NEVER a fixed 2080: the front sing-box's mixed inbound prefers that
+      // exact port (device bug 2026-09-15: "listen tcp 127.0.0.1:2080: bind:
+      // address already in use" — Xray won it first). Ask the OS for a free
+      // port; the stub in the front config uses whatever we got.
+      final port = await PortAllocator.freePort(prefer: 40820);
       final xrayJson = XrayConfigGenerator().generate(
         profile: profile,
         routing: deps.configBridge.routingProfile(),
@@ -258,6 +266,17 @@ class VpnSession {
     }
 
     try {
+      // v0.4.4 §user-4/5: apply the LOCAL PORT + PROXY/TUN MODE prefs to the
+      // front runtime before the config is generated. On Android the mixed
+      // port must be EXACTLY the user's (libbox reads it from the config, no
+      // re-allocation), and proxy mode drops the tun inbound entirely.
+      final front = deps.cores.front;
+      front.mixedPortPreference = deps.appSettings.localPort;
+      front.tunEnabled = !deps.appSettings.proxyMode;
+      // Proxy mode: no TUN is ever established, so no consent dialog is
+      // needed either; the controller learns the mode via connect().
+      controller.proxyPort = deps.appSettings.localPort;
+
       // 1. Generate the REAL engine config for the selected node from the
       //    current settings (routing mode, DNS, IPv6, WARP, app rules).
       final configJson = await _buildEngineConfig(profile, trace);
@@ -285,6 +304,7 @@ class VpnSession {
       final ok = await controller.connect(
         probeTunnel: () => _probeThroughTunnel(trace),
         startupTimeout: Duration(seconds: deps.appSettings.connectionTimeoutSeconds),
+        proxyMode: deps.appSettings.proxyMode,
       );
       Logger.instance.info(
           'vpn-session', ok ? '$trace CONNECTED' : '$trace FAILED stage=controller.connect (see prior stages)');
@@ -447,6 +467,9 @@ class VpnSession {
       timeout: const Duration(seconds: 8),
     );
     if (probe.ok) {
+      // v0.4.4 §user-2: the health probe IS a latency measurement — publish
+      // it so the dashboard LATENCY tile shows a real number on-device.
+      lastLatencyMs = probe.latencyMs;
       Logger.instance.info('vpn-session',
           '$trace HEALTH_CHECK via mixed:$port OK ${probe.latencyMs ?? '?'}ms');
     } else {

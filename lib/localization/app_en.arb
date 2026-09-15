@@ -1,4 +1,4 @@
-﻿{
+{
   "appName": "Atlanhix",
   "navDashboard": "Dashboard",
   "navNodes": "Nodes",
@@ -98,7 +98,13 @@
   "expires": "Expires",
   "neverExpires": "Never",
   "daysLeft": "{n} days left",
-  "@daysLeft": {"placeholders": {"n": {"type": "int"}}},
+  "@daysLeft": {
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
   "updating": "Updatingâ€¦",
   "updateFailed": "Update failed",
   "warpTitle": "WARP",
@@ -187,19 +193,73 @@
   "confidence": "Confidence",
   "reasons": "Reasons",
   "switchedNode": "Switched to {name}",
-  "@switchedNode": {"placeholders": {"name": {"type": "String"}}},
+  "@switchedNode": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
   "autoSwitched": "Auto-switched to {name}",
-  "@autoSwitched": {"placeholders": {"name": {"type": "String"}}},
+  "@autoSwitched": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
   "nodeUnhealthy": "Node unhealthy",
   "subscriptionUpdated": "Subscription updated: {before} â†’ {after} nodes",
-  "@subscriptionUpdated": {"placeholders": {"before": {"type": "int"}, "after": {"type": "int"}}},
+  "@subscriptionUpdated": {
+    "placeholders": {
+      "before": {
+        "type": "int"
+      },
+      "after": {
+        "type": "int"
+      }
+    }
+  },
   "coreCrashed": "Core crashed and is restarting",
   "importSuccess": "Imported {count} nodes",
-  "@importSuccess": {"placeholders": {"count": {"type": "int"}}},
+  "@importSuccess": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
   "importPartial": "Imported {count} nodes, {skipped} skipped",
-  "@importPartial": {"placeholders": {"count": {"type": "int"}, "skipped": {"type": "int"}}},
+  "@importPartial": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "skipped": {
+        "type": "int"
+      }
+    }
+  },
   "importFailed": "Import failed",
   "engineMissing": "Engine not installed",
   "engineMissingHint": "Place the {engine} binary in the cores folder or set its path in Settings.",
-  "@engineMissingHint": {"placeholders": {"engine": {"type": "String"}}}
+  "@engineMissingHint": {
+    "placeholders": {
+      "engine": {
+        "type": "String"
+      }
+    }
+  },
+  "quickSettings": "Quick Settings",
+  "recommendedNodes": "Recommended Nodes",
+  "tapToConnect": "Tap to connect",
+  "download": "Download",
+  "upload": "Upload",
+  "time": "Time",
+  "pillIranApps": "Iran Apps",
+  "pillAds": "Ads",
+  "pillProxyMode": "Proxy Mode",
+  "pillTlsFragment": "Split HTTPS",
+  "modeTun": "TUN",
+  "modeProxy": "Proxy"
 }

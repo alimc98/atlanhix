@@ -34,8 +34,16 @@ class AtlanhixVpnChannel(private val activity: Activity) {
                 "errorCode",
                 AtlanhixVpnService.errorCode ?: JSONObject.NULL
             )
+            // v0.4.4 §user-2: real engine traffic rides the existing
+            // 1-second state poll — Dart computes speed deltas from it.
+            .put("up", AtlanhixTraffic.up)
+            .put("down", AtlanhixTraffic.down)
+            .put("conns", AtlanhixTraffic.conns)
         // v0.4.1 §11 — REAL PackageManager inventory for the app picker.
         "installedApps" -> JSONObject().put("apps", InstalledAppsSource.list(activity.packageManager))
+        // v0.4.4 §user-5 — PROXY MODE: best-effort global http_proxy.
+        "setProxy" -> setProxy(arg ?: JSONObject())
+        "clearProxy" -> clearProxy()
         else -> JSONObject().put("error", "unknown method: $method")
     }
 
@@ -73,6 +81,30 @@ class AtlanhixVpnChannel(private val activity: Activity) {
             .setAction(AtlanhixVpnService.ACTION_STOP)
         activity.startService(intent)
         return JSONObject().put("ok", true)
+    }
+
+    private fun setProxy(o: JSONObject): JSONObject = try {
+        val port = o.optInt("port", 0)
+        require(port in 1..65535) { "bad port" }
+        android.provider.Settings.Global.putString(
+            activity.contentResolver, "http_proxy", "127.0.0.1:$port")
+        JSONObject().put("ok", true).put("applied", true)
+    } catch (sec: SecurityException) {
+        // No WRITE_SECURE_SETTINGS (non-rooted, stock MIUI): the TUN is off
+        // and the local mixed port still serves 127.0.0.1 — the user can
+        // point Wi-Fi proxy at it manually. Honest degrade, never a lie.
+        android.util.Log.w("AtlanhixVpn", "global proxy refused: ${'$'}{sec.message}")
+        JSONObject().put("ok", true).put("applied", false)
+            .put("error", "global http_proxy needs WRITE_SECURE_SETTINGS (adb grant) — proxy works locally on the chosen port meanwhile")
+    } catch (e: Exception) {
+        JSONObject().put("ok", false).put("error", e.message ?: "setProxy failed")
+    }
+
+    private fun clearProxy(): JSONObject = try {
+        android.provider.Settings.Global.putString(activity.contentResolver, "http_proxy", null)
+        JSONObject().put("ok", true)
+    } catch (e: Exception) {
+        JSONObject().put("ok", false).put("error", e.message ?: "clearProxy failed")
     }
 
     private var consentIntent: Intent? = null

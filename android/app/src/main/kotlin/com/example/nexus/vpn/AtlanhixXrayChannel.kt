@@ -49,11 +49,18 @@ class AtlanhixXrayChannel(private val activity: Activity) {
         if (!binaryPresent()) {
             return JSONObject().put("ok", false).put("error", "xray binary absent")
         }
-        activity.startService(
-            Intent(activity, XrayCoreService::class.java)
-                .setAction(XrayCoreService.ACTION_START)
-                .putExtra(XrayCoreService.EXTRA_CONFIG, config)
-                .putExtra(XrayCoreService.EXTRA_SOCKS_PORT, port))
+        // FGS start (API 26+): survives MIUI app-idle kills that left
+        // every xhttp node dead on-device while identical configs passed
+        // on PC (v0.4.4 phone connection root-cause fix).
+        val intent = Intent(activity, XrayCoreService::class.java)
+            .setAction(XrayCoreService.ACTION_START)
+            .putExtra(XrayCoreService.EXTRA_CONFIG, config)
+            .putExtra(XrayCoreService.EXTRA_SOCKS_PORT, port)
+        if (android.os.Build.VERSION.SDK_INT >= 26) {
+            activity.startForegroundService(intent)
+        } else {
+            activity.startService(intent)
+        }
         return JSONObject().put("ok", true).put("socksPort", port)
     }
 

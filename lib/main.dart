@@ -14,13 +14,83 @@ import 'theme/theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final deps = await AppDependencies.bootstrap();
-  // v0.4.3: learn the TRUTH about the Xray runtime (exec'd native binary in
-  // the :xray process) before the UI paints a single badge — honest engine
-  // states start here, never from a hardcoded assumption.
-  await XrayBridge.instance.probe();
-  XrayCoreState.instance.setRuntimeLoaded(XrayBridge.instance.available);
-  runApp(AtlanhixApp(deps: deps));
+  // v0.4.4 (§user: white screen at launch): do NOT await bootstrap before
+  // runApp — that blocked the first frame (white) for seconds. Warm-up now
+  // runs while the branded intro is on screen.
+  final warmup = () async {
+    final deps = await AppDependencies.bootstrap();
+    // v0.4.3: learn the TRUTH about the Xray runtime (exec'd native binary
+    // in the :xray process) before the UI paints a single badge.
+    await XrayBridge.instance.probe();
+    XrayCoreState.instance.setRuntimeLoaded(XrayBridge.instance.available);
+    return deps;
+  }();
+  runApp(AtlanhixRoot(warmup: warmup));
+}
+
+/// Paints the intro immediately and swaps to the app the moment warm-up
+/// resolves — the curtain never outstays the work.
+class AtlanhixRoot extends StatelessWidget {
+  const AtlanhixRoot({super.key, required this.warmup});
+
+  final Future<AppDependencies> warmup;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<AppDependencies>(
+      future: warmup,
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return MaterialApp(
+            debugShowCheckedModeBanner: false,
+            home: Scaffold(
+              backgroundColor: const Color(0xFF0A0B0E),
+              body: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    'Startup failed: ${snap.error}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Color(0xFFE8E9ED)),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
+        if (!snap.hasData) {
+          // Branded dark intro with the user-provided artwork — same paint
+          // as the native launch window, so the transition is seamless.
+          return MaterialApp(
+            debugShowCheckedModeBanner: false,
+            home: Container(
+              color: const Color(0xFF0A0B0E),
+              alignment: Alignment.center,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(22),
+                    child: Image.asset('assets/intro/splash_art.png',
+                        fit: BoxFit.contain,
+                        errorBuilder: (c, e, s) => const SizedBox(height: 120)),
+                  ),
+                  const SizedBox(height: 18),
+                  const Text('ATLANHIX',
+                      style: TextStyle(
+                          color: Color(0xFFE8E9ED),
+                          fontSize: 18,
+                          letterSpacing: 6,
+                          fontWeight: FontWeight.w300)),
+                ],
+              ),
+            ),
+          );
+        }
+        return AtlanhixApp(deps: snap.data!);
+      },
+    );
+  }
 }
 
 class AtlanhixApp extends StatefulWidget {

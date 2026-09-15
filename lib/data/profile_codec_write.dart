@@ -26,6 +26,7 @@ Map<String, dynamic> profileToStorable(
     'uuid': vaultify(p.uuid),
     'password': vaultify(p.password),
     'alterId': p.alterId,
+    'encryption': p.encryption,
     'flow': p.flow,
     'path': p.path,
     'host': p.host,

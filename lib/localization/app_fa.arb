@@ -99,7 +99,13 @@
   "expires": "انقضا",
   "neverExpires": "نامحدود",
   "daysLeft": "{n} روز مانده",
-  "@daysLeft": {"placeholders": {"n": {"type": "int"}}},
+  "@daysLeft": {
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
   "updating": "در حال به‌روزرسانی…",
   "updateFailed": "به‌روزرسانی ناموفق",
   "warpTitle": "وارپ",
@@ -188,19 +194,73 @@
   "confidence": "اطمینان",
   "reasons": "دلایل",
   "switchedNode": "تغییر به {name}",
-  "@switchedNode": {"placeholders": {"name": {"type": "String"}}},
+  "@switchedNode": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
   "autoSwitched": "تغییر خودکار به {name}",
-  "@autoSwitched": {"placeholders": {"name": {"type": "String"}}},
+  "@autoSwitched": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
   "nodeUnhealthy": "گره ناسالم است",
   "subscriptionUpdated": "اشتراک به‌روز شد: {before} ← {after} گره",
-  "@subscriptionUpdated": {"placeholders": {"before": {"type": "int"}, "after": {"type": "int"}}},
+  "@subscriptionUpdated": {
+    "placeholders": {
+      "before": {
+        "type": "int"
+      },
+      "after": {
+        "type": "int"
+      }
+    }
+  },
   "coreCrashed": "هسته کرش کرد و در حال راه‌اندازی مجدد است",
   "importSuccess": "{count} گره درون‌ریزی شد",
-  "@importSuccess": {"placeholders": {"count": {"type": "int"}}},
+  "@importSuccess": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
   "importPartial": "{count} گره درون‌ریزی شد، {skipped} مورد رد شد",
-  "@importPartial": {"placeholders": {"count": {"type": "int"}, "skipped": {"type": "int"}}},
+  "@importPartial": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "skipped": {
+        "type": "int"
+      }
+    }
+  },
   "importFailed": "درون‌ریزی ناموفق بود",
   "engineMissing": "موتور نصب نشده است",
   "engineMissingHint": "فایل {engine} را در پوشه هسته‌ها بگذارید یا مسیر آن را در تنظیمات مشخص کنید.",
-  "@engineMissingHint": {"placeholders": {"engine": {"type": "String"}}}
+  "@engineMissingHint": {
+    "placeholders": {
+      "engine": {
+        "type": "String"
+      }
+    }
+  },
+  "quickSettings": "تنظیمات سریع",
+  "recommendedNodes": "نودهای پیشنهادی",
+  "tapToConnect": "برای اتصال بزن",
+  "download": "دانلود",
+  "upload": "آپلود",
+  "time": "زمان",
+  "pillIranApps": "اپ‌های ایرانی",
+  "pillAds": "تبلیغات",
+  "pillProxyMode": "حالت پراکسی",
+  "pillTlsFragment": "Split HTTPS",
+  "modeTun": "TUN",
+  "modeProxy": "پراکسی"
 }

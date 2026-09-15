@@ -50,7 +50,12 @@ class _NodesScreenState extends State<NodesScreen> {
     _selectedId = widget.deps.vpnSession.selectedNode?.id;
     _selectionSub =
         widget.deps.vpnSession.selectionChanged.listen((_) {
-      if (mounted) setState(() {});
+      // v0.4.4 fix: keep the local highlight in sync with the SESSION's
+      // selection (device bug: the checkmark only appeared after leaving
+      // and re-entering the tab because this stream never updated
+      // _selectedId — only initState read it once).
+      if (!mounted) return;
+      setState(() => _selectedId = widget.deps.vpnSession.selectedNode?.id);
     });
   }
 
@@ -264,7 +269,7 @@ class _NodesScreenState extends State<NodesScreen> {
     final runnable = !Platform.isAndroid || AndroidNodeSupport.isRunnable(p);
     if (Platform.isAndroid) {
       if (runnable) vpn.selectNode(p);
-      setState(() {});
+      setState(() => _selectedId = runnable ? p.id : _selectedId);
     }
     if (!runnable) {
       if (Platform.isAndroid && context.mounted) {
@@ -565,6 +570,19 @@ class _NodeTile extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: Row(
                 children: [
+                  // v0.4.4 mockup: green rounded mark per node row.
+                  Container(
+                    width: 34,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: c.success.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(10),
+                      border:
+                          Border.all(color: c.success.withValues(alpha: 0.4)),
+                    ),
+                    child: Icon(Icons.bolt, size: 18, color: c.success),
+                  ),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -596,14 +614,17 @@ class _NodeTile extends StatelessWidget {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          '${profile.protocol.name} · $coreLabel'
-                          '${profile.security != Security.none ? ' · ${profile.security.name}' : ''}',
+                          selected
+                              ? 'CONNECTED · ${profile.protocol.name} · $coreLabel'
+                              : '${l.tapToConnect} · ${profile.protocol.name} · $coreLabel'
+                                  '${profile.security != Security.none ? ' · ${profile.security.name}' : ''}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context)
                               .textTheme
                               .bodySmall
-                              ?.copyWith(color: c.textMuted),
+                              ?.copyWith(
+                                  color: selected ? c.accent : c.textMuted),
                         ),
                       ],
                     ),

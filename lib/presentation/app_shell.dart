@@ -48,10 +48,12 @@ class _AppShellState extends State<AppShell> {
   static final bool isAndroid = Platform.isAndroid;
 
   static const _icons = [
-    (Icons.dashboard_outlined, Icons.dashboard),
-    (Icons.hub_outlined, Icons.hub),
-    (Icons.alt_route_outlined, Icons.alt_route),
-    (Icons.terminal_outlined, Icons.terminal),
+    // v0.4.4 brand sheet: Dashboard=chart, Nodes=cube, Routing=arrows,
+    // Logs=document, Settings=gear.
+    (Icons.bar_chart_outlined, Icons.bar_chart),
+    (Icons.view_in_ar_outlined, Icons.view_in_ar),
+    (Icons.swap_horiz_outlined, Icons.swap_horiz),
+    (Icons.description_outlined, Icons.description),
     (Icons.settings_outlined, Icons.settings),
   ];
 
@@ -165,7 +167,15 @@ class _AppShellState extends State<AppShell> {
           : NavigationBar(
               selectedIndex: _index.clamp(0, labels.length - 1),
               onDestinationSelected: (i) => setState(() => _index = i),
-              height: 64,
+              height: 72,
+              // v0.4.4 brand sheet: tiles on Surface, hairline Border,
+              // rounded-square active indicator (not a soft blob).
+              backgroundColor: ThemeExt.of(context).surface,
+              indicatorColor: ThemeExt.of(context).accentSoft,
+              indicatorShape:
+                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shadowColor: Colors.transparent,
+              surfaceTintColor: Colors.transparent,
               labelBehavior:
                   NavigationDestinationLabelBehavior.alwaysShow,
               destinations: [

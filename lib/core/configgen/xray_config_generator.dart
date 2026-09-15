@@ -97,7 +97,13 @@ class XrayConfigGenerator {
         'domainStrategy': 'IPIfNonMatch',
         'rules': [
           ...routingRules,
-          {'type': 'field', 'outboundTag': 'direct', 'network': 'tcp,udp'},
+          // UPSTREAM SEMANTICS: the front sing-box has already split
+          // LAN/IRAN/domestic to direct — whatever arrives at this local
+          // SOCKS is tunnel-bound traffic. Final rule must therefore be the
+          // NODE, never direct (direct-on-MCI dies in TLS handshake;
+          // measured on device 2026-09-15: 'socks-in -> direct' fails while
+          // the same config passes on open networks).
+          {'type': 'field', 'outboundTag': proxyTag, 'network': 'tcp,udp'},
         ],
       },
     };
