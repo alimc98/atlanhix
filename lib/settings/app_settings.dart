@@ -41,6 +41,9 @@ class AppSettings {
     this.iranAppsDirect = false, // Iranian services bypass the tunnel
     this.adsBlock = false, // kill ads domains at DNS level
     this.tlsFragment = false, // Xray/sing-box fragmentation for deep drops
+    // v0.4.6 §user: WHICH fragment profile the pill uses (conservative is
+    // the safe default). Only meaningful while tlsFragment is on.
+    this.fragmentPreset = FragmentPreset.conservative,
     // ---- WARP (§30) ----
     this.warpEnabled = false,
     this.warpChainMode = WarpChainMode.warpAsOutbound,
@@ -87,6 +90,10 @@ class AppSettings {
   bool adsBlock;
   bool tlsFragment;
 
+  /// v0.4.6 §user: the selected fragmentation intensity for the
+  /// TLS-Fragment pill. Maps to the FragmentPresets ids.
+  FragmentPreset fragmentPreset;
+
   /// v0.4.4 §user-4: local proxy/mixed port shared by every mode
   /// (TUN front inbound, proxy-mode system proxy, health probes). 0=auto.
   int localPort;
@@ -131,6 +138,7 @@ class AppSettings {
         'iranAppsDirect': iranAppsDirect,
         'adsBlock': adsBlock,
         'tlsFragment': tlsFragment,
+        'fragmentPreset': fragmentPreset.name,
         'localPort': localPort,
         'proxyMode': proxyMode,
         'warpEnabled': warpEnabled,
@@ -168,6 +176,9 @@ class AppSettings {
         iranAppsDirect: j['iranAppsDirect'] as bool? ?? false,
         adsBlock: j['adsBlock'] as bool? ?? false,
         tlsFragment: j['tlsFragment'] as bool? ?? false,
+        fragmentPreset: FragmentPreset.values.firstWhere(
+            (e) => e.name == j['fragmentPreset'],
+            orElse: () => FragmentPreset.conservative),
         localPort: j['localPort'] as int? ?? 2080,
         proxyMode: j['proxyMode'] as bool? ?? false,
         warpEnabled: j['warpEnabled'] as bool? ?? false,
@@ -192,6 +203,16 @@ enum IpV6Mode { on, off, auto }
 
 /// §7 Core — engine preference. `auto` defers to CoreDetector.
 enum CorePreference { auto, singbox, xray }
+
+/// v0.4.6 §user — fragmentation intensity for the TLS-Fragment pill.
+/// Each fixed value maps 1:1 to a [FragmentPresets] profile:
+///   conservative → tlshello 10-40 / 5-10 ms (safest, first attempt)
+///   default      → tlshello 100-200 / 10-20 ms (balanced)
+///   aggressive   → 1-3 packets 10-20 / 5-10 ms (hardest to detect, riskier)
+/// `auto` climbs the ladder conservative → default → aggressive per connect:
+/// the safe preset first, escalating ONLY on a failed tunnel probe, and the
+/// winning rung is persisted per node (FragmentLadderCache).
+enum FragmentPreset { conservative, defaultPreset, aggressive, auto }
 
 /// §30 — WARP integration shape. `warpAsOutbound` = the generated config
 /// contains a real WARP outbound that rules can target (Google → WARP etc.).

@@ -194,17 +194,59 @@ class XrayRuntime implements CoreRuntime {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
       if (_process?.isRunning != true) return false;
-      try {
-        final s = await Socket.connect(
-            InternetAddress.loopbackIPv4, _localPort,
-            timeout: const Duration(milliseconds: 500));
-        s.destroy();
+      if (await _socksProbe()) {
         return true;
-      } catch (_) {
-        await Future<void>.delayed(const Duration(milliseconds: 150));
       }
+      await Future<void>.delayed(const Duration(milliseconds: 150));
     }
     return false;
+  }
+
+  /// v0.4.6 REAL READINESS: a full SOCKS5 NO-AUTH greeting exchange
+  /// (05 01 00 → 05 00), the same probe discipline MasterDnsVpnRuntime
+  /// already uses. The previous bare TCP-connect probe declared Xray
+  /// "ready" while ANY process — including a crashed Xray leaving a
+  /// socket in TIME_WAIT accept, or a config whose inbound parsed but
+  /// whose outbounds failed to build — held the port open. The greeting
+  /// proves the SOCKS inbound actually SERVES, not just listens.
+  Future<bool> _socksProbe() async {
+    Socket? s;
+    try {
+      s = await Socket.connect(InternetAddress.loopbackIPv4, _localPort,
+          timeout: const Duration(milliseconds: 600));
+      s.add([0x05, 0x01, 0x00]); // SOCKS5: offer NO-AUTH
+      final reply = await _readN(s, 2);
+      return reply.length == 2 && reply[0] == 0x05 && reply[1] == 0x00;
+    } catch (_) {
+      return false;
+    } finally {
+      s?.destroy();
+    }
+  }
+
+  /// Reads exactly [n] bytes with a short bound (probe-only helper —
+  /// mirrors MasterDnsVpnRuntime._readN; RawSocket poll semantics are NOT
+  /// needed here because the probe owns the socket exclusively).
+  static Future<List<int>> _readN(Socket s, int n) async {
+    final buf = <int>[];
+    final c = Completer<void>();
+    late final StreamSubscription<List<int>> sub;
+    sub = s.listen((chunk) {
+      buf.addAll(chunk);
+      if (buf.length >= n && !c.isCompleted) c.complete();
+    }, onDone: () {
+      if (!c.isCompleted) c.complete();
+    }, onError: (Object _) {
+      if (!c.isCompleted) c.complete();
+    });
+    try {
+      await c.future.timeout(const Duration(milliseconds: 800));
+    } on TimeoutException {
+      // fall through with whatever arrived
+    } finally {
+      await sub.cancel();
+    }
+    return buf;
   }
 
   void _collectLogs() {
@@ -220,6 +262,10 @@ class XrayRuntime implements CoreRuntime {
   }
 
   String _stderrTail() => _stderrRing.take(12).join('\n');
+
+  /// v0.4.6: recent stderr lines for ProbeError surfacing (read-only copy;
+  /// the ring itself is only written by the log collector).
+  List<String> debugStderrTail() => List.unmodifiable(_stderrRing);
 
   @override
   Future<int?> testTag(String tag, {String url = _defaultTestUrl}) async =>
@@ -241,17 +287,7 @@ class XrayRuntime implements CoreRuntime {
   }
 
   @override
-  Future<bool> inboundHealthy() async {
-    try {
-      final s = await Socket.connect(
-          InternetAddress.loopbackIPv4, _localPort,
-          timeout: const Duration(milliseconds: 600));
-      s.destroy();
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
+  Future<bool> inboundHealthy() => _socksProbe();
 
   @override
   Future<void> stop() async {

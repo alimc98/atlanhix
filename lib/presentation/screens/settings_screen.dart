@@ -221,6 +221,25 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
           ),
+          // v0.4.6 §user: WHICH fragment profile the TLS-Fragment pill uses
+          // (Conservative is the safe default). Only shown while the pill is
+          // on — hiding it when the feature is off matches the rest of the
+          // screen's conditional-controls pattern (custom DNS fields etc.).
+          if (s.tlsFragment)
+            ListTile(
+              dense: true,
+              title: const Text('Fragment mode'),
+              subtitle: Text(_fragmentPresetLabel(s.fragmentPreset)),
+              trailing: DropdownButton<FragmentPreset>(
+                value: s.fragmentPreset,
+                items: [
+                  for (final m in FragmentPreset.values)
+                    DropdownMenuItem(
+                        value: m, child: Text(_fragmentPresetLabel(m))),
+                ],
+                onChanged: (m) => _save(s..fragmentPreset = m!),
+              ),
+            ),
           // v0.4.4 §user-5: TUN vs Proxy mode — explicit, persisted.
           ListTile(
             dense: true,
@@ -378,6 +397,17 @@ class SettingsScreen extends StatelessWidget {
     final mode = deps.routingSettings.mode.name;
     return mode[0].toUpperCase() + mode.substring(1);
   }
+
+  /// v0.4.6 §user: user-facing labels for the fragment intensity picker.
+  String _fragmentPresetLabel(FragmentPreset m) => switch (m) {
+        FragmentPreset.conservative =>
+          'Conservative — tlshello 10-40, safest',
+        FragmentPreset.defaultPreset => 'Default — tlshello 100-200, balanced',
+        FragmentPreset.aggressive =>
+          'Aggressive — 1-3 packets, hardest to detect',
+        FragmentPreset.auto =>
+          'Auto — try safe→strong on failure, remember the winner',
+      };
 
   Future<void> _save(AppSettings s) async {
     await deps.appSettingsRepo.save(s);

@@ -58,11 +58,74 @@ void main() {
     // Redacted recent logs are present (the buffer entry we just wrote).
     expect((r['recentLogs'] as List).isNotEmpty, isTrue);
 
+    // v0.4.6: no engine running → no layered failure analysis at all
+    // (never a fabricated verdict).
+    expect(r['failureAnalysis'], isNull);
+
     // Human render works and contains the platform name.
     final text = DiagnosticsService.renderText(r);
     expect(text, contains('Atlanhix diagnostics report'));
     expect(text, contains(Platform.operatingSystem));
   });
+
+  test(
+      'layered failure analysis: shape + UDP-transport verdicts (env-gated)',
+      () async {
+    final coresDir = Directory(
+        '${Directory.current.path}${Platform.pathSeparator}cores'
+        '${Platform.pathSeparator}${BinaryManager.platformDirName()}');
+    if (!coresDir.existsSync()) return;
+    final bm = BinaryManager(appDir: coresDir);
+    final sb = await bm.inspect(CoreBinaryKind.singbox);
+    if (sb.status != 'available') return;
+
+    final cores = CoreManager(
+      binaryManager: bm,
+      workDir: await Directory.systemTemp.createTemp('nexus-diag-layer'),
+    );
+    addTearDown(() => cores.dispose());
+    // hysteria2 = UDP/QUIC transport: tcp/tls probes must report 'n/a'
+    // instead of a false FAIL (a healthy hy2 node answers no plain TCP).
+    final profile = ProxyProfile(
+      id: 'diag-hy2',
+      name: 'diag hy2 node',
+      server: '127.0.0.1',
+      port: 1, // deliberately dead — layers must still report honestly
+      protocol: ProxyProtocol.hysteria2,
+      password: 'diag-pass',
+      core: CoreKind.singbox,
+    );
+    final start = await cores.startFor(
+      profile,
+      all: [profile],
+      routing: BuiltinRoutingProfiles.all().first,
+      dns: DnsSettings(mode: DnsMode.automatic),
+    );
+    expect(start.ok, isTrue, reason: start.message);
+
+    final svc = DiagnosticsService(
+      cores: cores,
+      routing: BuiltinRoutingProfiles.all().first,
+      dns: DnsSettings(mode: DnsMode.automatic),
+    );
+    final r = await svc.collect();
+    final fa = r['failureAnalysis'] as Map?;
+    if (fa == null) {
+      // Sandbox without outbound network: layered probes were skipped —
+      // honest absence is acceptable, never a fabricated verdict.
+      return;
+    }
+    expect(fa['activeEngine'], 'singbox');
+    expect(fa['tcp'], 'n/a (UDP transport)');
+    expect(fa['tls'], 'n/a (UDP transport)');
+    expect(
+        (fa['failingLayer'] as String), isIn(['proxy', 'tcp', 'tls', 'dns']));
+    // engineTail: redacted free text — either empty (nothing logged) or
+    // present, never throwing, never containing the probe password.
+    final tail = (fa['engineTail'] as String?) ?? '';
+    expect(tail.contains('diag-pass'), isFalse);
+    await cores.stop();
+  }, timeout: const Timeout(Duration(seconds: 60)));
 
   test('running report: real pid/port/readiness/probe (env-gated)',
       () async {

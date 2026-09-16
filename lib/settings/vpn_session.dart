@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import '../core/android_node_support.dart';
+import '../core/fragmentation/fragment_profiles.dart';
 import '../core/runtime/core_process.dart';
 import '../core/logger.dart';
 import '../core/net/bootstrap_dns.dart';
@@ -59,15 +59,18 @@ class VpnSession {
       // address already in use" — Xray won it first). Ask the OS for a free
       // port; the stub in the front config uses whatever we got.
       final port = await PortAllocator.freePort(prefer: 40820);
+      // v0.4.6: the generator now emits the platform-clean resolver pair
+      // itself (domestic on Android, global on desktop) and never
+      // `localhost` — the carrier-poison round-robin race is fixed at the
+      // source for BOTH paths (see XrayConfigGenerator.defaultCleanServers).
+      // v0.4.6 §user: the fragment pill (fixed or AUTO rung) now reaches the
+      // Android :xray upstream config too — CoreManager.fragmentFor applies
+      // the same eligibility + AUTO-rung semantics as the desktop starts.
       final xrayJson = XrayConfigGenerator().generate(
         profile: profile,
         routing: deps.configBridge.routingProfile(),
         localSocksPort: port,
-        // xray resolves the sing-box-forwarded remote domains ITSELF —
-        // 1.1.1.1 (the generator default) is dead on IR mobile data
-        // (measured Mi 9T 2026-09-13); use the same clean domestic resolver
-        // the front config uses.
-        dnsServer: Platform.isAndroid ? '178.22.122.100' : '1.1.1.1',
+        fragment: deps.cores.fragmentFor(profile),
       );
       final ok = await XrayBridge.instance
           .start(jsonEncode(xrayJson), port);
@@ -262,6 +265,14 @@ class VpnSession {
     // Reality and Host headers are byte-for-byte unchanged.
     profile = await _withBootstrappedAddress(profile, trace);
 
+    // v0.4.6 §user: a fresh Android connect BEGINS the fragment AUTO ladder
+    // (rung 0 — or the node's persisted winning rung from the ladder cache)
+    // BEFORE any engine config is generated, so the first :xray start of this
+    // connect already carries the right rung. Fixed presets are unaffected.
+    deps.cores.fragmentPreset = deps.appSettings.fragmentPreset;
+    deps.cores.tlsFragmentEnabled = deps.appSettings.tlsFragment;
+    deps.cores.beginAutoLadder(profile);
+
     // xhttp / mKCP: the front sing-box CANNOT express them — the Xray
     // runtime (:xray process + libv2ray AAR) must serve the node. Started
     // as a local SOCKS upstream below; the front config references it via
@@ -288,6 +299,15 @@ class VpnSession {
       final front = deps.cores.front;
       front.mixedPortPreference = deps.appSettings.localPort;
       front.tunEnabled = !deps.appSettings.proxyMode;
+      // v0.4.6 WIRING: the TLS-Fragment pill reaches BOTH engines on Android
+      // too — sing-box via the tls.fragment option of the front config, Xray
+      // via the CoreManager's native freedom-fragment form (the :xray
+      // upstream is started through deps.cores below / _startXrayUpstream).
+      front.tlsFragment = deps.appSettings.tlsFragment;
+      // NOTE: tlsFragmentEnabled/fragmentPreset/beginAutoLadder were pushed
+      // to CoreManager EARLIER in this method — before the :xray upstream
+      // start — so the first Xray config of this connect carries the right
+      // fragment rung (see the v0.4.6 §user block above the xhttp gate).
       // Proxy mode: no TUN is ever established, so no consent dialog is
       // needed either; the controller learns the mode via connect().
       controller.proxyPort = deps.appSettings.localPort;
@@ -324,6 +344,29 @@ class VpnSession {
       Logger.instance.info(
           'vpn-session', ok ? '$trace CONNECTED' : '$trace FAILED stage=controller.connect (see prior stages)');
       if (!ok) {
+        // v0.4.6 §user-3: the FIRST rung's probe is a real attempt too —
+        // the native controller.connect already failed its own tunnel probe,
+        // so the starting rung counts as tried (and failed) here.
+        if (deps.cores.tlsFragmentEnabled &&
+            deps.cores.fragmentPreset == FragmentPreset.auto &&
+            FragmentationEngine().isEligible(profile)) {
+          final firstRung = deps.cores.currentAutoFragment;
+          if (firstRung != null) {
+            await deps.cores.fragmentLadder?.recordRungAttempt(
+                profile.subscriptionId, firstRung,
+                won: false);
+          }
+        }
+        // v0.4.6 §user: fragment AUTO ladder — the tunnel probe failed, so
+        // climb conservative → default → aggressive before reporting the
+        // failure. A win here IS a connected session (the rung re-probed
+        // through the real tunnel and recorded itself as the node's winner).
+        final climbed =
+            await _escalateFragmentAfterProbeFailure(profile, trace);
+        if (climbed) {
+          Logger.instance.info('vpn-session', '$trace CONNECTED (fragment auto)');
+          return true;
+        }
         // NOTE (v0.4.4): we deliberately do NOT evict the bootstrap pin
         // here. A health-check failure is usually protocol/DPI/transport,
         // not a stale IP — and evicting a WORKING pin turns the next
@@ -538,6 +581,62 @@ class VpnSession {
           '$trace FAILED stage=HEALTH_CHECK via mixed:$port kind=${probe.errorKind} detail=${probe.detail != null ? Logger.redact(probe.detail!) : '-'}');
     }
     return probe.ok;
+  }
+
+  /// v0.4.6 §user — fragment AUTO escalation ladder (Android). With the
+  /// fragment pill on and fragmentPreset == auto, a failed tunnel probe
+  /// climbs [CoreManager.advanceAutoLadder]: restart the :xray upstream with
+  /// the NEXT fragment rung, re-probe, and on success record the winning
+  /// rung in the per-node ladder cache. Exhausted → false; the caller
+  /// reports its honest failure. Fixed presets never enter here.
+  ///
+  /// Scope note: the ladder is Xray-upstream-only BY DESIGN —
+  /// FragmentationEngine.isEligible admits Xray-core nodes only, and on
+  /// Android those are exactly the xhttp/mKCP nodes served by :xray. The
+  /// sing-box front carries a boolean tls.fragment with no intensity rungs,
+  /// so re-connecting an identical front config would be a dishonest retry.
+  Future<bool> _escalateFragmentAfterProbeFailure(
+      ProxyProfile profile, String trace) async {
+    if (!deps.cores.tlsFragmentEnabled) return false;
+    if (deps.cores.fragmentPreset != FragmentPreset.auto) return false;
+    if (!FragmentationEngine().isEligible(profile)) return false;
+    Logger.instance.info('vpn-session',
+        '$trace FRAGMENT_AUTO probe failed — climbing the ladder');
+    while (deps.cores.advanceAutoLadder()) {
+      final rung = deps.cores.currentAutoFragment;
+      Logger.instance.info('vpn-session',
+          '$trace FRAGMENT_AUTO retrying with next rung${rung != null ? ' (${rung.id})' : ''}');
+      // Xray-owned node: restart ONLY the upstream with the next rung, then
+      // re-probe through the (unchanged) front tunnel.
+      if (_xrayUpstreamPort > 0) {
+        await XrayBridge.instance.stop();
+        _xrayUpstreamPort = 0;
+      }
+      if (!await _startXrayUpstream(profile, trace)) continue;
+      final ok = await _probeThroughTunnel(trace);
+      // v0.4.6 §user-3: every real probe is an attempt — pass or fail.
+      if (rung != null) {
+        await deps.cores.fragmentLadder?.recordRungAttempt(
+            profile.subscriptionId, rung,
+            won: ok);
+      }
+      if (ok) {
+        if (rung != null) {
+          await deps.cores.fragmentLadder?.recordWinner(profile.id, rung);
+          // v0.4.6 §user-2: promote the proven rung to the subscription-
+          // level suggestion so sibling nodes START there (they still wrap
+          // through every rung when it does not fit them).
+          await deps.cores.fragmentLadder?.recordSuggestion(
+              profile.subscriptionId, rung);
+        }
+        Logger.instance.info('vpn-session',
+            '$trace FRAGMENT_AUTO won at rung ${rung?.id ?? '?'} (redacted node id)');
+        return true;
+      }
+      Logger.instance.warn('vpn-session',
+          '$trace FRAGMENT_AUTO rung did not answer the probe');
+    }
+    return false;
   }
 
   /// v0.4.1 device-fix: auto-pick must only consider nodes the ANDROID engine

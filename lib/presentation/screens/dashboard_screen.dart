@@ -598,7 +598,9 @@ class _QuickPills extends StatelessWidget {
             enabled: isAndroid),
         _pill(context, l.pillTlsFragment, s.tlsFragment,
             () => settings.save(settings.current..tlsFragment = !s.tlsFragment),
-            tooltip: 'Fragment the TLS handshake (sing-box tls.fragment, next connect)'),
+            tooltip: s.fragmentPreset == FragmentPreset.auto
+                ? 'Fragment AUTO: safe→strong on failure, remembers the winner (next connect)'
+                : 'Fragment the TLS handshake (sing-box tls.fragment, next connect)'),
       ],
     );
   }

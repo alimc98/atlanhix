@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../application/dependencies.dart';
 import '../application/connection_controller.dart';
 import '../domain/entities/proxy_profile.dart';
+import '../domain/errors/app_error.dart';
 import '../localization/generated/app_localizations.dart';
 import '../theme/theme.dart';
 import '../settings/app_settings.dart';
@@ -40,6 +41,7 @@ class _AppShellState extends State<AppShell> {
   int _index = 0;
   ConnectionPhase _phase = ConnectionPhase.disconnected;
   ProxyProfile? _active;
+  AppError? _lastError;
   StreamSubscription? _sub;
   StreamSubscription? _vpnSub;
   AppSettings? _settings;
@@ -65,6 +67,9 @@ class _AppShellState extends State<AppShell> {
       setState(() {
         _phase = s.phase;
         _active = s.activeProfile;
+        // v0.4.6: keep the last error so the status label can show WHY
+        // (engine stderr tail) instead of a bare "Connection failed".
+        _lastError = s.error;
       });
     });
     // v0.4.1 §5: on Android the VpnSession state machine is authoritative —
@@ -289,7 +294,16 @@ class _AppShellState extends State<AppShell> {
       case ConnectionPhase.connected:
         return l.connected;
       case ConnectionPhase.error:
-        return l.connectionFailed;
+        // v0.4.6: surface the engine stderr tail (redacted, one line) —
+        // "Connection failed — xray: lookup …: no such host" tells the
+        // user what the engine actually said. Bounded so the sidebar
+        // label stays sane; the full text lives in the Logs screen.
+        final detail = _lastError?.likelyCauses.isNotEmpty == true
+            ? _lastError!.likelyCauses.first
+            : null;
+        return detail == null || detail.isEmpty
+            ? l.connectionFailed
+            : '${l.connectionFailed} — $detail';
       case ConnectionPhase.connecting:
       case ConnectionPhase.startingCore:
       case ConnectionPhase.switching:

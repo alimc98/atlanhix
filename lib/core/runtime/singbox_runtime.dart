@@ -299,6 +299,10 @@ class SingBoxRuntime implements CoreRuntime {
 
   String _stderrTail() => _stderrRing.take(12).join('\n');
 
+  /// v0.4.6: recent stderr lines for ProbeError surfacing (read-only copy;
+  /// the ring itself is only written by the log collector).
+  List<String> debugStderrTail() => List.unmodifiable(_stderrRing);
+
   final _stdoutRing = <String>[];
 
   String _stdoutTail() => _stdoutRing.take(6).join(' | ');

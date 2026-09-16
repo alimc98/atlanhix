@@ -1,5 +1,6 @@
 import '../../domain/entities/proxy_profile.dart';
 import '../core_detector.dart';
+import '../../settings/app_settings.dart';
 
 /// Fragmentation presets (§14). Values map 1:1 to Xray freedom `fragment`
 /// settings. Eligibility is enforced by [FragmentationEngine].
@@ -65,6 +66,25 @@ class FragmentPresets {
   );
 
   static const all = [conservative, standard, aggressive];
+
+  /// v0.4.6 §user: map the user-selected pill intensity (AppSettings.
+  /// fragmentPreset) to the concrete Xray/sing-box profile. `defaultPreset`
+  /// intentionally maps to the [standard] profile (id 'default').
+  static FragmentProfile profileFor(FragmentPreset preset) => switch (preset) {
+        FragmentPreset.conservative => conservative,
+        FragmentPreset.defaultPreset => standard,
+        FragmentPreset.aggressive => aggressive,
+        FragmentPreset.auto => conservative, // placeholder; AUTO uses beginAutoLadder
+      };
+
+  /// v0.4.6 §user: the AUTO ladder — safe order by [FragmentationEngine.
+  /// orderedAttempts]. [depth] bounds the climb: 1 = conservative only, 2 =
+  /// conservative+default, 3 = the full ladder to aggressive. Conservative
+  /// stays the single first attempt in every case.
+  static List<FragmentProfile> attemptsFor(int depth) {
+    final d = depth.clamp(1, 3);
+    return all.take(d).toList(growable: false);
+  }
 
   static FragmentProfile? byId(String? id) {
     if (id == null) return null;

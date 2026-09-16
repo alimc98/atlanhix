@@ -4,6 +4,7 @@ import '../core/fragmentation/fragment_profiles.dart';
 import '../core/health/latency_tester.dart';
 import '../core/health/test_scheduler.dart';
 import '../core/logger.dart';
+import '../core/net/bootstrap_dns.dart';
 import '../core/runtime/core_manager.dart';
 import '../core/runtime/core_process.dart';
 import '../core/runtime/core_runtime.dart';
@@ -19,6 +20,7 @@ import '../warp/warp_registrar.dart';
 import '../data/profile_repository.dart';
 import '../data/repositories.dart';
 import '../platform/system_proxy.dart';
+import '../settings/app_settings.dart';
 
 /// Strict connection state machine (Phase 25).
 ///
@@ -120,6 +122,30 @@ class ConnectionController {
   FragmentProfile? fragmentOverride;
   ProxyChain? activeChain;
 
+  /// v0.4.6 WIRING: the Settings → TLS-Fragment pill now reaches BOTH
+  /// engines. Desktop: [ConnectionController] pushes the flag into the
+  /// front sing-box runtime (tls.fragment option) before every start; the
+  /// Xray path uses the Xray-native freedom-fragment form (see
+  /// CoreManager._fragmentFor / XrayRuntime.fragment). Android: VpnSession
+  /// performs the same push (libbox reads the generated config as-is).
+  bool get tlsFragmentEnabled => _tlsFragmentEnabled;
+  set tlsFragmentEnabled(bool v) {
+    if (_tlsFragmentEnabled == v) return;
+    _tlsFragmentEnabled = v;
+    cores.front.tlsFragment = v;
+  }
+
+  bool _tlsFragmentEnabled = false;
+
+  /// v0.4.6 §user: which fragment profile the pill uses (Conservative /
+  /// Default / Aggressive). Mirrors into [CoreManager.fragmentPreset] so the
+  /// next Xray start carries the user's chosen intensity, not a fixed one.
+  FragmentPreset get fragmentPreset => cores.fragmentPreset;
+  set fragmentPreset(FragmentPreset v) {
+    if (cores.fragmentPreset == v) return;
+    cores.fragmentPreset = v;
+  }
+
   // Phase 6 failover tuning.
   int failureThreshold = 2;
   Duration monitorInterval = const Duration(seconds: 30);
@@ -207,6 +233,20 @@ class ConnectionController {
       // never starts the Xray/MDVPN upstream.
       profile.core = decision.core;
       await cores.stop(); // clean slate for a new start
+      // v0.4.6 §user: a fresh connect BEGINS the fragment AUTO ladder (rung
+      // 0 — or the node's persisted winning rung when one exists). Fixed
+      // presets are unaffected by this call.
+      cores.beginAutoLadder(profile);
+      // v0.4.6 DESKTOP BOOTSTRAP PIN (parity with VpnSession._connectProfile,
+      // which has run this on Android since v0.4.4): resolve the node's
+      // hostname OUTSIDE the tunnel BEFORE any engine owns the network and
+      // pin the verified public IPv4 into the config. Without it, Xray
+      // resolves the node's own domain THROUGH the tunnel it serves and
+      // races its poisoned/serial DNS (the 1.1.1.1+localhost round-robin) —
+      // the exact desktop failure mode the Android path already fixed.
+      // SNI/Host keep the hostname (profile.copyWith), so TLS/Reality and
+      // Host headers are byte-for-byte unchanged.
+      profile = await _withBootstrappedAddress(profile);
       // WARP traffic chaining (§8): materialize the saved WARP account as a
       // WireGuard endpoint and dial node traffic through it. If the account
       // is missing/incomplete the chain is silently skipped — chaining is a
@@ -253,6 +293,49 @@ class ConnectionController {
         'https://www.gstatic.com/generate_204',
         timeout: const Duration(seconds: 6),
       );
+      // v0.4.6 §user-3: the FIRST rung's probe is a real attempt too —
+      // otherwise every rung the ladder started with would show a dishonest
+      // 0-attempt (or worse: an untouched 100%) in the per-sub stats.
+      if (cores.tlsFragmentEnabled &&
+          cores.fragmentPreset == FragmentPreset.auto &&
+          FragmentationEngine().isEligible(profile)) {
+        final firstRung = cores.currentAutoFragment;
+        if (firstRung != null) {
+          await cores.fragmentLadder?.recordRungAttempt(
+              profile.subscriptionId, firstRung,
+              won: probe.ok);
+        }
+      }
+      // v0.4.6 §user: AUTO ladder escalation loop. With the fragment pill on
+      // and fragmentPreset == auto, a failed probe retries the engine start
+      // with the NEXT rung (conservative → default → aggressive) BEFORE
+      // giving up on this node; a probe that finally passes records the
+      // winning rung per node id, so the next connect to this node starts
+      // there directly.
+      if (!probe.ok && cores.fragmentPreset == FragmentPreset.auto) {
+        final attempt = await _retryWithEscalatedFragment(
+            profile, decision.core, warpProfile);
+        if (attempt != null) {
+          _consecutiveVerifyFailures = 0;
+          _applyTunnelMode();
+          _startMonitor(profile);
+          _startTrafficPolling();
+          healthStore.record(HealthRecord(
+            profileId: profile.id,
+            at: DateTime.now(),
+            ok: true,
+            latencyMs: attempt.latencyMs,
+          ));
+          _setState(ConnectionStateSnapshot(
+            phase: ConnectionPhase.connected,
+            activeProfile: profile,
+            connectedAt: DateTime.now(),
+            core: decision.core,
+            latencyMs: attempt.latencyMs,
+          ));
+          return true;
+        }
+      }
       if (!probe.ok) {
         healthStore.record(HealthRecord(
           profileId: profile.id,
@@ -260,11 +343,16 @@ class ConnectionController {
           ok: false,
           errorKind: probe.errorKind,
         ));
+        final causes = <String>[
+          if (probe.detail != null && probe.detail!.trim().isNotEmpty)
+            'probe: ${Logger.redact(probe.detail!)}',
+        ];
+        causes.addAll(_engineFailureCauses(profile));
         await _teardown();
         throw ProbeError(
           'The node did not respond through the tunnel.',
           kind: probe.errorKind,
-        );
+        )..likelyCauses = causes;
       }
       _consecutiveVerifyFailures = 0;
 
@@ -311,6 +399,121 @@ class ConnectionController {
           'A local port needed by the engine is already in use.',
         _ => r.message ?? 'engine failed to start',
       };
+
+  /// v0.4.6 §user: WHY did the tunnel fail? Builds the engine-side likelyCauses
+  /// for a failed probe: the active engine's redacted stderr tail (dial
+  /// refused, resolve timeout, TLS reset, "invalid request from"...) plus
+  /// the upstream's last exit reason when it crashed. The sing-box front is
+  /// ALWAYS probed (it owns the inbound the probe dials); for Xray-owned
+  /// nodes the Xray upstream tail is added too — that's where the real
+  /// resolve/TLS failure lives.
+  List<String> _engineFailureCauses(ProxyProfile profile) {
+    final causes = <String>[];
+    final frontTail = cores.engineStderrTail(CoreKind.singbox);
+    if (frontTail.isNotEmpty) causes.add('sing-box: $frontTail');
+    if (profile.effectiveCore == CoreKind.xray) {
+      final xrayTail = cores.engineStderrTail(CoreKind.xray);
+      if (xrayTail.isNotEmpty) causes.add('xray: $xrayTail');
+    }
+    return causes;
+  }
+
+  /// v0.4.6 §user — the fragment AUTO escalation ladder (desktop).
+  ///
+  /// Called after a failed tunnel probe with fragmentPreset == auto. Climbs
+  /// [CoreManager.advanceAutoLadder] rung by rung: each step restarts the
+  /// engines with the NEXT fragment profile, re-probes, and on success
+  /// (a) records the winning rung in the per-node ladder cache and (b)
+  /// returns the probe result so [connect] completes normally. Exhausted
+  /// ladder (or fragment off / ineligible node) → null, i.e. "no escalation
+  /// helped" — the caller falls through to the honest ProbeError.
+  Future<ProbeResult?> _retryWithEscalatedFragment(
+    ProxyProfile profile,
+    CoreKind core,
+    ProxyProfile? warpProfile,
+  ) async {
+    if (!cores.tlsFragmentEnabled) return null;
+    if (!FragmentationEngine().isEligible(profile)) return null;
+    Logger.instance.info('connection',
+        'FRAGMENT_AUTO probe failed — climbing the ladder');
+    while (cores.advanceAutoLadder()) {
+      final rung = cores.currentAutoFragment;
+      Logger.instance.info('connection',
+          'FRAGMENT_AUTO retrying with next rung${rung != null ? ' (${rung.id})' : ''}');
+      try {
+        await cores.stop();
+        final start = await cores.startFor(
+          profile,
+          all: repository.all,
+          routing: routing,
+          dns: dns,
+          warpProfile: warpProfile,
+          chainWarpOutside: chainWarpOutside,
+        );
+        if (!start.ok) {
+          Logger.instance.warn('connection',
+              'FRAGMENT_AUTO rung start failed: ${_friendlyStartFailure(start)}');
+          continue; // try the next rung
+        }
+        final probe = await tester.testHttpViaSocksProxy(
+          '127.0.0.1',
+          cores.front.mixedPort,
+          'https://www.gstatic.com/generate_204',
+          timeout: const Duration(seconds: 6),
+        );
+        // v0.4.6 §user-3: every real probe is an attempt — pass or fail.
+        if (rung != null) {
+          await cores.fragmentLadder?.recordRungAttempt(
+              profile.subscriptionId, rung,
+              won: probe.ok);
+        }
+        if (probe.ok) {
+          if (rung != null) {
+            await cores.fragmentLadder?.recordWinner(profile.id, rung);
+            // v0.4.6 §user-2: promote the proven rung to the subscription-
+            // level suggestion, so sibling nodes START there (still safe:
+            // they wrap through every rung if it does not fit them).
+            await cores.fragmentLadder?.recordSuggestion(
+                profile.subscriptionId, rung);
+          }
+          Logger.instance.info('connection',
+              'FRAGMENT_AUTO won at rung ${rung?.id ?? '?'} (redacted node id)');
+          return probe;
+        }
+        Logger.instance.warn('connection',
+            'FRAGMENT_AUTO rung did not answer the probe');
+      } on AppError catch (e) {
+        Logger.instance.warn('connection',
+            'FRAGMENT_AUTO rung errored: ${e.userMessage}');
+      }
+    }
+    return null;
+  }
+
+  /// v0.4.6 desktop parity of VpnSession._withBootstrappedAddress: resolve
+  /// [profile]'s hostname OUTSIDE the tunnel (clean resolvers + sinkhole
+  /// filter, see BootstrapResolver) and return a profile whose `server` is
+  /// the verified public IPv4. SNI/server_name and HTTP Host keep the
+  /// hostname so TLS, Reality and CDN routing are byte-for-byte unchanged.
+  /// Failures leave the hostname as-is — the clean-DNS pair in the Xray
+  /// config remains the fallback, never a hard dependency.
+  Future<ProxyProfile> _withBootstrappedAddress(ProxyProfile profile) async {
+    final host = profile.server.trim();
+    if (host.isEmpty || BootstrapResolver.isPublicV4(host)) return profile;
+    String? ip;
+    try {
+      ip = await BootstrapResolver.instance.addressFor(profile);
+    } catch (_) {
+      ip = null; // bootstrap DNS must never block a connect
+    }
+    if (ip == null || ip == host) return profile;
+    Logger.instance.info('connection', 'BOOT host pinned (redacted)');
+    return profile.copyWith(
+      server: ip,
+      sni: profile.sni ?? host,
+      host: profile.host ?? host,
+    );
+  }
 
   List<String> _validateProfile(ProxyProfile p) {
     final problems = <String>[];
@@ -386,13 +589,26 @@ class ConnectionController {
           if (ok) return true;
         }
       }
+      // v0.4.6: leave the busy `switching` phase before the fallback full
+      // connect — connect() refuses to run while busy, so this documented
+      // path-3 fallback was DEAD CODE: every failed hot switch silently
+      // stayed on the old node. Restoring the pre-switch snapshot first is
+      // honest (the old node IS still serving) and lets connect() proceed;
+      // its own error path now surfaces the engine stderr tails.
+      _setState(ConnectionStateSnapshot(
+          phase: ConnectionPhase.connected,
+          activeProfile: current,
+          connectedAt: _state.connectedAt));
       return await connect(next);
     } finally {
       if (_state.phase == ConnectionPhase.switching) {
+        // v0.4.6: carry the failure cause into the restored snapshot so the
+        // UI's last-error view keeps WHY the switch failed.
         _setState(ConnectionStateSnapshot(
             phase: ConnectionPhase.connected,
             activeProfile: current,
-            connectedAt: _state.connectedAt));
+            connectedAt: _state.connectedAt,
+            error: _state.error));
       }
     }
   }
@@ -404,7 +620,22 @@ class ConnectionController {
       'https://www.gstatic.com/generate_204',
       timeout: const Duration(seconds: 6),
     );
-    if (!probe.ok) return false;
+    if (!probe.ok) {
+      _setState(ConnectionStateSnapshot(
+        phase: _state.phase,
+        activeProfile: profile,
+        connectedAt: _state.connectedAt,
+        error: AppError(
+          'The node did not respond through the tunnel.',
+          likelyCauses: [
+            if (probe.detail != null && probe.detail!.trim().isNotEmpty)
+              'probe: ${Logger.redact(probe.detail!)}',
+            ..._engineFailureCauses(profile),
+          ],
+        ),
+      ));
+      return false;
+    }
     _consecutiveVerifyFailures = 0;
     cores.setActive(profile);
     healthStore.record(HealthRecord(
@@ -480,10 +711,20 @@ class ConnectionController {
       if (_consecutiveVerifyFailures >= failureThreshold) {
         await failoverFrom(profile);
       } else {
+        // v0.4.6: carry the engine tail into the degraded snapshot so the
+        // user sees WHY the tunnel is degrading before failover fires.
         _setState(ConnectionStateSnapshot(
             phase: ConnectionPhase.degraded,
             activeProfile: profile,
-            connectedAt: _state.connectedAt));
+            connectedAt: _state.connectedAt,
+            error: AppError(
+              'The connection is degrading.',
+              likelyCauses: [
+                if (probe.detail != null && probe.detail!.trim().isNotEmpty)
+                  'probe: ${Logger.redact(probe.detail!)}',
+                ..._engineFailureCauses(profile),
+              ],
+            )));
       }
     });
   }

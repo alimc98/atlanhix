@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nexus/core/fragmentation/fragment_profiles.dart';
 import 'package:nexus/routing/builtin_profiles.dart';
 import 'package:nexus/settings/app_settings.dart';
 import 'package:nexus/settings/runtime_config_bridge.dart';
@@ -21,14 +22,38 @@ void main() {
       ..iranAppsDirect = true
       ..adsBlock = true
       ..tlsFragment = true
+      ..fragmentPreset = FragmentPreset.aggressive
       ..proxyMode = true
       ..localPort = 2087;
     final r = AppSettings.fromJson(s.toJson());
     expect(r.iranAppsDirect, isTrue);
     expect(r.adsBlock, isTrue);
     expect(r.tlsFragment, isTrue);
+    expect(r.fragmentPreset, FragmentPreset.aggressive);
     expect(r.proxyMode, isTrue);
     expect(r.localPort, 2087);
+  });
+
+  test('fragmentPreset defaults to conservative and survives unknown json',
+      () {
+    expect(AppSettings().fragmentPreset, FragmentPreset.conservative);
+    // Legacy store section without the new key → safe fallback, not a crash.
+    final r = AppSettings.fromJson({
+      'tlsFragment': true,
+    });
+    expect(r.fragmentPreset, FragmentPreset.conservative);
+    // Garbage value → safe fallback too.
+    final r2 = AppSettings.fromJson({'fragmentPreset': 'turbo'});
+    expect(r2.fragmentPreset, FragmentPreset.conservative);
+  });
+
+  test('FragmentPreset maps 1:1 onto the FragmentPresets profiles', () {
+    expect(FragmentPresets.profileFor(FragmentPreset.conservative).id,
+        'conservative');
+    expect(FragmentPresets.profileFor(FragmentPreset.defaultPreset).id,
+        'default');
+    expect(FragmentPresets.profileFor(FragmentPreset.aggressive).id,
+        'aggressive');
   });
 
   test('Iran Apps pill prepends direct rules; off adds none', () {

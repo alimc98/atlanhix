@@ -4,6 +4,9 @@ import 'dart:io';
 import '../../domain/entities/proxy_profile.dart';
 import '../../domain/errors/app_error.dart';
 import '../../routing/routing_models.dart';
+import '../fragmentation/fragment_profiles.dart';
+import '../fragmentation/fragment_ladder_cache.dart';
+import '../../settings/app_settings.dart';
 import '../logger.dart';
 import 'binary_manager.dart';
 import 'core_process.dart';
@@ -78,6 +81,25 @@ class CoreManager {
   RuntimeStatus get frontStatus => singbox.status;
   SingBoxRuntime get front => singbox;
 
+  /// v0.4.6: redacted stderr tail of an engine — surfaced into ProbeError
+  /// likelyCauses so a failed probe says WHY (resolve timeout, TLS reset,
+  /// dial refused…) instead of a bare "node did not respond". Redaction
+  /// follows the same discipline as Logger: callers must redact before
+  /// persisting/displaying; here we only bound the length.
+  String engineStderrTail(CoreKind engine, {int maxLines = 6}) {
+    final lines = switch (engine) {
+      CoreKind.xray => xray.debugStderrTail(),
+      CoreKind.singbox => singbox.debugStderrTail(),
+      _ => const <String>[],
+    };
+    if (lines.isEmpty) return '';
+    final tail = lines
+        .take(maxLines)
+        .map((l) => Logger.redact(l))
+        .join(' | ');
+    return tail.length > 400 ? tail.substring(tail.length - 400) : tail;
+  }
+
   /// Work directory of the Xray runtime (for access-log paths in tests).
   Directory get xrayWorkDir => Directory(
       '${workDir.path}${Platform.pathSeparator}xray');
@@ -104,6 +126,80 @@ class CoreManager {
   }
 
   bool _isXrayOwned(ProxyProfile p) => needsXrayUpstream(p);
+
+  /// v0.4.6 WIRING: Settings → TLS-Fragment pill (opt-in) now drives the
+  /// Xray upstream too. When enabled, the next Xray start carries the
+  /// Xray-NATIVE fragmentation form — a `freedom` fragment outbound chained
+  /// via `sockopt.dialerProxy` on the proxy outbound (ARCHITECTURE.md §6:
+  /// FragmentationEngine). Eligibility is enforced per profile (Xray +
+  /// TLS-family transports only); sing-box TCP-TLS outbounds receive the
+  /// separate sing-box `tls.fragment` option via SingBoxRuntime.tlsFragment.
+  /// Default OFF — nothing changes until the user opts in.
+  bool tlsFragmentEnabled = false;
+
+  /// v0.4.6 §user: WHICH fragment profile the pill uses. Defaults to
+  /// conservative (the safe first attempt); the Settings screen lets the
+  /// user pick Default/Aggressive — or AUTO, which climbs
+  /// conservative → default → aggressive on failed probes (see
+  /// [advanceAutoLadder]). Re-derived on every Xray start/recovery.
+  FragmentPreset fragmentPreset = FragmentPreset.conservative;
+
+  /// v0.4.6 §user: per-node winners of the AUTO ladder (optional — set by
+  /// the composition root). When present, an AUTO connect to a node that
+  /// already climbed successfully STARTS at its winning rung.
+  FragmentLadderCache? fragmentLadder;
+
+  FragmentProfile? _fragmentFor(ProxyProfile profile) {
+    if (!tlsFragmentEnabled) return null;
+    if (!FragmentationEngine().isEligible(profile)) return null;
+    if (fragmentPreset == FragmentPreset.auto) {
+      final order = _autoOrder;
+      return FragmentPresets.all[order[_autoStep.clamp(0, order.length - 1)]];
+    }
+    return FragmentPreset.profileFor(fragmentPreset);
+  }
+
+  /// Begin a fresh AUTO ladder for [profile]. The STARTING rung is, in
+  /// priority order:
+  ///   1. the node's own persisted winning rung (ladder cache),
+  ///   2. the subscription-level suggestion (the latest proven rung of any
+  ///      sibling node — nodes from one subscription usually share the same
+  ///      CDN/DPI shape),
+  ///   3. conservative (the safe default).
+  /// The climb order then lists every rung starting from that rung, WRAPPING
+  /// to the skipped lower ones afterwards — so a suggested start never
+  /// blocks a node that actually needs a different rung: all three are
+  /// still tried before the connect gives up. Fixed presets are unaffected;
+  /// call after [stop]/reset and before [startFor].
+  void beginAutoLadder(ProxyProfile profile) {
+    _autoStep = 0;
+    _autoOrder = const [0, 1, 2];
+    if (fragmentPreset != FragmentPreset.auto) return;
+    final start = fragmentLadder?.winnerFor(profile.id) ??
+        fragmentLadder?.suggestionFor(profile.subscriptionId) ??
+        FragmentPresets.conservative;
+    final startIdx =
+        FragmentPresets.all.indexWhere((p) => p.id == start.id);
+    if (startIdx <= 0) return; // conservative: plain 0→1→2 order
+    // Climb order: start, start+1, … 2, then wrap 0 … start-1 — the
+    // suggested start never blocks a node that needs another rung: ALL
+    // three are still tried before the connect gives up.
+    _autoOrder = [
+      for (var i = startIdx; i < FragmentPresets.all.length; i++) i,
+      for (var i = 0; i < startIdx; i++) i,
+    ];
+  }
+
+  /// Climb order of the current AUTO ladder — indices into
+  /// FragmentPresets.all. Plain 0→1→2 unless a per-node winner or a
+  /// subscription suggestion shifted the starting rung.
+  List<int> _autoOrder = const [0, 1, 2];
+
+  /// Position within [_autoOrder] (0-based). Exhaustion = last position.
+  int _autoStep = 0;
+
+  /// Read-only view of the active climb order (tests/diagnostics).
+  List<int> get autoLadderOrder => List.unmodifiable(_autoOrder);
 
   Future<void> prepare() async {
     if (_prepared) return;
@@ -168,6 +264,10 @@ class CoreManager {
       case CoreKind.unknown when profile.transport == Transport.xhttp:
         if (xray.currentProfile?.id != profile.id ||
             !await xray.inboundHealthy()) {
+          // v0.4.6 WIRING: the fragment profile is re-derived per start so a
+          // pill toggle takes effect on the next connect (restart-on-switch
+          // policy). Ineligible profiles silently run unfragmented.
+          xray.fragment = _fragmentFor(profile);
           final v =
               await xray.validateProfile(profile: profile, routing: routing);
           if (!v.ok) {
@@ -344,6 +444,7 @@ class CoreManager {
         'recovering $engine (attempt $_restartCount)');
 
     if (engine == CoreKind.xray && _isXrayOwned(active)) {
+      xray.fragment = _fragmentFor(active); // v0.4.6 WIRING: same as start
       final v = await xray.validateProfile(profile: active, routing: routing);
       if (!v.ok) return false;
       if (xray.status == RuntimeStatus.running) await xray.stop();
@@ -391,7 +492,65 @@ class CoreManager {
     await singbox.stop();
     _active = null;
     _restartCount = 0;
+    // NOTE (v0.4.6 §user): stop() deliberately does NOT reset the fragment
+    // AUTO ladder — the escalation loop itself restarts engines between
+    // rungs, and a reset here would rewind the climb into an infinite loop.
+    // The ladder rewinds at exactly ONE point: beginAutoLadder() on the
+    // next connect.
   }
+
+  // ---- v0.4.6 §user: fragment AUTO escalation ladder --------------------
+  // With fragmentPreset == auto, an Xray start tries the fragment profiles
+  // in a safe CLIMB ORDER instead of one fixed preset: per-node winner →
+  // subscription suggestion → plain conservative-first, always WRAPPING so
+  // every rung is tried before a connect gives up. The ladder state lives
+  // here — the single authority over Xray starts — and only progresses on
+  // an EXPLICIT advanceAutoLadder() from the callers' probe loop (see
+  // ConnectionController.connect / VpnSession._connectProfile).
+  // beginAutoLadder() is the ONLY rewind point, so every fresh connect
+  // starts from its first rung while engine restarts inside one connect
+  // keep the climbed position.
+
+  void _resetAutoEscalation() {
+    _autoStep = 0;
+    _autoOrder = const [0, 1, 2];
+  }
+
+  /// Advance the AUTO ladder to the NEXT rung of the active climb order
+  /// (callers do this after a failed probe, BEFORE the retry start) and
+  /// report whether a further attempt is meaningful. The order wraps
+  /// through every rung, so this returns false only when the LAST rung of
+  /// the order has been reached — all three presets tried, none helped.
+  /// Always false for non-auto presets.
+  bool advanceAutoLadder() {
+    if (fragmentPreset != FragmentPreset.auto) return false;
+    if (_autoStep >= _autoOrder.length - 1) {
+      return false; // every rung of the climb order has been tried
+    }
+    _autoStep++;
+    return true;
+  }
+
+  /// Test/debug hook: rewind the AUTO ladder to its first rung.
+  void resetAutoLadder() => _resetAutoEscalation();
+
+  /// The fragment profile the current/next start of [fragmentPreset] emits
+  /// for logging/diagnostics: the fixed preset's profile, or the AUTO rung
+  /// at the current ladder index. Null when the pill is off. Per-node
+  /// eligibility is applied separately in [_fragmentFor].
+  FragmentProfile? get currentAutoFragment {
+    if (!tlsFragmentEnabled) return null;
+    if (fragmentPreset != FragmentPreset.auto) {
+      return FragmentPreset.profileFor(fragmentPreset);
+    }
+    return FragmentPresets.all[_autoOrder[_autoStep.clamp(0, _autoOrder.length - 1)]];
+  }
+
+  /// Public fragment resolution for callers that generate the Xray config
+  /// OUTSIDE the manager's own start path (VpnSession._startXrayUpstream on
+  /// Android) — same eligibility + AUTO-rung semantics as the manager's
+  /// internal starts. Null ⇒ run unfragmented.
+  FragmentProfile? fragmentFor(ProxyProfile profile) => _fragmentFor(profile);
 
   Future<void> dispose() async {
     await stop();

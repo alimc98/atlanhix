@@ -5,6 +5,7 @@ import '../core/health/latency_tester.dart';
 import '../core/logger.dart';
 import '../core/runtime/core_manager.dart';
 import '../core/runtime/core_runtime.dart';
+import '../domain/entities/proxy_profile.dart';
 import '../routing/routing_models.dart';
 
 /// v0.3.0 §19 — real diagnostics subsystem.
@@ -16,6 +17,11 @@ import '../routing/routing_models.dart';
 /// Nothing is invented: every field is null/unavailable when its source is
 /// not running. Secrets (uuids, passwords, keys) never enter the report —
 /// log lines are redacted by the Logger itself.
+///
+/// v0.4.6: the probe section gained a LAYERED failure breakdown so the
+/// report says WHERE the tunnel breaks (dns → tcp → tls → proxy → http —
+/// the outermost layer that answered is the failing one) SIDE BY SIDE with
+/// the active engine's redacted stderr tail (WHY the engine thinks so).
 class DiagnosticsService {
   DiagnosticsService({
     required this.cores,
@@ -40,6 +46,7 @@ class DiagnosticsService {
         : null;
 
     ProbeResult? probeResult;
+    Map<String, dynamic>? layers;
     if (probe && sb.status == RuntimeStatus.running) {
       probeResult = await LatencyTester().testHttpViaSocksProxy(
         '127.0.0.1',
@@ -47,6 +54,7 @@ class DiagnosticsService {
         testUrl,
         timeout: const Duration(seconds: 8),
       );
+      layers = await _layeredBreakdown();
     }
 
     return {
@@ -101,6 +109,17 @@ class DiagnosticsService {
               'errorKind': probeResult.errorKind,
               // no raw detail: error text could carry URLs/tokens
             },
+      // v0.4.6: WHERE does the tunnel break? Layered probes alongside the
+      // active engine's redacted stderr tail — one look answers both
+      // "which layer" (outermost layer that answered = failing layer)
+      // and "why" (what the engine actually logged).
+      'failureAnalysis': layers == null
+          ? null
+          : {
+              ...layers,
+              'activeEngine': active?.effectiveCore.name,
+              'engineTail': _engineTail(active),
+            },
       'lastExit': cores.front.lastExit == null
           ? null
           : {
@@ -123,6 +142,74 @@ class DiagnosticsService {
         'status': rt.status.name,
         'pid': rt.lastPid,
       };
+
+  /// v0.4.6 — WHERE does the tunnel break? Probes the chain layer by layer
+  /// with the SAME layered tester the health engine uses:
+  ///   dns → tcp(node:443) → tls(node:443) → http-through-proxy(tunnel).
+  /// The outermost layer that ANSWERED is where the path stops working:
+  ///   * dns fails  → resolver problem (carrier poison / no network);
+  ///   * tcp fails  → server down, wrong port, ISP reset;
+  ///   * tls fails  → SNI/cert/Reality mismatch, fingerprint blocked;
+  ///   * all pass + proxy probe failed → protocol/auth problem INSIDE the
+  ///     tunnel (engine logs are authoritative — see engineTail).
+  /// [ProxyProtocol.hysteria2]/[tuic] speak UDP/QUIC: plain TCP to :443
+  /// answers nothing even on a healthy node — the tcp/tls verdicts are
+  /// then reported as 'n/a (UDP transport)' instead of a false failure.
+  Future<Map<String, dynamic>> _layeredBreakdown() async {
+    final active = cores.activeProfile;
+    final tester = LatencyTester();
+    final udpTransport = active != null &&
+        (active.protocol == ProxyProtocol.hysteria2 ||
+            active.protocol == ProxyProtocol.hysteria ||
+            active.protocol == ProxyProtocol.tuic);
+
+    final tcp = (active == null || udpTransport)
+        ? null
+        : await tester.testTcp(active.server, active.port);
+    final tls = (tcp == null || !tcp.ok || udpTransport)
+        ? null
+        : await tester.testTls(active.server, active.port);
+
+    String? verdict(ProbeResult? r, String label) {
+      if (r == null) return udpTransport ? 'n/a (UDP transport)' : 'skipped';
+      if (r.ok) return 'ok (${r.latencyMs ?? r.handshakeMs ?? '?'}ms)';
+      // redact: socket error text could embed URLs/credentials — the report
+      // must stay copy-paste safe (same discipline as Logger).
+      return 'FAIL — ${Logger.redact(label)}';
+    }
+
+    final dnsOk = tcp == null ? null : tcp.errorKind != 'dns';
+    String failingLayer;
+    if (udpTransport) {
+      failingLayer = 'proxy'; // TCP/TLS probes cannot judge UDP transports
+    } else if (tcp != null && !tcp.ok) {
+      failingLayer = tcp.errorKind == 'dns' ? 'dns' : 'tcp';
+    } else if (tls != null && !tls.ok) {
+      failingLayer = 'tls';
+    } else {
+      failingLayer = 'proxy'; // innermost: protocol/auth inside the tunnel
+    }
+
+    return {
+      'failingLayer': failingLayer,
+      'dns': dnsOk == null ? null : (dnsOk ? 'reachable' : 'FAIL — resolver'),
+      'tcp': verdict(tcp, tcp?.detail ?? 'no TCP answer'),
+      'tls': verdict(tls, tls?.detail ?? 'handshake failed'),
+      // note: dns/tcp/tls target the NODE endpoint directly from the host;
+      // the tunnel probe itself lives in the 'probe' section above.
+    };
+  }
+
+  /// Redacted stderr tail of the ACTIVE engine (xray for upstream nodes,
+  /// sing-box otherwise) — the WHY next to the layer verdicts. Empty when
+  /// nothing has been logged; never throws when no engine has run.
+  String _engineTail(ProxyProfile? active) {
+    if (active == null) return '';
+    final engine = active.effectiveCore == CoreKind.xray
+        ? CoreKind.xray
+        : CoreKind.singbox;
+    return cores.engineStderrTail(engine);
+  }
 
   List<String> _recentLogs() {
     final buf = Logger.instance.buffer;
@@ -171,6 +258,19 @@ class DiagnosticsService {
     section('startup', r['startup'] as Map<String, dynamic>?);
     section('readiness', r['readiness'] as Map<String, dynamic>?);
     b.writeln('— probe: ${jsonEncode(r['probe'])}');
+    final fa = r['failureAnalysis'] as Map<String, dynamic>?;
+    if (fa != null) {
+      b.writeln('— failure analysis (layered)');
+      b.writeln('  failingLayer: ${fa['failingLayer']}');
+      b.writeln('  dns: ${fa['dns'] ?? 'skipped'}');
+      b.writeln('  tcp: ${fa['tcp'] ?? 'skipped'}');
+      b.writeln('  tls: ${fa['tls'] ?? 'skipped'}');
+      b.writeln('  activeEngine: ${fa['activeEngine'] ?? 'n/a'}');
+      final tail = (fa['engineTail'] as String?) ?? '';
+      b.writeln(tail.isEmpty
+          ? '  engineTail: (no engine output)'
+          : '  engineTail: $tail');
+    }
     section('last engine exit', r['lastExit'] as Map<String, dynamic>?);
     section('traffic counters', r['traffic'] as Map<String, dynamic>?);
     b.writeln('— network interfaces:');

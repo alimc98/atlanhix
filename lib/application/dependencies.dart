@@ -8,6 +8,7 @@ import '../data/secure_vault.dart';
 import '../application/connection_controller.dart';
 import '../application/subscription_service.dart';
 import '../core/core_detector.dart';
+import '../core/fragmentation/fragment_ladder_cache.dart';
 import '../core/health/latency_tester.dart';
 import '../core/health/test_scheduler.dart';
 import '../core/runtime/binary_manager.dart';
@@ -119,6 +120,21 @@ class AppDependencies {
     // desktop core path.
     deps.vpnSession = VpnSession(deps: deps);
 
+    // v0.4.6 WIRING: seed the TLS-Fragment pill into both engines at boot.
+    // Runtime re-pushes happen per connect (VpnSession._connectProfile on
+    // Android; the controller setter below on desktop) so a pill toggle
+    // always takes effect on the NEXT connect without an app restart.
+    deps.connection.tlsFragmentEnabled = deps.appSettings.tlsFragment;
+    deps.cores.tlsFragmentEnabled = deps.appSettings.tlsFragment;
+    deps.cores.fragmentPreset = deps.appSettings.fragmentPreset;
+    deps.connection.fragmentPreset = deps.appSettings.fragmentPreset;
+    // v0.4.6 §user: per-node winners of the fragment AUTO ladder. A node
+    // that already climbed starts its next connect at the proven rung.
+    // Exposed on deps too — the subscriptions screen renders the per-rung
+    // win-rate stats from the same cache.
+    deps.fragmentLadderCache = FragmentLadderCache(deps.store);
+    deps.cores.fragmentLadder = deps.fragmentLadderCache;
+
     // Seed builtin routing profiles on first run.
     if (deps.routingRep.all.isEmpty) {
       for (final p in BuiltinRoutingProfiles.all()) {
@@ -158,5 +174,10 @@ class AppDependencies {
   late final SubscriptionService subscriptionService;
   late final WarpRepository warpRepo;
   late final WarpService warpService;
+
+  /// v0.4.6 §user-3: per-node winners + per-subscription suggestions and
+  /// rung win-rate stats of the fragment AUTO ladder (shared by CoreManager
+  /// and the subscriptions screen).
+  late final FragmentLadderCache fragmentLadderCache;
 }
 
