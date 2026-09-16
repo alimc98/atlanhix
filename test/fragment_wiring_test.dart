@@ -220,13 +220,16 @@ void main() {
       // Real SOCKS5 greeting server (the shape Xray's socks inbound answers).
       final socks = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       addTearDown(socks.close);
+      // NOTE: reply is sent WITHOUT waiting for the client bytes — a
+      // sink-drain-first handshake raced the probe's 800ms read budget on
+      // Windows (the reply sat unsent while the server waited on drain
+      // completion scheduling). Xray's socks inbound replies immediately
+      // after TCP accept anyway, so this mirrors the real shape better.
       socks.listen((s) {
-        s.drain<void>().then((_) {
-          s.add([0x05, 0x00]); // version + NO-AUTH choice
-          // keep the socket open briefly so the probe can read the reply
-          Future<void>.delayed(const Duration(milliseconds: 50))
-              .then((_) => s.destroy());
-        }).catchError((_) {});
+        s.add([0x05, 0x00]); // version + NO-AUTH choice
+        // keep the socket open briefly so the probe can read the reply
+        Future<void>.delayed(const Duration(milliseconds: 50))
+            .then((_) => s.destroy());
       });
 
       // Bare listener: accepts TCP but never answers the greeting — exactly

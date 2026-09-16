@@ -352,7 +352,8 @@ class ConnectionController {
         throw ProbeError(
           'The node did not respond through the tunnel.',
           kind: probe.errorKind,
-        )..likelyCauses = causes;
+          likelyCauses: causes,
+        );
       }
       _consecutiveVerifyFailures = 0;
 

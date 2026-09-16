@@ -168,7 +168,7 @@ class DiagnosticsService {
         : await tester.testTcp(active.server, active.port);
     final tls = (tcp == null || !tcp.ok || udpTransport)
         ? null
-        : await tester.testTls(active.server, active.port);
+        : await tester.testTls(active!.server, active!.port);
 
     String? verdict(ProbeResult? r, String label) {
       if (r == null) return udpTransport ? 'n/a (UDP transport)' : 'skipped';

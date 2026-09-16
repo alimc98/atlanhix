@@ -32,6 +32,11 @@ dependencyResolutionManagement {
     repositories {
         google()
         maven { url = uri("https://maven.aliyun.com/repository/google") }
+        // v0.4.6: GCS (storage.googleapis.com/download.flutter.io) is blocked
+        // on this network (403) — storage.flutter-io.cn mirrors the engine
+        // repo 1:1, and the fresh 3.47.4 SDK pins a new engine hash that the
+        // jar cache cannot serve.
+        maven { url = uri("https://storage.flutter-io.cn/download.flutter.io") }
         // Flutter engine artifacts (io.flutter:arm64_v8a_debug et al)
         maven { url = uri("https://storage.googleapis.com/download.flutter.io") }
         mavenCentral()

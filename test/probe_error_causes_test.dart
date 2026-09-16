@@ -13,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/logger.dart';
 import 'package:nexus/core/runtime/binary_manager.dart';
 import 'package:nexus/core/runtime/core_manager.dart';
+import 'package:nexus/domain/entities/proxy_profile.dart';
 
 void main() {
   group('Logger.redact on engine stderr (probe-cause pipeline)', () {

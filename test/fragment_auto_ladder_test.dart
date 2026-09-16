@@ -336,8 +336,8 @@ void main() {
       expect(FragmentLadderCache(store).suggestionFor('sub-9')!.id,
           'aggressive');
       // null/empty subscription and non-vocabulary ids are no-ops.
-      await cache.recordSuggestion(null, FragmentPresets.defaultPreset);
-      await cache.recordSuggestion('', FragmentPresets.defaultPreset);
+      await cache.recordSuggestion(null, FragmentPresets.profileFor(FragmentPreset.defaultPreset));
+      await cache.recordSuggestion('', FragmentPresets.profileFor(FragmentPreset.defaultPreset));
       await cache.recordSuggestion(
           'sub-x',
           const FragmentProfile(
@@ -408,7 +408,8 @@ void main() {
           won: false);
       await cache.recordRungAttempt('sub-9', FragmentPresets.conservative,
           won: false);
-      await cache.recordRungAttempt('sub-9', FragmentPresets.defaultPreset,
+      await cache.recordRungAttempt('sub-9',
+          FragmentPresets.profileFor(FragmentPreset.defaultPreset),
           won: true);
 
       final stats = cache.statsFor('sub-9');
@@ -432,7 +433,8 @@ void main() {
 
       await cache.recordRungAttempt('sub-9', FragmentPresets.conservative,
           won: true);
-      await cache.recordRungAttempt('sub-9', FragmentPresets.defaultPreset,
+      await cache.recordRungAttempt('sub-9',
+          FragmentPresets.profileFor(FragmentPreset.defaultPreset),
           won: true);
       expect(cache.statsFor('sub-9')['conservative'], [1, 1]);
 
@@ -497,8 +499,10 @@ void main() {
           reason: 'other subscriptions keep their evidence');
       // Winner + suggestion are identity mappings, NOT observations: a
       // stats reset must not erase them.
-      await cache.recordWinner('auto-node-1', FragmentPresets.defaultPreset);
-      await cache.recordSuggestion('sub-9', FragmentPresets.defaultPreset);
+      await cache.recordWinner('auto-node-1',
+          FragmentPresets.profileFor(FragmentPreset.defaultPreset));
+      await cache.recordSuggestion('sub-9',
+          FragmentPresets.profileFor(FragmentPreset.defaultPreset));
       await cache.resetStatsFor('sub-9');
       expect(cache.winnerFor('auto-node-1')!.id, 'default');
       expect(cache.suggestionFor('sub-9')!.id, 'default');
@@ -544,13 +548,15 @@ void main() {
           won: false);
       await cache.recordRungAttempt('sub-9', FragmentPresets.conservative,
           won: false);
-      await cache.recordRungAttempt('sub-9', FragmentPresets.defaultPreset,
+      await cache.recordRungAttempt('sub-9',
+          FragmentPresets.profileFor(FragmentPreset.defaultPreset),
           won: true);
       expect(cache.bestRungFor('sub-9')!.id, 'default');
 
       // Tie between default (2/2) and aggressive (1/1) at 100% → the
       // SAFER (earlier in strength order) rung wins.
-      await cache.recordRungAttempt('sub-9', FragmentPresets.defaultPreset,
+      await cache.recordRungAttempt('sub-9',
+          FragmentPresets.profileFor(FragmentPreset.defaultPreset),
           won: true);
       await cache.recordRungAttempt('sub-9', FragmentPresets.aggressive,
           won: true);

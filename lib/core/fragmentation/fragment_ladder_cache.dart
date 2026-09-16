@@ -42,7 +42,7 @@ class FragmentLadderCache {
   final JsonStore _store;
   Map<String, String>? _cache;
   Map<String, String>? _suggestions;
-  Map<String, Map<String, List<int>>>? _stats;
+  Map<String, Map<String, List<List<int>>>>? _stats;
 
   static const _section = 'fragmentLadder';
   static const _suggestionsSection = 'fragmentLadderSuggestions';
@@ -163,7 +163,7 @@ class FragmentLadderCache {
     await _persistStats();
   }
 
-  void _persistStats() {
+  Future<void> _persistStats() async {
     _store.putSection(_statsSection, {
       for (final e in _statMap.entries)
         e.key: {

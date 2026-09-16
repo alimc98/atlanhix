@@ -156,7 +156,7 @@ class CoreManager {
       final order = _autoOrder;
       return FragmentPresets.all[order[_autoStep.clamp(0, order.length - 1)]];
     }
-    return FragmentPreset.profileFor(fragmentPreset);
+    return FragmentPresets.profileFor(fragmentPreset);
   }
 
   /// Begin a fresh AUTO ladder for [profile]. The STARTING rung is, in
@@ -541,7 +541,7 @@ class CoreManager {
   FragmentProfile? get currentAutoFragment {
     if (!tlsFragmentEnabled) return null;
     if (fragmentPreset != FragmentPreset.auto) {
-      return FragmentPreset.profileFor(fragmentPreset);
+      return FragmentPresets.profileFor(fragmentPreset);
     }
     return FragmentPresets.all[_autoOrder[_autoStep.clamp(0, _autoOrder.length - 1)]];
   }

@@ -45,7 +45,7 @@ class CoreStartError extends AppError {
 }
 
 class ProbeError extends AppError {
-  ProbeError(super.userMessage, {this.kind, super.raw});
+  ProbeError(super.userMessage, {this.kind, super.likelyCauses, super.raw});
 
   final String? kind; // dns | tcp | tls | http | proxy
 }

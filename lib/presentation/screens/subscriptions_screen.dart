@@ -279,7 +279,7 @@ class _FragmentStatsSectionState extends State<_FragmentStatsSection> {
   }
 
   Widget _buildStats(
-      BuildContext context, NexusColors c, FragmentLadderCache cache) {
+      BuildContext context, ThemeExt c, FragmentLadderCache cache) {
     final stats = cache.statsFor(widget.sub.id);
     if (stats.isEmpty) return const SizedBox.shrink();
 
@@ -343,7 +343,7 @@ class _FragmentStatsSectionState extends State<_FragmentStatsSection> {
 
   Widget _rungChip(
     BuildContext context,
-    NexusColors c, {
+    ThemeExt c, {
     required String label,
     required String rate,
     required double pct,
