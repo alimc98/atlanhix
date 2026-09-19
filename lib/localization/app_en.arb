@@ -261,5 +261,14 @@
   "pillProxyMode": "Proxy Mode",
   "pillTlsFragment": "Split HTTPS",
   "modeTun": "TUN",
-  "modeProxy": "Proxy"
+  "modeProxy": "Proxy",
+  "screeningSummary": "{xrayOnly} Xray-only nodes, {risky} with stream warnings",
+  "clipboardAddTitle": "Add from clipboard?",
+  "clipboardAddBody": "{count} share link(s) were detected in your clipboard. Add them to Atlanhix?",
+  "clipboardAddNodes": "Add nodes",
+  "clipboardAddSubscription": "Add subscription",
+  "clipboardLater": "Later",
+  "warpOfferTitle": "Node looks filtered",
+  "warpOfferBody": "{node} did not answer {count} URL tests through the tunnel. Enable the WARP chain in front of it? (You can turn WARP off any time.)",
+  "warpOfferEnable": "Chain WARP"
 }

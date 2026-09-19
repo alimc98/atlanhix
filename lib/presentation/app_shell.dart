@@ -49,15 +49,24 @@ class _AppShellState extends State<AppShell> {
   /// v0.4.1: on Android the VpnSession owns the connect lifecycle.
   static final bool isAndroid = Platform.isAndroid;
 
-  static const _icons = [
-    // v0.4.4 brand sheet: Dashboard=chart, Nodes=cube, Routing=arrows,
-    // Logs=document, Settings=gear.
-    (Icons.bar_chart_outlined, Icons.bar_chart),
-    (Icons.view_in_ar_outlined, Icons.view_in_ar),
-    (Icons.swap_horiz_outlined, Icons.swap_horiz),
-    (Icons.description_outlined, Icons.description),
-    (Icons.settings_outlined, Icons.settings),
+  // v0.4.7 §brand: the five tab icons are now the REAL brand-sheet artwork
+  // (white-on-charcoal tiles cropped from the user's redesign): dashboard
+  // bars, nodes cube, routing arrows, logs document, settings gear. Each tab
+  // needs an unselected AND selected variant — the same tile, dimmed vs full
+  // opacity, so the active state still reads without a second asset set.
+  static const _navAssets = [
+    'assets/brand/nav_dashboard.png',
+    'assets/brand/nav_nodes.png',
+    'assets/brand/nav_routing.png',
+    'assets/brand/nav_logs.png',
+    'assets/brand/nav_settings.png',
   ];
+
+  /// Brand tile icon for tab [i]; [selected] controls opacity only.
+  static Widget _navIcon(int i, {required bool selected}) => _BrandNavIcon(
+        asset: _navAssets[i],
+        selected: selected,
+      );
 
   @override
   void initState() {
@@ -145,8 +154,8 @@ class _AppShellState extends State<AppShell> {
               // wordmark leads the header, page name follows.
               title: Row(
                 children: [
-                  const AtlanhixAMark(size: 26),
-                  const SizedBox(width: 10),
+                  const AtlanhixWordmark(height: 15),
+                  const SizedBox(width: 12),
                   Flexible(
                     child: Text(
                       Localizations.localeOf(context).languageCode == 'fa'
@@ -202,20 +211,17 @@ class _AppShellState extends State<AppShell> {
                 // before this, which read as "the app has no settings".
                 for (var i = 0; i < labels.length; i++)
                   NavigationDestination(
-                    icon: Icon(_icons[i].$1),
-                    selectedIcon: Icon(_icons[i].$2),
+                    icon: _navIcon(i, selected: false),
+                    selectedIcon: _navIcon(i, selected: true),
                     label: labels[i],
                   ),
               ],
             ),
-      floatingActionButton: wide
-          ? null
-          : FloatingActionButton(
-              onPressed: _toggleConnect,
-              child: Icon(_phase == ConnectionPhase.connected
-                  ? Icons.stop
-                  : Icons.play_arrow),
-            ),
+      // v0.4.7 §user: the floating green play button is GONE — the
+      // dashboard's power pill is the single connect control (sheet v2).
+      // A second floating connect control competed with it and confused
+      // state reading.
+      floatingActionButton: null,
     );
   }
 
@@ -241,11 +247,22 @@ class _AppShellState extends State<AppShell> {
   }
 
   Widget _brand(ThemeExt colors) {
+    // v0.4.7 §brand (sheet v2): stacked mark + wordmark block, with the
+    // sheet's tagline "CONNECT BEYOND BORDERS" underneath — the full brand
+    // lockup leads the rail exactly like the sheet's left column.
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Row(
-        children: const [
-          AtlanhixLogo(height: 22, overlap: 0.42),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const AtlanhixBrandBlock(height: 88),
+          const SizedBox(height: 8),
+          Image.asset(
+            'assets/brand/tagline.png',
+            height: 12,
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+          ),
         ],
       ),
     );
@@ -265,11 +282,7 @@ class _AppShellState extends State<AppShell> {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             child: Row(
               children: [
-                Icon(
-                  selected ? _icons[i].$2 : _icons[i].$1,
-                  size: 20,
-                  color: selected ? colors.accent : colors.textSecondary,
-                ),
+                _navIcon(i, selected: selected),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
@@ -368,6 +381,26 @@ class _AppShellState extends State<AppShell> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// v0.4.7 §brand — one of the five brand-sheet nav tiles as a tab icon.
+/// The artwork is baked white-on-charcoal; selection is expressed with
+/// opacity (dim tile when idle, full tile when active) so a single asset
+/// set serves both states and the tile's own charcoal stays visible on
+/// the NavigationBar surface.
+class _BrandNavIcon extends StatelessWidget {
+  const _BrandNavIcon({required this.asset, required this.selected});
+
+  final String asset;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: selected ? 1.0 : 0.55,
+      child: Image.asset(asset, width: 30, height: 30, fit: BoxFit.contain),
     );
   }
 }

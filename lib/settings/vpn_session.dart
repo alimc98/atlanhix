@@ -10,10 +10,13 @@ import '../core/health/latency_tester.dart';
 import '../domain/entities/health.dart';
 import '../domain/entities/proxy_profile.dart';
 import '../core/configgen/xray_config_generator.dart';
+import '../core/runtime/core_manager.dart';
+import '../core/runtime/singbox_runtime.dart';
 import '../core/engine_availability.dart';
 import '../platform/xray_bridge.dart';
 import '../warp/warp_registrar.dart';
 import 'app_settings.dart';
+import 'smart_switch.dart';
 import '../platform/android_vpn.dart';
 import '../application/connection_controller.dart';
 import '../application/dependencies.dart';
@@ -45,8 +48,41 @@ class VpnSession {
   /// The node chosen for the current/next connection (set by the UI).
   ProxyProfile? selectedNode;
 
+  /// v0.4.7 §user: SMART SWITCH — the default selection mode. When TRUE the
+  /// session owns node choice: best candidate at connect time, continuous
+  /// re-tests, live tunnel migration on a materially better/healthier node.
+  /// Tapping a specific node turns it OFF (explicit pick wins); the Nodes
+  /// tab's "Smart Switch" card turns it back on.
+  bool smartSwitch = true;
+  late final SmartSwitch _smart = SmartSwitch(
+    scheduler: deps.scheduler,
+    health: deps.healthStore,
+    interval: Duration(seconds: deps.appSettings.smartSwitchIntervalSeconds),
+    // v0.4.8 §user: the ladder ranks by REAL in-tunnel URL tests through
+    // each candidate's outbound (engine delay test on its node tag) — the
+    // TCP ping only proves the node IP answers, which crowned nodes whose
+    // tunnel could not actually fetch anything. When no engine API is
+    // available (disconnected) the probe returns null and the switcher
+    // falls back to the scheduler's TCP tests.
+    urlProbe: (p) async {
+      final api = deps.cores.front.api;
+      if (api == null) return null;
+      final url = deps.appSettings.warpProbeUrl.isEmpty
+          ? 'https://www.gstatic.com/generate_204'
+          : deps.appSettings.warpProbeUrl;
+      final ms = await api.delayTest(
+          '${SingBoxRuntime.tagPrefix}${p.id}', url, 5000);
+      return ProbeResult(ok: ms != null, latencyMs: ms,
+          errorKind: ms == null ? 'timeout' : null);
+    },
+  );
+
   /// Local SOCKS port of the running :xray upstream (0 = not running).
   int _xrayUpstreamPort = 0;
+
+  /// v0.4.7 §user: profile ids whose engine resolution is already logged
+  /// this session (keeps the trace readable on repeated connects).
+  final Set<String> _resolvedEngines = {};
 
   /// v0.4.4: last successful tunnel-probe latency (dashboard tile).
   int? lastLatencyMs;
@@ -104,11 +140,43 @@ class VpnSession {
   /// dashboard reflects the tapped node immediately.
   void selectNode(ProxyProfile p) {
     selectedNode = p;
+    // An explicit tap STEERS away from auto — smart mode resumes only via
+    // [enableSmartSwitch] (the Nodes-tab card).
+    smartSwitch = false;
+    _smart.stop();
     Logger.instance.info('vpn-session',
         '[ATX-DART UI] NODE_SELECTED ${p.name} proto=${p.protocol.name} '
         'transport=${p.transport.name} core=${p.effectiveCore.name}');
     _selectionEvents.add(null);
   }
+
+  /// v0.4.7 §user: re-arms the Smart Switch (Nodes-tab card / Settings).
+  /// Immediately recommends the currently-best known node and starts the
+  /// periodic sweep; if the tunnel is UP on a different node, the change
+  /// stream migrates it.
+  void enableSmartSwitch() {
+    smartSwitch = true;
+    _smart
+      ..interval = Duration(seconds: deps.appSettings.smartSwitchIntervalSeconds)
+      ..start(SmartSwitch.candidatesOf(deps.profiles.all),
+          currentId: selectedNode?.id);
+    _selectionEvents.add(null);
+  }
+
+  /// v0.4.8 §user: turns the Smart Switch OFF — the user's tap on the
+  /// card's OFF state is an explicit hand-back to manual selection. Before
+  /// this the card's Switch only re-fired enableSmartSwitch(), so a node
+  /// that was ON could never be turned OFF from the card (device report).
+  void disableSmartSwitch() {
+    smartSwitch = false;
+    _smart.stop();
+    _selectionEvents.add(null);
+    Logger.instance.info('smart-switch',
+        '[ATX-DART] SMART_SWITCH disabled by user — manual selection');
+  }
+
+  /// Proxy for UI reads (Nodes-tab card highlight).
+  bool get isSmartSwitchActive => smartSwitch;
 
   /// The core that will actually run the connection on this device — from
   /// the REAL state (selected node + engine gating), never hardcoded.
@@ -153,6 +221,16 @@ class VpnSession {
   void _syncFromAndroid() {
     // Any state sync invalidates the pending-apply flag (tunnel rebuilt).
     pendingApply = false;
+    // v0.4.8 §user: a terminal/failed/disconnected phase cancels the WARP
+    // URL-watchdog (nothing to probe when the tunnel is down).
+    if (controller.phase == AndroidVpnPhase.idle ||
+        controller.phase == AndroidVpnPhase.stopped ||
+        controller.phase == AndroidVpnPhase.failed ||
+        controller.phase == AndroidVpnPhase.revoked) {
+      _warpWatchdog?.cancel();
+      _warpWatchdog = null;
+      _warpFails = 0;
+    }
   }
 
   /// §2 — the full connect flow. Never reports CONNECTED without a real
@@ -221,7 +299,64 @@ class VpnSession {
     selectedNode = best;
     Logger.instance.info('vpn-session',
         '$trace NODE_SELECTED source=auto node=${best.name} proto=${best.protocol.name} transport=${best.transport.name} core=${best.effectiveCore.name}');
+    // v0.4.7 §user: smart mode is the DEFAULT — with no explicit pick the
+    // ladder starts here and keeps re-testing; tunnel migrates on change.
+    if (smartSwitch) {
+      _smart
+        ..interval = Duration(seconds: deps.appSettings.smartSwitchIntervalSeconds)
+        ..start(SmartSwitch.candidatesOf(deps.profiles.all),
+            currentId: best.id);
+      _smartSub ??= _smart.changes.listen(_migrateForSmartSwitch);
+    }
     return _connectProfile(best, trace);
+  }
+
+  StreamSubscription<ProxyProfile>? _smartSub;
+
+  /// v0.4.8 §user: LIVE migration — swap the front sing-box selector to the
+  /// newly-recommended node via the Clash API WITHOUT tearing the tunnel
+  /// down. The previous behavior re-ran the full connect flow for every
+  /// switch; on a phone that is a whole permission/TUN/engine cycle and the
+  /// user saw "the app disconnected itself" (device report). A failed swap
+  /// (dead API / stub) falls back to the full connect path so the migration
+  /// still happens.
+  ///
+  /// On non-Android (CoreManager front engine) the same selector swap is
+  /// attempted via [CoreManager.hotSwitch], which additionally starts the
+  /// Xray/MDVPN upstream for daemon-owned nodes.
+  Future<void> _migrateForSmartSwitch(ProxyProfile next) async {
+    if (!smartSwitch) return;
+    if (controller.phase != AndroidVpnPhase.connected) {
+      // Not connected — just remember the recommendation for the next connect.
+      selectedNode = next;
+      _selectionEvents.add(null);
+      return;
+    }
+    Logger.instance.info('smart-switch',
+        '[ATX-DART] MIGRATE → ${next.name} (tunnel stays up during switch)');
+    selectedNode = next;
+    _selectionEvents.add(null);
+
+    // 1) Fast path: Clash-API selector swap (sub-second, zero traffic
+    //    interruption on the TUN interface itself).
+    final api = deps.cores.front.api;
+    if (api != null) {
+      final ok = await api.select(
+          SingBoxRuntime.selectorTag, '${SingBoxRuntime.tagPrefix}${next.id}');
+      if (ok) {
+        // v0.4.8 §user: the swap must be a VERIFIED handover, not a silent
+        // timeout — a dead node now lands the session on FAILED instead of
+        // celebrating a connected pill over a dead tunnel.
+        final probe = await _probeThroughTunnel('SMART_SWITCH_MIGRATE');
+        if (probe) return; // tunnel continues on the new node
+        Logger.instance.warn('smart-switch',
+            '[ATX-DART] MIGRATE probe failed on ${next.name} — falling back to reconnect');
+        // fall through to the full reconnect below.
+      }
+    }
+
+    // 2) Fallback: full reconnect (new config, permission already granted).
+    await connect(node: next);
   }
 
   /// The stored selection, re-resolved against the live repository so a
@@ -244,6 +379,32 @@ class VpnSession {
   /// or auto) funnels through here after node selection, so the single-core
   /// guarantee is enforced in exactly ONE place.
   Future<bool> _connectProfile(ProxyProfile profile, String trace) async {
+    // ── ENGINE RESOLUTION (v0.4.7 §user device fix) ──
+    // Imported/persisted profiles carry core=unknown (only the desktop
+    // ConnectionController ran the detector, on its in-memory copy that is
+    // never persisted). Device evidence (2026-09-17, CDN-UK mlkem node):
+    // the detector would route it to Xray (post-quantum VLESS → sing-box
+    // 1.14 has no `encryption` field and silently negotiates 'none' → the
+    // server resets the handshake: `outbound/vless[…]: EOF` in singbox.log),
+    // but with core=unknown every Android gate saw `unknown` and the node
+    // was served as a NATIVE sing-box outbound. Run the detector HERE — on
+    // the actual object we are about to connect with — so
+    // androidExclusionReason / isEligible / the upstream gate / the front
+    // builder all see the SAME engine for this connect.
+    final resolvedCore = deps.detector.resolve(profile).core;
+    // Only write when different — the connect paths may run repeatedly on
+    // the same profile object, and a second resolution would otherwise
+    // skip the log line (effectiveCore is already xray after run 1).
+    if (profile.effectiveCore != resolvedCore) {
+      Logger.instance.info('vpn-session',
+          '$trace ENGINE_RESOLVED node=${profile.name} '
+          '${profile.effectiveCore.name} -> ${resolvedCore.name}');
+      profile.core = resolvedCore;
+    } else if (_resolvedEngines.add(profile.id)) {
+      Logger.instance.info('vpn-session',
+          '$trace ENGINE_RESOLVED node=${profile.name} -> ${resolvedCore.name}');
+    }
+
     // ── SINGLE-CORE GUARANTEE (fail fast, never dual-core) ──
     // Exactly ONE core engine serves this connection. On Android that engine
     // is sing-box (libbox): the Xray / MDVPN / AmneziaWG upstreams are
@@ -263,6 +424,14 @@ class VpnSession {
     // 2026-09-15) or returns the carrier sinkhole. The pinned public IPv4
     // replaces `server`; SNI/server_name keep the hostname so TLS,
     // Reality and Host headers are byte-for-byte unchanged.
+    //
+    // v0.4.7 §loop-fix: this pin MUST run BEFORE the :xray upstream starts —
+    // the child process has no VpnService.protect fd hook (gomobile AAR is
+    // banned by libbox's go.Seq), so its server traffic only escapes the TUN
+    // via the front's direct-outbound bypass rule (see socksUpstreamHosts),
+    // and that rule needs the RESOLVED server IP. Pinning first means the
+    // bypass is always exact — even for nodes whose hostname only resolves
+    // through the bootstrap resolver (carrier-poisoned system DNS).
     profile = await _withBootstrappedAddress(profile, trace);
 
     // v0.4.6 §user: a fresh Android connect BEGINS the fragment AUTO ladder
@@ -273,14 +442,14 @@ class VpnSession {
     deps.cores.tlsFragmentEnabled = deps.appSettings.tlsFragment;
     deps.cores.beginAutoLadder(profile);
 
-    // xhttp / mKCP: the front sing-box CANNOT express them — the Xray
-    // runtime (:xray process + libv2ray AAR) must serve the node. Started
-    // as a local SOCKS upstream below; the front config references it via
-    // socksUpstreams (v2rayNG/NekoBox architecture). When the runtime is
-    // off this fails with the honest reason, never a silent swap.
-    if (profile.transport == Transport.xhttp ||
-        profile.rawParams['type'] == 'mkcp' ||
-        profile.rawParams['type'] == 'kcp') {
+    // xhttp / mKCP / detected-Xray (e.g. post-quantum VLESS encryption):
+    // the front sing-box CANNOT express them — the :xray child process must
+    // serve the node as a local SOCKS upstream (v2rayNG/NekoBox topology).
+    // v0.4.7 §loop-fix: the gate uses CoreManager.needsXrayUpstream so a
+    // DETECTED Xray core (not just the xhttp/mKCP transports) reaches the
+    // upstream path — before this, PQ-encryption CDN nodes fell through to
+    // the native sing-box outbound and every handshake died with EOF.
+    if (CoreManager.needsXrayUpstream(profile)) {
       if (!XrayCoreState.instance.runtimeLoaded) {
         lastError = 'XRAY_RUNTIME_UNAVAILABLE';
         Logger.instance.error('vpn-session',
@@ -343,6 +512,9 @@ class VpnSession {
       );
       Logger.instance.info(
           'vpn-session', ok ? '$trace CONNECTED' : '$trace FAILED stage=controller.connect (see prior stages)');
+      // v0.4.8 §user: arm the in-tunnel URL watchdog on a real CONNECTED,
+      // cancel it on every terminal state (see _syncFromAndroid).
+      if (ok) _armWarpWatchdog();
       if (!ok) {
         // v0.4.6 §user-3: the FIRST rung's probe is a real attempt too —
         // the native controller.connect already failed its own tunnel probe,
@@ -391,6 +563,7 @@ class VpnSession {
   /// §3 — clean disconnect; permission state is preserved by Android, so a
   /// subsequent connect skips the consent dialog (§37.12).
   Future<void> disconnect() async {
+    _smart.stop();
     await controller.stop();
     if (_xrayUpstreamPort > 0) {
       _xrayUpstreamPort = 0;
@@ -454,9 +627,7 @@ class VpnSession {
       // means the selection gates above were bypassed — fail loudly instead
       // of generating a merged dual-core config.
       assert(() {
-        final needsXrayUpstream = profile.transport == Transport.xhttp ||
-            profile.rawParams['type'] == 'mkcp' ||
-            profile.rawParams['type'] == 'kcp';
+        final needsXrayUpstream = CoreManager.needsXrayUpstream(profile);
         if (needsXrayUpstream && _xrayUpstreamPort == 0) {
           throw StateError(
               'xhttp profile without a live Xray upstream reached config build');
@@ -471,50 +642,128 @@ class VpnSession {
         return true;
       }());
 
-      // WARP chain (v0.4.3): the Settings toggle is authoritative on Android
-      // too. chainMode == chain → the user-requested "config → WARP →
-      // Cloudflare IP" (WARP last hop); warpAsOutbound → WARP outer tunnel.
+      // WARP chain (v0.4.3, reshaped v0.4.8 §user): the chain MODE is the
+      // single authority — no separate on/off flag. Two real directions:
+      //  * warpFirst — WARP dials the node (app → WARP → node → internet):
+      //    the filtered node's handshake is masked inside the WARP tunnel;
+      //  * warpLast — the node dials WARP (app → node → WARP → internet):
+      //    the exit IP is Cloudflare's (sanctions evasion).
+      // `off` (the default) generates the plain no-WARP topology — WARP
+      // never silently wraps node traffic (the v0.4.7 regression).
       ProxyProfile? warpProfile;
       String? selectedWarpTag;
       final st = deps.appSettings;
-      if (st.warpEnabled) {
+      if (st.warpChainMode != WarpChainMode.off) {
         final acct = deps.warpRepo.account;
         if (acct != null &&
             acct.privateKey.isNotEmpty &&
             acct.peerPublicKey.isNotEmpty) {
           warpProfile = WarpRegistrar.profileFor(acct);
-          if (st.warpChainMode == WarpChainMode.chain) {
+          if (st.warpChainMode == WarpChainMode.warpLast) {
             selectedWarpTag = 'warp';
           }
+        } else {
+          Logger.instance.warn('vpn-session',
+              '$trace WARP chain mode ${st.warpChainMode.name} but no registered account — plain topology');
         }
       }
-      // Upstream Xray (xhttp/mKCP nodes): expose the node as a local SOCKS
-      // stub inside the front config; the tunnel is sing-box TUN -> socks ->
-      // :xray process -> node. Real traffic, both cores cooperating per-node.
+      // Upstream Xray (xhttp/mKCP nodes AND detected-Xray cores — e.g. the
+      // post-quantum `mlkem…` VLESS encryption, which no sing-box outbound
+      // can express): expose the node as a local SOCKS stub inside the front
+      // config; the tunnel is sing-box TUN -> socks -> :xray process -> node.
+      // v0.4.7 §loop-fix: the check MUST be CoreManager.needsXrayUpstream —
+      // a transport-only test missed the PQ CDN nodes (vless+ws) and they
+      // fell through to a native sing-box outbound that rejects `encryption`
+      // (device log: EOF on every handshake).
       final upstreams = <String, ({String host, int port})>{};
-      final _needsXray = profile.transport == Transport.xhttp ||
-          profile.rawParams['type'] == 'mkcp' ||
-          profile.rawParams['type'] == 'kcp';
-      if (_xrayUpstreamPort > 0 && _needsXray) {
+      if (_xrayUpstreamPort > 0 && CoreManager.needsXrayUpstream(profile)) {
         upstreams[profile.id] =
             (host: '127.0.0.1', port: _xrayUpstreamPort);
       }
+      // v0.4.8 §user (Smart Switch): the front engine carries the WHOLE
+      // runnable pool, not just the active node — selector hot-swap then
+      // migrates the tunnel with zero disconnect, and the ladder ranks
+      // candidates with REAL engine delay tests (URL through each node's
+      // outbound) instead of a bare TCP ping to the node IP. Upstream-owned
+      // nodes (Xray daemons) stay stubbed ONLY for the active one — a stub
+      // whose daemon is not running would be a dead selector member.
+      final pool = deps.profiles.all
+          .where((p) => p.enabled && AndroidNodeSupport.isRunnable(p))
+          .where((p) =>
+              !CoreManager.needsXrayUpstream(p) || p.id == profile.id)
+          .map((p) => p.id == profile.id ? profile : p)
+          .toList();
+      // v0.4.7 §loop-fix: server IPs the :xray CHILD dials (the node, plus
+      // its configured resolvers) must NOT re-enter the TUN — the child has
+      // no VpnService.protect hook, so its sockets can only escape via the
+      // front's protected direct outbound. Without this route rule the
+      // child's traffic loops into its own SOCKS listener and the tunnel
+      // dies with `software caused connection abort` (device log 2026-09-17).
+      // The stub (127.0.0.1) never matches an ip_cidr rule, so no flow is
+      // double-wrapped — the rule only serves the child's own dials.
+      final bypass = CoreManager.needsXrayUpstream(profile)
+          ? XrayConfigGenerator.childDialBypassCidrs(
+              profile, dns: dns)
+          : const <String>[];
       final cfg = cores.front.buildConfig(
-        [profile],
+        pool,
         selectedProfileId: profile.id,
         routing: routing,
         dns: dns,
         socksUpstreams: {
           ...upstreams,
         },
+        bypassCidrs: bypass,
         warpProfile: warpProfile,
-        chainWarpOutside:
-            warpProfile != null && selectedWarpTag == null,
+        // v0.4.8 §user: the chain MODE owns the direction — warpFirst passes
+        // chainWarpOutside=true (the node's socket dials through the WARP
+        // tunnel: app → WARP → node → internet); warpLast/off leave it false
+        // (plain node, WARP-as-member or no WARP at all). WARP must NEVER
+        // wrap node traffic except through this explicit user choice.
+        chainWarpOutside: st.warpChainMode == WarpChainMode.warpFirst,
         selectedWarpTag: selectedWarpTag,
       );
       // §8 diagnostic split: make sing-box log ITS OWN view (startups, dial
       // errors, fatals) to an adb-readable file. External files dir matches
       // the native EngineLogFile location (documented debug affordance).
+      //
+      // v0.4.8 §user (WARP rescue door): when a WARP account exists and the
+      // user's mode is NOT warp-first, the warp-first TWIN of the ACTIVE node
+      // (tag `node:<id>:warpfirst`) is appended to the same config — enabling
+      // the rescue chain at run time becomes a Clash-API selector swap with
+      // zero rebuild. For an Xray-upstream node the twin is the stub with
+      // detour:warp (the child's dials exit through the WARP tunnel).
+      if (warpProfile != null &&
+          st.warpChainMode != WarpChainMode.warpFirst) {
+        final rescueTag = 'node:${profile.id}:warpfirst';
+        final twinCfg = cores.front.buildConfig(
+          [profile],
+          selectedProfileId: profile.id,
+          routing: routing,
+          dns: dns,
+          socksUpstreams: upstreams,
+          bypassCidrs: bypass,
+          warpProfile: warpProfile,
+          chainWarpOutside: true,
+        );
+        final twinOut = ((twinCfg['outbounds'] as List?) ?? const [])
+            .cast<Map<String, dynamic>>()
+            .firstWhere(
+          (o) => o['tag'] == 'node:${profile.id}',
+          orElse: () => const {},
+        );
+        if (twinOut.isNotEmpty) {
+          twinOut['tag'] = rescueTag;
+          final outbounds = cfg['outbounds'] as List;
+          outbounds.add(twinOut);
+          final selector = outbounds.firstWhere(
+              (o) => (o as Map)['tag'] == 'proxy',
+              orElse: () => null) as Map<String, dynamic>?;
+          if (selector != null) {
+            (selector['outbounds'] as List).add(rescueTag);
+          }
+        }
+      }
       cfg['log'] = {
         'level': 'info',
         'timestamp': true,
@@ -684,7 +933,121 @@ class VpnSession {
     return best ?? all.first;
   }
 
+  // ---------------------------------------------------------------------
+  // v0.4.8 §user — WARP auto-rescue: the filter detector.
+  //
+  // Contract: while connected with WARP off (plain topology), the session
+  // periodically URL-tests the ACTIVE node THROUGH the tunnel (the real
+  // criterion — not a TCP ping to the node IP). N consecutive failures
+  // (settings.warpAutoOfferThreshold, default 5) = "this node looks
+  // filtered": the app ASKS (dialog via [onWarpOffer]) to enable the
+  // warp-first chain for this node — a selector swap to the pre-built
+  // `node:<id>:warpfirst` twin (zero rebuild). The user can decline; a
+  // decline is remembered per node and never re-asked. When the rescue
+  // chain itself fails to answer the probe, the original plain selection
+  // is restored and the failure counter resets — the tunnel is never left
+  // down after an automated experiment.
+  // ---------------------------------------------------------------------
+
+  /// Asks the user. UI layer assigns: (context) → Future<bool>.
+  Future<bool> Function(String nodeName)? onWarpOffer;
+
+  Timer? _warpWatchdog;
+  int _warpFails = 0;
+  final Set<String> _warpDeclined = {};
+
+  void _armWarpWatchdog() {
+    _warpWatchdog?.cancel();
+    _warpWatchdog = null;
+    final st = deps.appSettings;
+    if (st.warpChainMode != WarpChainMode.off) return; // chain already chosen
+    if (st.warpAutoOfferThreshold <= 0) return; // detector disabled
+    final url = st.warpProbeUrl.isEmpty
+        ? 'https://www.gstatic.com/generate_204'
+        : st.warpProbeUrl;
+    final period = Duration(
+        seconds: st.smartSwitchIntervalSeconds > 0
+            ? st.smartSwitchIntervalSeconds
+            : 120);
+    _warpWatchdog = Timer.periodic(period, (_) => _warpUrlCheck(url));
+  }
+
+  Future<void> _warpUrlCheck(String url) async {
+    if (controller.phase != AndroidVpnPhase.connected) return;
+    final node = selectedNode;
+    if (node == null) return;
+    final st = deps.appSettings;
+    if (st.warpChainMode != WarpChainMode.off) {
+      _warpFails = 0;
+      return;
+    }
+    final api = deps.cores.front.api;
+    if (api == null) return;
+    final ms = await api.delayTest(
+        '${SingBoxRuntime.tagPrefix}${node.id}', url, 5000);
+    if (ms != null) {
+      _warpFails = 0; // the tunnel really works — reset the counter
+      return;
+    }
+    _warpFails++;
+    Logger.instance.warn('warp-offer',
+        '[ATX-DART] WARP_DETECT url-test failed ($_warpFails/${st.warpAutoOfferThreshold}) node=${node.name}');
+    if (_warpFails < st.warpAutoOfferThreshold) return;
+    _warpFails = 0;
+    if (_warpDeclined.contains(node.id)) return;
+    if (onWarpOffer == null) return;
+    final yes = await onWarpOffer!(node.name);
+    if (!yes) {
+      _warpDeclined.add(node.id);
+      Logger.instance.info('warp-offer',
+          '[ATX-DART] WARP_OFFER declined for ${node.name} — will not re-ask');
+      return;
+    }
+    await _enableWarpFirstFor(node);
+  }
+
+  /// Chains WARP in front of the running node: flips the persisted mode to
+  /// warpFirst, swaps the selector to the pre-built twin, verifies with a
+  /// real URL probe and restores the plain selection when the rescue fails.
+  Future<void> _enableWarpFirstFor(ProxyProfile node) async {
+    final api = deps.cores.front.api;
+    final rescueTag = 'node:${node.id}:warpfirst';
+    if (api == null) return;
+    Logger.instance.info('warp-offer',
+        '[ATX-DART] WARP_RESCUE chaining WARP in front of ${node.name} (selector swap)');
+    final ok = await api.select(SingBoxRuntime.selectorTag, rescueTag);
+    if (!ok) {
+      Logger.instance
+          .warn('warp-offer', '[ATX-DART] WARP_RESCUE twin member missing — reconnect required');
+      // Persist the user's choice; the next connect builds warpFirst natively.
+      deps.appSettings.warpChainMode = WarpChainMode.warpFirst;
+      await deps.appSettingsRepo.save(deps.appSettings);
+      await connect(node: node);
+      return;
+    }
+    final url = deps.appSettings.warpProbeUrl.isEmpty
+        ? 'https://www.gstatic.com/generate_204'
+        : deps.appSettings.warpProbeUrl;
+    final ms = await api.delayTest(
+        SingBoxRuntime.selectorTag, url, 8000);
+    if (ms != null) {
+      deps.appSettings.warpChainMode = WarpChainMode.warpFirst;
+      await deps.appSettingsRepo.save(deps.appSettings);
+      Logger.instance.info('warp-offer',
+          '[ATX-DART] WARP_RESCUE OK (${ms}ms via chained node)');
+      return;
+    }
+    // Rescue failed — put the user back where they were.
+    Logger.instance.warn('warp-offer',
+        '[ATX-DART] WARP_RESCUE probe failed — restoring plain node');
+    await api.select(
+        SingBoxRuntime.selectorTag, '${SingBoxRuntime.tagPrefix}${node.id}');
+  }
+
   void dispose() {
+    _warpWatchdog?.cancel();
+    _smartSub?.cancel();
+    _smart.dispose();
     _sub?.cancel();
     _selectionEvents.close();
     controller.dispose();

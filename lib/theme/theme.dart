@@ -42,40 +42,45 @@ class NexusColors {
   // v0.4.2 "line-type" design language (user mockup): near-black matte page,
   // charcoal frosted surfaces, cool off-white ink, mint/lavender as the only
   // accent pair, hairline borders.
+  // v0.4.7 §brand sheet v2 — the EXACT six-token palette the sheet pins:
+  // Primary #0A0B0E background · Surface #1A1D22 cards · Border #2E333A
+  // hairlines · TextDim #A0A6B3 secondary · Accent #FFFFFF primary text/
+  // icons/glow · Online #4ADE80 latency, ONLINE badges, sparkline stroke.
   static const dark = NexusColors(
-    background: Color(0xFF0A0B0E),
-    surface: Color(0xFF1A1D22),          // brand sheet Surface
-    surfaceElevated: Color(0xFF242832),
+    background: Color(0xFF0A0B0E),       // Primary
+    surface: Color(0xFF1A1D22),          // Surface
+    surfaceElevated: Color(0xFF23262D),  // chip/selected fill (Surface lightened)
     surfaceSunken: Color(0xFF12141A),
-    textPrimary: Color(0xFFE8E9ED),
-    textSecondary: Color(0xFFA0A6B3),     // brand sheet Text
+    textPrimary: Color(0xFFFFFFFF),     // Accent
+    textSecondary: Color(0xFFA0A6B3),    // TextDim
     textMuted: Color(0xFF7A7E89),
-    accent: Color(0xFF4FE0B7),
-    accentSoft: Color(0x244FE0B7),
-    success: Color(0xFF4FE0B7),
+    accent: Color(0xFFFFFFFF),           // Accent
+    accentSoft: Color(0x24FFFFFF),
+    success: Color(0xFF4ADE80),          // Online
     warning: Color(0xFFE0C34F),
     error: Color(0xFFE86A6A),
     info: Color(0xFF9B6CFF),
-    border: Color(0xFF2E333A),            // brand sheet Border
+    border: Color(0xFF2E333A),           // Border
     borderStrong: Color(0x26FFFFFF),
     overlayScrim: Color(0x8C000000),
   );
 
+  // OLED shares the v0.4.7 sheet palette on a true-black background.
   static const oled = NexusColors(
     background: Color(0xFF000000),
-    surface: Color(0xFF0B0C0F),
-    surfaceElevated: Color(0xFF15171D),
+    surface: Color(0xFF14161B),
+    surfaceElevated: Color(0xFF1D2027),
     surfaceSunken: Color(0xFF000000),
-    textPrimary: Color(0xFFE8E9ED),
-    textSecondary: Color(0xFFA0A6B3),     // brand sheet Text
+    textPrimary: Color(0xFFFFFFFF),      // Accent
+    textSecondary: Color(0xFFA0A6B3),    // TextDim
     textMuted: Color(0xFF7A7E89),
-    accent: Color(0xFF4FE0B7),
-    accentSoft: Color(0x244FE0B7),
-    success: Color(0xFF34D399),
+    accent: Color(0xFFFFFFFF),           // Accent
+    accentSoft: Color(0x24FFFFFF),
+    success: Color(0xFF4ADE80),          // Online
     warning: Color(0xFFFBBF24),
     error: Color(0xFFF87171),
     info: Color(0xFF9B6CFF),
-    border: Color(0x1FFFFFFF),
+    border: Color(0xFF2E333A),           // Border
     borderStrong: Color(0x33FFFFFF),
     overlayScrim: Color(0xB3000000),
   );
@@ -110,7 +115,9 @@ typedef AtlanhixTheme = NexusTheme;
 
 /// Typography scale (design/TYPOGRAPHY.md).
 class NexusTypography {
-  static const _fontLatin = 'Inter';
+  // v0.4.7 §brand: the logotype face for Latin text — the app's labels
+  // echo the ATLANHIX wordmark (geometric, wide). Persian stays Vazirmatn.
+  static const _fontLatin = 'Montserrat';
   static const _fontFa = 'Vazirmatn';
   static const _mono = 'JetBrainsMono';
 
@@ -188,8 +195,12 @@ class NexusTheme {
         brightness: brightness,
         primary: c.accent,
         onPrimary: _onAccent(c),
-        secondary: c.info,
-        onSecondary: Colors.black,
+        // v0.4.7 §palette: the sheet allows NO purple — `info` stays defined
+        // for the rare status glyph but M3 components no longer tint with it.
+        secondary: c.accent,
+        onSecondary: _onAccent(c),
+        secondaryContainer: c.surfaceElevated,
+        onSecondaryContainer: c.textPrimary,
         surface: c.surface,
         onSurface: c.textPrimary,
         error: c.error,

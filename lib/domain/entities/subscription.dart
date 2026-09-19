@@ -73,6 +73,8 @@ class Subscription {
     this.lastUpdated,
     this.nodeCount = 0,
     this.healthyCount = 0,
+    this.screenXrayOnly = 0,
+    this.screenRisky = 0,
     this.autoUpdate = true,
     this.updateIntervalMinutes = 360,
     this.lastError,
@@ -87,6 +89,13 @@ class Subscription {
   DateTime? lastUpdated;
   int nodeCount;
   int healthyCount;
+
+  /// v0.4.7 §user — last update's pre-import screening: how many nodes need
+  /// the Xray core only (xhttp/mKCP) and how many carry stream-shape risks
+  /// (headerType/mode/seed classes). 0 = no findings (or never screened).
+  int screenXrayOnly;
+  int screenRisky;
+
   bool autoUpdate;
   int updateIntervalMinutes;
   String? lastError;
@@ -111,6 +120,8 @@ class Subscription {
         'lastUpdated': lastUpdated?.toIso8601String(),
         'nodeCount': nodeCount,
         'healthyCount': healthyCount,
+        'screenXrayOnly': screenXrayOnly,
+        'screenRisky': screenRisky,
         'autoUpdate': autoUpdate,
         'updateIntervalMinutes': updateIntervalMinutes,
         'lastError': lastError,
@@ -136,6 +147,8 @@ class Subscription {
           : DateTime.parse(j['lastUpdated'] as String),
       nodeCount: j['nodeCount'] as int? ?? 0,
       healthyCount: j['healthyCount'] as int? ?? 0,
+      screenXrayOnly: j['screenXrayOnly'] as int? ?? 0,
+      screenRisky: j['screenRisky'] as int? ?? 0,
       autoUpdate: j['autoUpdate'] as bool? ?? true,
       updateIntervalMinutes: j['updateIntervalMinutes'] as int? ?? 360,
       lastError: j['lastError'] as String?,

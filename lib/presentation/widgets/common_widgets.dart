@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../../application/connection_controller.dart';
+import '../../localization/generated/app_localizations.dart';
 import '../../theme/theme.dart';
 
 /// Primary connect control (design/COMPONENTS.md).
@@ -207,6 +208,74 @@ class MetricTile extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// v0.4.7 §brand (sheet v2, 2026-09-15) — the circular CONNECT/DISCONNECT
+/// control: glowing-ring circle artwork with the power glyph baked in, and
+/// a REAL localized label underneath (اتصال / قطع اتصال), mirroring the
+/// sheet's "circle + caption" anatomy. Busy state = a spinner riding the
+/// circle; the tap target is the whole column.
+class BrandPillButton extends StatelessWidget {
+  const BrandPillButton({
+    super.key,
+    required this.connected,
+    required this.busy,
+    required this.onToggle,
+    this.size = 148,
+  });
+
+  /// True → DISCONNECT artwork (thin ring); false → CONNECT (glowing ring).
+  final bool connected;
+  final bool busy;
+  final VoidCallback onToggle;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context)!;
+    final c = ThemeExt.of(context);
+    return Semantics(
+      button: true,
+      label: connected ? l.disconnect : l.connect,
+      child: GestureDetector(
+        onTap: busy ? null : onToggle,
+        behavior: HitTestBehavior.opaque,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Stack(
+              alignment: Alignment.center,
+              children: [
+                Image.asset(
+                  connected
+                      ? 'assets/brand/circ_disconnect.png'
+                      : 'assets/brand/circ_connect.png',
+                  width: size,
+                  height: size,
+                  fit: BoxFit.contain,
+                ),
+                if (busy)
+                  SizedBox(
+                    width: size * 0.72,
+                    height: size * 0.72,
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              connected ? l.disconnect : l.connect,
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: connected ? c.success : c.textSecondary,
+                    letterSpacing: 4,
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

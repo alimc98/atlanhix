@@ -1345,6 +1345,60 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Proxy'**
   String get modeProxy;
+
+  /// No description provided for @screeningSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'{xrayOnly} Xray-only nodes, {risky} with stream warnings'**
+  String screeningSummary(Object risky, Object xrayOnly);
+
+  /// No description provided for @clipboardAddTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Add from clipboard?'**
+  String get clipboardAddTitle;
+
+  /// No description provided for @clipboardAddBody.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} share link(s) were detected in your clipboard. Add them to Atlanhix?'**
+  String clipboardAddBody(Object count);
+
+  /// No description provided for @clipboardAddNodes.
+  ///
+  /// In en, this message translates to:
+  /// **'Add nodes'**
+  String get clipboardAddNodes;
+
+  /// No description provided for @clipboardAddSubscription.
+  ///
+  /// In en, this message translates to:
+  /// **'Add subscription'**
+  String get clipboardAddSubscription;
+
+  /// No description provided for @clipboardLater.
+  ///
+  /// In en, this message translates to:
+  /// **'Later'**
+  String get clipboardLater;
+
+  /// No description provided for @warpOfferTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Node looks filtered'**
+  String get warpOfferTitle;
+
+  /// No description provided for @warpOfferBody.
+  ///
+  /// In en, this message translates to:
+  /// **'{node} did not answer {count} URL tests through the tunnel. Enable the WARP chain in front of it? (You can turn WARP off any time.)'**
+  String warpOfferBody(Object count, Object node);
+
+  /// No description provided for @warpOfferEnable.
+  ///
+  /// In en, this message translates to:
+  /// **'Chain WARP'**
+  String get warpOfferEnable;
 }
 
 class _AppLocalizationsDelegate

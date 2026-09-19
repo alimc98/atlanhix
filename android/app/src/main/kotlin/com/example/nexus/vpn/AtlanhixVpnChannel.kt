@@ -2,6 +2,7 @@
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.net.VpnService
 import org.json.JSONObject
 
@@ -45,6 +46,20 @@ class AtlanhixVpnChannel(private val activity: Activity) {
         // v0.4.4 §user-5 — PROXY MODE: best-effort global http_proxy.
         "setProxy" -> setProxy(arg ?: JSONObject())
         "clearProxy" -> clearProxy()
+        // v0.4.7 §user — updater: open the release APK URL in the browser
+        // (user-visible download; no in-app sideloading).
+        "openUrl" -> {
+            val url = arg?.optString("url").orEmpty()
+            try {
+                activity.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                JSONObject().put("ok", true)
+            } catch (e: Exception) {
+                JSONObject().put("ok", false).put("error", "${e.message}")
+            }
+        }
         else -> JSONObject().put("error", "unknown method: $method")
     }
 

@@ -4,11 +4,20 @@
 //    sing-box runtime (tls.fragment option) AND the Xray upstream (native
 //    freedom-fragment form). Before this fix the pill only persisted a
 //    settings boolean — no runtime ever read it.
-// 2) The Xray fragment handoff must land INSIDE the active security layer
-//    (tlsSettings/realitySettings.sockopt.dialerProxy). A bare
-//    streamSettings.sockopt is ignored by Xray once a security layer is
-//    active — the old placement silently ran unfragmented.
-// 3) Xray readiness must be a real SOCKS5 greeting exchange, not a bare
+// 2) The Xray fragment handoff must land in the CANONICAL
+//    streamSettings.sockopt.dialerProxy slot. Verified against the
+//    Xray-core tree (2026-09): app/proxyman/outbound/handler.go dials with
+//    the OUTBOUND's streamSettings, and DialSystem redirects to the named
+//    outbound from streamSettings.sockopt.DialerProxy — the TLS/Reality
+//    config protos have no sockopt field, so a nested one is silently
+//    dropped (the old, wrong placement ran nodes UNFRAGMENTED).
+// 3) The fragment-out freedom outbound resolves through Xray's DNS module
+//    (domainStrategy UseIPv4) — with dialerProxy it performs the real
+//    dial, and AsIs would hand that resolution to the poisoned OS resolver.
+// 4) headerType=http obfs links emit tcpSettings/kcpSettings — previously
+//    the header was dropped entirely (mKCP+http obfs nodes broke; raw tcp
+//    +obfs dialled nothing).
+// 5) Xray readiness must be a real SOCKS5 greeting exchange, not a bare
 //    TCP connect (which any socket-holder passes).
 import 'dart:async';
 import 'dart:io';
@@ -149,8 +158,8 @@ void main() {
     });
   });
 
-  group('Xray fragment placement (sockopt inside security layer)', () {
-    test('TLS: sockopt.dialerProxy lands in tlsSettings, not streamSettings',
+  group('Xray fragment placement (canonical streamSettings.sockopt)', () {
+    test('TLS: sockopt.dialerProxy lands in streamSettings, clean shape',
         () {
       final p = _vlessTlsWs()..core = CoreKind.xray;
       final cfg = XrayConfigGenerator().generate(
@@ -162,15 +171,17 @@ void main() {
       final proxy = (cfg['outbounds'] as List)
           .firstWhere((o) => (o as Map)['tag'] == 'proxy-out') as Map;
       final stream = proxy['streamSettings'] as Map;
-      expect((stream['tlsSettings'] as Map)['sockopt'], isNotNull,
-          reason: 'Xray reads the dialer INSIDE the security layer');
-      expect(stream.containsKey('sockopt'), isFalse,
-          reason: 'bare streamSettings.sockopt is a silent no-op under TLS');
+      expect(stream['sockopt'], {'dialerProxy': 'fragment-out'},
+          reason: 'Xray reads the dialer from the OUTBOUND streamSettings');
+      expect((stream['tlsSettings'] as Map).containsKey('sockopt'), isFalse,
+          reason: 'a sockopt inside the TLS config proto is silently '
+              'dropped by Xray (no such field)');
       expect((cfg['outbounds'] as List).any(
           (o) => (o as Map)['tag'] == 'fragment-out'), isTrue);
     });
 
-    test('Reality: sockopt.dialerProxy lands in realitySettings', () {
+    test('Reality: sockopt.dialerProxy lands in streamSettings, clean shape',
+        () {
       final p = _vlessXhttpReality()..core = CoreKind.xray;
       final cfg = XrayConfigGenerator().generate(
         profile: p,
@@ -181,8 +192,120 @@ void main() {
       final proxy = (cfg['outbounds'] as List)
           .firstWhere((o) => (o as Map)['tag'] == 'proxy-out') as Map;
       final stream = proxy['streamSettings'] as Map;
-      expect((stream['realitySettings'] as Map)['sockopt'], isNotNull);
-      expect(stream.containsKey('sockopt'), isFalse);
+      expect(stream['sockopt'], {'dialerProxy': 'fragment-out'});
+      expect(
+          (stream['realitySettings'] as Map).containsKey('sockopt'), isFalse);
+    });
+
+    test('fragment-out resolves through the clean DNS module (UseIPv4)', () {
+      final p = _vlessTlsWs()..core = CoreKind.xray;
+      final cfg = XrayConfigGenerator().generate(
+        profile: p,
+        localSocksPort: 2081,
+        routing: BuiltinRoutingProfiles.all().first,
+        fragment: FragmentPresets.conservative,
+      );
+      final frag = (cfg['outbounds'] as List)
+          .firstWhere((o) => (o as Map)['tag'] == 'fragment-out') as Map;
+      expect(((frag['settings'] as Map)['domainStrategy']), 'UseIPv4',
+          reason: 'with dialerProxy, fragment-out performs the REAL dial — '
+              'AsIs would resolve via the poisoned OS resolver, bypassing '
+              'the clean dns block');
+    });
+  });
+
+  group('Xray stream shape (v0.4.6 §xray-fix)', () {
+    Map<String, dynamic> _stream(ProxyProfile p) {
+      final cfg = XrayConfigGenerator().generate(
+        profile: p..core = CoreKind.xray,
+        localSocksPort: 2081,
+        routing: BuiltinRoutingProfiles.all().first,
+      );
+      final proxy = (cfg['outbounds'] as List)
+          .firstWhere((o) => (o as Map)['tag'] == 'proxy-out') as Map;
+      return (proxy['streamSettings'] as Map).cast<String, dynamic>();
+    }
+
+    test('tcp + headerType=http emits tcpSettings with an http request', () {
+      final s = _stream(ProxyProfile(
+        id: 't1',
+        name: 'tcp obfs',
+        server: 'a.example.com',
+        port: 443,
+        protocol: ProxyProtocol.vless,
+        transport: Transport.tcp,
+        security: Security.tls,
+        uuid: 'u',
+        host: 'front.example.com',
+        rawParams: {'headerType': 'http'},
+      ));
+      final hdr = ((s['tcpSettings'] as Map)['header'] as Map);
+      expect(hdr['type'], 'http');
+      expect(
+          (((hdr['request'] as Map)['headers'] as Map)['Host'] as List)
+              .first,
+          'front.example.com');
+    });
+
+    test('tcp without headerType stays clean (no tcpSettings)', () {
+      final s = _stream(ProxyProfile(
+        id: 't2',
+        name: 'plain tcp',
+        server: 'a.example.com',
+        port: 443,
+        protocol: ProxyProtocol.vless,
+        transport: Transport.tcp,
+        security: Security.none,
+        uuid: 'u',
+      ));
+      expect(s.containsKey('tcpSettings'), isFalse,
+          reason: 'default header none needs no tcpSettings');
+    });
+
+    test('mkcp link (type=kcp) emits kcpSettings with seed+header', () {
+      final s = _stream(ProxyProfile(
+        id: 't3',
+        name: 'kcp obfs',
+        server: 'k.example.com',
+        port: 443,
+        protocol: ProxyProtocol.vmess,
+        transport: Transport.quic, // the vmess parser's mKCP mapping
+        security: Security.tls,
+        uuid: 'u',
+        rawParams: {'type': 'kcp', 'headerType': 'http', 'seed': 's3ed'},
+      ));
+      expect(s['network'], 'mKCP');
+      final k = s['kcpSettings'] as Map;
+      expect((k['header'] as Map)['type'], 'http');
+      expect(k['seed'], 's3ed');
+    });
+
+    test('mkcp link is routed to the Xray upstream (desktop front path)',
+        () {
+      // The vmess parser maps type=kcp|mkcp to Transport.quic, so a raw
+      // enum-only check leaves the front sing-box building an outbound it
+      // cannot express — the raw param is the truthful signal.
+      final p = ProxyProfile(
+        id: 't4',
+        name: 'kcp route',
+        server: 'k.example.com',
+        port: 443,
+        protocol: ProxyProtocol.vmess,
+        transport: Transport.quic,
+        security: Security.none,
+        uuid: 'u',
+        rawParams: {'type': 'kcp'},
+      );
+      expect(CoreManager.needsXrayUpstream(p), isTrue);
+      // And Xray itself must accept the profile (outbound builds).
+      final cfg = XrayConfigGenerator().generate(
+        profile: p..core = CoreKind.xray,
+        localSocksPort: 2081,
+        routing: BuiltinRoutingProfiles.all().first,
+      );
+      final proxy = (cfg['outbounds'] as List)
+          .firstWhere((o) => (o as Map)['tag'] == 'proxy-out') as Map;
+      expect(((proxy['streamSettings'] as Map)['network']), 'mKCP');
     });
   });
 

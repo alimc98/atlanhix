@@ -44,13 +44,35 @@ class AppSettings {
     // v0.4.6 §user: WHICH fragment profile the pill uses (conservative is
     // the safe default). Only meaningful while tlsFragment is on.
     this.fragmentPreset = FragmentPreset.conservative,
+    // v0.4.7 §user: MANUAL fragment parameters (preset == manual).
+    // Same shape as Xray's freedom `fragment` dial options.
+    this.fragmentManualPackets = 'tlshello',
+    this.fragmentManualLength = '100-200',
+    this.fragmentManualInterval = '10-20',
     // ---- WARP (§30) ----
-    this.warpEnabled = false,
-    this.warpChainMode = WarpChainMode.warpAsOutbound,
+    // v0.4.8 §user: `off` is a real third state — WARP disabled. The two
+    // chain shapes map to the user's two directions:
+    //  * warpFirst  = WARP dials the NODE (app → WARP → node → internet) —
+    //    for nodes whose handshake the censor has blocked; the WARP hop
+    //    masks it. With AmneziaWG-3.1 params this survives carrier DPI.
+    //  * warpLast   = the node dials WARP (app → node → WARP → internet) —
+    //    sanctions evasion (Cloudflare exit IP).
+    this.warpChainMode = WarpChainMode.off,
+    // Auto-offer: after N consecutive URL-test failures through the
+    // tunnel, the app asks to enable the WARP-first chain for this node
+    // (the "this node looks filtered — chain WARP?" prompt).
+    this.warpAutoOfferThreshold = 5,
+    // URL the filter-detector probes through the tunnel. Empty = the
+    // shared scheduler default (gstatic generate_204).
+    this.warpProbeUrl = '',
     // ---- Diagnostics (§7 Diagnostics) ----
     this.trafficStats = true,
     this.connectionLogs = true,
     this.debugLogging = false,
+    // ---- v0.4.7 §user: Smart Switch (auto-select ladder) ----
+    // How often the Smart Switch re-tests the candidate pool (seconds).
+    // 0 disables the periodic re-test (single test at connect time).
+    this.smartSwitchIntervalSeconds = 120,
   });
 
   // General
@@ -94,6 +116,13 @@ class AppSettings {
   /// TLS-Fragment pill. Maps to the FragmentPresets ids.
   FragmentPreset fragmentPreset;
 
+  /// v0.4.7 §user: manual fragment dial parameters (fragmentPreset ==
+  /// manual). `packets` is 'tlshello' or '1-3'; `length`/`interval` are
+  /// Xray range strings ('100-200', '10-20').
+  String fragmentManualPackets;
+  String fragmentManualLength;
+  String fragmentManualInterval;
+
   /// v0.4.4 §user-4: local proxy/mixed port shared by every mode
   /// (TUN front inbound, proxy-mode system proxy, health probes). 0=auto.
   int localPort;
@@ -104,13 +133,24 @@ class AppSettings {
   bool proxyMode;
 
   // WARP
-  bool warpEnabled;
   WarpChainMode warpChainMode;
+
+  /// v0.4.8 §user: consecutive in-tunnel URL-test failures before the
+  /// WARP-chain offer fires (user-settable, default 5).
+  int warpAutoOfferThreshold;
+
+  /// v0.4.8 §user: the detector's URL. Empty → scheduler default.
+  String warpProbeUrl;
 
   // Diagnostics
   bool trafficStats;
   bool connectionLogs;
   bool debugLogging;
+
+  /// v0.4.7 §user: Smart Switch re-test period (seconds). The switcher
+  /// re-runs its candidate sweep on this cadence and migrates the tunnel
+  /// when a materially better node appears. 0 = test only at connect time.
+  int smartSwitchIntervalSeconds;
 
   /// Effective MTU for the TUN handoff (§24). AUTO resolves to 8500 —
   /// sing-box's own default TUN MTU on mobile (safe for all carriers).
@@ -139,13 +179,18 @@ class AppSettings {
         'adsBlock': adsBlock,
         'tlsFragment': tlsFragment,
         'fragmentPreset': fragmentPreset.name,
+        'fragmentManualPackets': fragmentManualPackets,
+        'fragmentManualLength': fragmentManualLength,
+        'fragmentManualInterval': fragmentManualInterval,
         'localPort': localPort,
         'proxyMode': proxyMode,
-        'warpEnabled': warpEnabled,
         'warpChainMode': warpChainMode.name,
+        'warpAutoOfferThreshold': warpAutoOfferThreshold,
+        'warpProbeUrl': warpProbeUrl,
         'trafficStats': trafficStats,
         'connectionLogs': connectionLogs,
         'debugLogging': debugLogging,
+        'smartSwitchIntervalSeconds': smartSwitchIntervalSeconds,
       };
 
   static AppSettings fromJson(Map<String, dynamic> j) => AppSettings(
@@ -179,15 +224,25 @@ class AppSettings {
         fragmentPreset: FragmentPreset.values.firstWhere(
             (e) => e.name == j['fragmentPreset'],
             orElse: () => FragmentPreset.conservative),
+        fragmentManualPackets:
+            j['fragmentManualPackets'] as String? ?? 'tlshello',
+        fragmentManualLength:
+            j['fragmentManualLength'] as String? ?? '100-200',
+        fragmentManualInterval:
+            j['fragmentManualInterval'] as String? ?? '10-20',
         localPort: j['localPort'] as int? ?? 2080,
         proxyMode: j['proxyMode'] as bool? ?? false,
-        warpEnabled: j['warpEnabled'] as bool? ?? false,
         warpChainMode: WarpChainMode.values.firstWhere(
             (e) => e.name == j['warpChainMode'],
-            orElse: () => WarpChainMode.warpAsOutbound),
+            orElse: () => WarpChainMode.off),
+        warpAutoOfferThreshold:
+            j['warpAutoOfferThreshold'] as int? ?? 5,
+        warpProbeUrl: j['warpProbeUrl'] as String? ?? '',
         trafficStats: j['trafficStats'] as bool? ?? true,
         connectionLogs: j['connectionLogs'] as bool? ?? true,
         debugLogging: j['debugLogging'] as bool? ?? false,
+        smartSwitchIntervalSeconds:
+            j['smartSwitchIntervalSeconds'] as int? ?? 120,
       );
 }
 
@@ -212,12 +267,21 @@ enum CorePreference { auto, singbox, xray }
 /// `auto` climbs the ladder conservative → default → aggressive per connect:
 /// the safe preset first, escalating ONLY on a failed tunnel probe, and the
 /// winning rung is persisted per node (FragmentLadderCache).
-enum FragmentPreset { conservative, defaultPreset, aggressive, auto }
+enum FragmentPreset { conservative, defaultPreset, aggressive, auto, manual }
 
-/// §30 — WARP integration shape. `warpAsOutbound` = the generated config
-/// contains a real WARP outbound that rules can target (Google → WARP etc.).
-/// `chain` = traffic chaining Proxy ⇄ WARP via the existing chain planner.
-enum WarpChainMode { warpAsOutbound, chain }
+/// §30 (v0.4.8 §user) — WARP integration shape. The WARP endpoint is
+/// materialized inside the front sing-box config when an account exists
+/// and the mode is a chain shape; `off` is the plain no-WARP topology.
+///
+///  * [warpFirst] — WARP dials the node: `app → WARP → node → internet`.
+///    The CENSOR never sees the node's handshake (it happens inside the
+///    WARP tunnel). For filtered/blocked nodes; AWG-3.1 params make the
+///    WARP hop itself DPI-resistant on Iranian carriers.
+///  * [warpLast] — the node dials WARP: `app → node → WARP → internet`.
+///    The EXIT is Cloudflare — sanctions/egress-IP evasion.
+///  * [off] — no WARP endpoint at all (the safe default; WARP never
+///    silently wraps node traffic).
+enum WarpChainMode { off, warpFirst, warpLast }
 
 /// Persistence + change notification for [AppSettings].
 ///

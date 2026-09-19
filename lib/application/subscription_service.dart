@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../core/logger.dart';
 import '../core/net/clean_dns_client.dart';
+import '../settings/routing_settings.dart';
+import 'subscription_routing.dart';
 import '../domain/entities/proxy_profile.dart';
 import '../domain/entities/subscription.dart';
 import '../domain/errors/app_error.dart';
@@ -17,8 +19,19 @@ class SubscriptionService {
     required this.subscriptions,
     required this.profiles,
     required this.importer,
+    this.onCarriedRouting,
+    this.currentRouting,
     http.Client? client,
   }) : _client = client ?? CleanDnsClient();
+
+  /// Source of the CURRENT user routing settings (read side of the apply).
+  final RoutingSettings Function()? currentRouting;
+
+  /// v0.4.7 §user: called when the fetched subscription URL carries a
+  /// routing payload (`?routing=<b64json>`, Happ-style). The callback owns
+  /// persistence (RoutingSettingsRepository.save) — the service stays
+  /// storage-agnostic. Null = feature not wired (tests).
+  final Future<void> Function(RoutingSettings next)? onCarriedRouting;
 
   final SubscriptionRepository subscriptions;
   final ProfileRepository profiles;
@@ -112,6 +125,19 @@ class SubscriptionService {
       }
       event.parsed = fresh.length;
       event.warnings = result.warnings;
+      // v0.4.7 §user: pre-import screening — count Xray-only transports
+      // (xhttp/mKCP) and stream-shape risks BEFORE anything is persisted, so
+      // the UI can report what this subscription contains at a glance.
+      final screen = result.screen;
+      event.xrayOnly = screen.xrayOnly;
+      event.risky = screen.risky;
+      event.screenCauses = Map.of(screen.causeCounts);
+      if (screen.hasFindings) {
+        Logger.instance.info('subs',
+            '${sub.name}: screen total=${screen.total} xrayOnly=${screen.xrayOnly} '
+            'risky=${screen.risky} '
+            'causes=${screen.causeCounts.entries.take(4).map((e) => '${e.value}x ${e.key}').join('; ')}');
+      }
 
       final before = profiles.all.where((p) => p.subscriptionId == sub.id).length;
       await profiles.replaceSubscriptionProfiles(sub.id, fresh);
@@ -121,12 +147,29 @@ class SubscriptionService {
         ..lastUpdated = DateTime.now()
         ..status = SubscriptionStatus.ok
         ..nodeCount = fresh.length
+        // v0.4.7 §user: persist the screening counts so the subscription
+        // card shows them between updates.
+        ..screenXrayOnly = screen.xrayOnly
+        ..screenRisky = screen.risky
         ..lastError = null
         ..etag = resp.headers['etag'];
       if (headerTitle != null && sub.name.isEmpty) {
         updated.name = headerTitle;
       }
       await subscriptions.upsert(updated);
+
+      // v0.4.7 §user: the sub URL may CARRY a routing profile (Happ/Incy
+      // parity) — apply it after the nodes are in. Failures are logged and
+      // never fail the update itself.
+      if (onCarriedRouting != null && currentRouting != null) {
+        try {
+          final next = applySubscriptionRouting(currentRouting!(), sub);
+          await onCarriedRouting!(next);
+        } catch (e) {
+          Logger.instance
+              .warn('subs', 'carried routing not applied: $e');
+        }
+      }
 
       event
         ..status = UpdateStatus.done
@@ -138,6 +181,8 @@ class SubscriptionService {
       event
         ..status = UpdateStatus.failed
         ..error = e.userMessage;
+      // A failed fetch keeps the previous payload — its screening result
+      // stays valid, so the screening counts are NOT reset here.
       await subscriptions.upsert(sub
         ..status = SubscriptionStatus.failed
         ..lastError = e.userMessage);
@@ -189,6 +234,12 @@ class SubscriptionUpdateEvent {
   int? after;
   List<String> warnings = const [];
   String? error;
+
+  /// v0.4.7 §user — pre-import screening results (null = not screened, e.g.
+  /// the fetch failed before parsing).
+  int? xrayOnly;
+  int? risky;
+  Map<String, int> screenCauses = const {};
 
   double? get progressFraction =>
       byteCount == null ? null : (byteCount! / 1_000_000).clamp(0.0, 1.0);

@@ -38,6 +38,15 @@ class WarpRepository {
       registeredAt: section['registeredAt'] == null
           ? null
           : DateTime.parse(section['registeredAt'] as String),
+      awgJc: section['awgJc'] as int?,
+      awgJmin: section['awgJmin'] as int?,
+      awgJmax: section['awgJmax'] as int?,
+      awgS1: section['awgS1'] as int?,
+      awgS2: section['awgS2'] as int?,
+      awgH1: section['awgH1'] as int?,
+      awgH2: section['awgH2'] as int?,
+      awgH3: section['awgH3'] as int?,
+      awgH4: section['awgH4'] as int?,
     );
   }
 
@@ -65,7 +74,48 @@ class WarpRepository {
       'license': a.license,
       'clientId': a.clientId,
       'registeredAt': a.registeredAt?.toIso8601String(),
+      if (a.awgJc != null) 'awgJc': a.awgJc,
+      if (a.awgJmin != null) 'awgJmin': a.awgJmin,
+      if (a.awgJmax != null) 'awgJmax': a.awgJmax,
+      if (a.awgS1 != null) 'awgS1': a.awgS1,
+      if (a.awgS2 != null) 'awgS2': a.awgS2,
+      if (a.awgH1 != null) 'awgH1': a.awgH1,
+      if (a.awgH2 != null) 'awgH2': a.awgH2,
+      if (a.awgH3 != null) 'awgH3': a.awgH3,
+      if (a.awgH4 != null) 'awgH4': a.awgH4,
     });
+  }
+
+  /// v0.4.8 §user: patches ONLY the AmneziaWG 3.1 obfuscation params on the
+  /// stored account (manual entry from the WARP card sheet) — secrets are
+  /// never round-tripped through the UI, so the vault values are preserved.
+  Future<void> saveWithAwgParams(int? jc, int? jmin, int? jmax, int? s1,
+      int? s2, int? h1, int? h2, int? h3, int? h4) async {
+    final a = _account;
+    if (a == null) return;
+    _account = WarpAccount(
+      deviceId: a.deviceId,
+      token: a.token,
+      privateKey: a.privateKey,
+      peerPublicKey: a.peerPublicKey,
+      endpointV4: a.endpointV4,
+      endpointV6: a.endpointV6,
+      addressV4: a.addressV4,
+      addressV6: a.addressV6,
+      license: a.license,
+      clientId: a.clientId,
+      registeredAt: a.registeredAt,
+      awgJc: jc,
+      awgJmin: jmin,
+      awgJmax: jmax,
+      awgS1: s1,
+      awgS2: s2,
+      awgH1: h1,
+      awgH2: h2,
+      awgH3: h3,
+      awgH4: h4,
+    );
+    await save(_account!);
   }
 
   Future<void> clear() async {

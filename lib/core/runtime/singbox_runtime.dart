@@ -103,6 +103,7 @@ class SingBoxRuntime implements CoreRuntime {
     ProxyProfile? warpProfile,
     bool chainWarpOutside = true,
     String? selectedWarpTag,
+    List<String> bypassCidrs = const [],
   }) {
     return SingBoxConfigGenerator().generate(
       runnableProfiles: profiles,
@@ -120,6 +121,7 @@ class SingBoxRuntime implements CoreRuntime {
       warpProfile: warpProfile,
       chainWarpOutside: chainWarpOutside,
       selectedWarpTag: selectedWarpTag,
+      bypassCidrs: bypassCidrs,
     );
   }
 

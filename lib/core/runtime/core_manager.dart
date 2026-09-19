@@ -144,6 +144,12 @@ class CoreManager {
   /// [advanceAutoLadder]). Re-derived on every Xray start/recovery.
   FragmentPreset fragmentPreset = FragmentPreset.conservative;
 
+  /// v0.4.7 §user: the MANUAL dial parameters (used when
+  /// [fragmentPreset] == manual). Mirrors AppSettings' manual fields.
+  String fragmentManualPackets = 'tlshello';
+  String fragmentManualLength = '100-200';
+  String fragmentManualInterval = '10-20';
+
   /// v0.4.6 §user: per-node winners of the AUTO ladder (optional — set by
   /// the composition root). When present, an AUTO connect to a node that
   /// already climbed successfully STARTS at its winning rung.
@@ -155,6 +161,13 @@ class CoreManager {
     if (fragmentPreset == FragmentPreset.auto) {
       final order = _autoOrder;
       return FragmentPresets.all[order[_autoStep.clamp(0, order.length - 1)]];
+    }
+    if (fragmentPreset == FragmentPreset.manual) {
+      return FragmentPresets.manual(
+        packets: fragmentManualPackets,
+        length: fragmentManualLength,
+        interval: fragmentManualInterval,
+      );
     }
     return FragmentPresets.profileFor(fragmentPreset);
   }
@@ -235,7 +248,11 @@ class CoreManager {
   static bool needsXrayUpstream(ProxyProfile p) =>
       p.effectiveCore == CoreKind.xray ||
       (p.effectiveCore == CoreKind.unknown &&
-          p.transport == Transport.xhttp);
+          (p.transport == Transport.xhttp ||
+              // mKCP is engine-ambiguous on the enum (vmess maps it to
+              // Transport.quic); the raw param is the truthful signal.
+              p.rawParams['type'] == 'mkcp' ||
+              p.rawParams['type'] == 'kcp'));
 
   Map<String, ({String host, int port})> _socksUpstreams(
       List<ProxyProfile> all) {

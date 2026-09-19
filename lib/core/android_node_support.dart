@@ -36,14 +36,19 @@ class AndroidNodeSupport {
     if (p.userPinnedCore == CoreKind.xray) {
       return XrayCoreState.instance.runtimeLoaded;
     }
+    // v0.4.7 §user: a DETECTED Xray core (post-quantum VLESS encryption —
+    // sing-box 1.14 has no `encryption` outbound field) is engine-gated too.
+    // Before this clause the protocol switch below returned `true` for any
+    // vless node regardless of the resolved core, so PQ nodes were served
+    // as native sing-box outbounds and every handshake died (`EOF`).
+    if (p.effectiveCore == CoreKind.xray) {
+      return XrayCoreState.instance.runtimeLoaded;
+    }
     // AmneziaWG needs its patched WireGuard kernel/userspace fork — not
     // bundled in any engine we ship, in either state (mirrors
     // notRunnableReason so the two gates can never disagree).
     if (p.amnezia?.isNotEmpty == true || p.effectiveCore == CoreKind.amneziaWg) {
       return false;
-    }
-    if (p.effectiveCore == CoreKind.xray && p.userPinnedCore != null) {
-      return XrayCoreState.instance.runtimeLoaded;
     }
     return switch (p.protocol) {
       ProxyProtocol.vmess ||

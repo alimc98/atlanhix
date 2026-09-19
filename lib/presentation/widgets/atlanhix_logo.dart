@@ -1,5 +1,52 @@
 import 'package:flutter/material.dart';
 
+/// v0.4.7 brand-sheet assets (user-supplied full redesign):
+/// `assets/brand/logo.png`      — stacked mark + ATLANHTHIX wordmark block
+/// `assets/brand/logotype.png`  — wide-tracked ATLANHTHIX wordmark strip
+/// `assets/brand/appicon.png`   — rounded-square app icon (moon + mark)
+/// `assets/brand/nav_*.png`     — five tab icons (dashboard/nodes/routing/
+///                                logs/settings), white-on-charcoal tiles
+/// `assets/brand/btn_*.png`     — CONNECT / DISCONNECT pill buttons
+///
+/// The v0.4.3 line-type monogram widgets below stay: they are the only
+/// variant that can tint itself per-theme (assets are baked white-on-dark),
+/// so compact inline marks keep using them.
+
+/// The stacked brand block (mark over wordmark) from the redesign sheet.
+/// Used where the full brand leads the layout (rail header, splash card).
+class AtlanhixBrandBlock extends StatelessWidget {
+  const AtlanhixBrandBlock({super.key, this.height = 96});
+
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    // The sheet background is the same charcoal family as the app's; the
+    // PNG's own dark field blends into the surfaces without a visible box.
+    return Image.asset(
+      'assets/brand/logo.png',
+      height: height,
+      fit: BoxFit.contain,
+    );
+  }
+}
+
+/// The wide-tracked ATLANHTHIX wordmark strip from the redesign sheet.
+class AtlanhixWordmark extends StatelessWidget {
+  const AtlanhixWordmark({super.key, this.height = 16});
+
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    return Image.asset(
+      'assets/brand/logotype.png',
+      height: height,
+      fit: BoxFit.contain,
+    );
+  }
+}
+
 /// Atlanhix line-type brand (v0.4.3 "مشکی خطی" spec): a monoline **ATHIX**
 /// monogram whose letterforms deliberately overlap into an ambiguous weave —
 /// pure strokes, no fills, no gradients, no globe. The crossing strokes are

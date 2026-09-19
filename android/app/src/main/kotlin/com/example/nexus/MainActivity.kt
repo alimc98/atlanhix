@@ -7,6 +7,7 @@ import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
 import com.example.nexus.vpn.AtlanhixVpnChannel
 import com.example.nexus.vpn.AtlanhixXrayChannel
+import com.example.nexus.vpn.InstalledAppsSource
 
 class MainActivity : FlutterActivity() {
 
@@ -51,13 +52,24 @@ class MainActivity : FlutterActivity() {
                             result.success(resp.toString())
                         }
                     }
-                    // v0.4.1 §11: installedApps returns a JSONArray under
-                    // "apps"; the generic handler only ships JSONObject, so
-                    // unwrap here and pass the array text directly.
-                    "installedApps" -> result.success(
-                        vpnChannelOrNew().handle(call.method, arg)
-                            .getJSONArray("apps").toString()
-                    )
+                    // v0.4.7 §fix(black-screen): the PackageManager scan
+                    // (labels + launch intents for ~200 packages) blocked the
+                    // MAIN thread for seconds and some broken half-uninstalled
+                    // packages (e.g. com.openai.chatgpt with a dangling APK
+                    // path) even threw `Failed to open APK` mid-scan — the
+                    // apps-routing screen rendered BLACK. The scan now runs on
+                    // a background thread; only the channel reply hops back.
+                    "installedApps" -> {
+                        val appContext = applicationContext
+                        Thread {
+                            try {
+                                val apps = InstalledAppsSource.list(appContext.packageManager)
+                                runOnUiThread { result.success(apps.toString()) }
+                            } catch (e: Exception) {
+                                runOnUiThread { result.error("vpn_channel", e.message, null) }
+                            }
+                        }.start()
+                    }
                     else -> result.success(vpnChannelOrNew().handle(call.method, arg).toString())
                 }
             } catch (e: Exception) {

@@ -18,6 +18,19 @@ class WarpAccount {
     this.license,
     this.clientId,
     this.registeredAt,
+    // v0.4.8 §user: AmneziaWG obfuscation params — WARP's plain WireGuard
+    // handshake is routinely throttled on Iranian carriers; an AWG-3.1
+    // masked peer (warp-generator.vercel.app style) survives where the
+    // vanilla one is killed. Null/empty params = plain WARP.
+    this.awgJc,
+    this.awgJmin,
+    this.awgJmax,
+    this.awgS1,
+    this.awgS2,
+    this.awgH1,
+    this.awgH2,
+    this.awgH3,
+    this.awgH4,
   });
 
   final String deviceId;
@@ -31,6 +44,37 @@ class WarpAccount {
   final String? license;
   final String? clientId;
   final DateTime? registeredAt;
+
+  // ---- AmneziaWG 3.1 (RFC: Jc/Jmin/Jmax junk packets, S1/S2 handshake
+  // padding, H1..H4 header-field remap). Kept on the ACCOUNT so a re-save
+  // from the manual-params sheet round-trips losslessly.
+  final int? awgJc;
+  final int? awgJmin;
+  final int? awgJmax;
+  final int? awgS1;
+  final int? awgS2;
+  final int? awgH1;
+  final int? awgH2;
+  final int? awgH3;
+  final int? awgH4;
+
+  bool get hasAmneziaParams =>
+      awgJc != null || awgH1 != null || awgS1 != null;
+
+  /// AmneziaWG params built from the stored fields (null when plain WARP).
+  AmneziaParams? get amneziaParams => hasAmneziaParams
+      ? AmneziaParams(
+          jc: awgJc,
+          jmin: awgJmin,
+          jmax: awgJmax,
+          s1: awgS1,
+          s2: awgS2,
+          h1: awgH1,
+          h2: awgH2,
+          h3: awgH3,
+          h4: awgH4,
+        )
+      : null;
 
   /// WARP uses the client_id as the WireGuard `reserved` field.
   List<int>? get reservedBytes {
@@ -50,6 +94,7 @@ class WarpAccount {
         'addressV6': addressV6,
         'license': license,
         'registeredAt': registeredAt?.toIso8601String(),
+        if (hasAmneziaParams) 'amneziaWG': true,
       };
 }
 
@@ -165,7 +210,12 @@ class WarpRegistrar {
   /// Pure conversion (no network, no instance state) so any layer can
   /// materialize a registered WARP device as a WireGuard endpoint — used by
   /// the v0.3.0 WARP traffic chain (§8).
+  ///
+  /// v0.4.8 §user: when the account carries AmneziaWG params the profile is
+  /// tagged AWG — the WARP handshake leaves as junk-padded packets that
+  /// carrier DPI cannot fingerprint as plain WireGuard.
   static ProxyProfile profileFor(WarpAccount a, {String name = 'Cloudflare WARP'}) {
+    final awg = a.amneziaParams;
     return ProxyProfile(
       id: Ids.newId(),
       name: name,
@@ -188,8 +238,9 @@ class WarpRegistrar {
         persistentKeepalive: 25,
         reserved: a.reservedBytes,
       ),
+      amnezia: awg,
       source: ProfileSource.warp,
-      tags: const ['warp'],
+      tags: [if (awg != null) ...['warp', 'awg-3.1'] else 'warp'],
     );
   }
 }

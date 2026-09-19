@@ -240,6 +240,52 @@ class SettingsScreen extends StatelessWidget {
                 onChanged: (m) => _save(s..fragmentPreset = m!),
               ),
             ),
+          // v0.4.7 §user: MANUAL dial — the user's own packets/length/
+          // interval strings, straight onto the Xray fragment option.
+          if (s.tlsFragment && s.fragmentPreset == FragmentPreset.manual) ...[
+            ListTile(
+              dense: true,
+              title: const Text('Fragment packets'),
+              subtitle: const Text("'tlshello' or '1-3'"),
+              trailing: SizedBox(
+                width: 130,
+                child: TextFormField(
+                  key: ValueKey('fp-${s.fragmentManualPackets}'),
+                  initialValue: s.fragmentManualPackets,
+                  onFieldSubmitted: (v) =>
+                      _save(s..fragmentManualPackets = v.trim()),
+                ),
+              ),
+            ),
+            ListTile(
+              dense: true,
+              title: const Text('Fragment length'),
+              subtitle: const Text('range, e.g. 100-200'),
+              trailing: SizedBox(
+                width: 130,
+                child: TextFormField(
+                  key: ValueKey('fl-${s.fragmentManualLength}'),
+                  initialValue: s.fragmentManualLength,
+                  onFieldSubmitted: (v) =>
+                      _save(s..fragmentManualLength = v.trim()),
+                ),
+              ),
+            ),
+            ListTile(
+              dense: true,
+              title: const Text('Fragment interval (ms)'),
+              subtitle: const Text('range, e.g. 10-20'),
+              trailing: SizedBox(
+                width: 130,
+                child: TextFormField(
+                  key: ValueKey('fi-${s.fragmentManualInterval}'),
+                  initialValue: s.fragmentManualInterval,
+                  onFieldSubmitted: (v) =>
+                      _save(s..fragmentManualInterval = v.trim()),
+                ),
+              ),
+            ),
+          ],
           // v0.4.4 §user-5: TUN vs Proxy mode — explicit, persisted.
           ListTile(
             dense: true,
@@ -314,6 +360,32 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
           ),
+          // v0.4.7 §user: Smart Switch re-test cadence (0 = connect-time only).
+          ListTile(
+            dense: true,
+            title: const Text('Smart Switch test interval'),
+            subtitle: Text(s.smartSwitchIntervalSeconds <= 0
+                ? 'Off — test only at connect time'
+                : '${s.smartSwitchIntervalSeconds} s'),
+            trailing: SizedBox(
+              width: 90,
+              child: TextFormField(
+                key: ValueKey('ss-${s.smartSwitchIntervalSeconds}'),
+                initialValue: s.smartSwitchIntervalSeconds.toString(),
+                keyboardType: TextInputType.number,
+                onFieldSubmitted: (v) {
+                  final n = int.tryParse(v.trim());
+                  if (n != null && n >= 0 && n <= 3600) {
+                    _save(s..smartSwitchIntervalSeconds = n);
+                    deps.vpnSession.enableSmartSwitch();
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Interval must be 0–3600 seconds')));
+                  }
+                },
+              ),
+            ),
+          ),
         ]),
 
         // ------------------------------------------------------ Routing
@@ -340,7 +412,11 @@ class SettingsScreen extends StatelessWidget {
         _section(context, 'WARP', [
           ListTile(
             leading: const Icon(Icons.shield_outlined),
-            title: Text(s.warpEnabled ? 'Enabled' : 'Disabled'),
+            // v0.4.8 §user: the chain MODE is the single WARP authority —
+            // the separate warpEnabled flag no longer exists.
+            title: Text(s.warpChainMode == WarpChainMode.off
+                ? 'Disabled'
+                : 'Chained (${s.warpChainMode.name})'),
             subtitle: const Text('WARP registration & chaining'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).pushNamed('/warp'),
@@ -407,10 +483,18 @@ class SettingsScreen extends StatelessWidget {
           'Aggressive — 1-3 packets, hardest to detect',
         FragmentPreset.auto =>
           'Auto — try safe→strong on failure, remember the winner',
+        FragmentPreset.manual => 'Manual — set packets/length/interval below',
       };
 
   Future<void> _save(AppSettings s) async {
     await deps.appSettingsRepo.save(s);
+    // v0.4.7 §user: the fragment dial + preset live on the core manager —
+    // persist AND propagate so the next start honors the change.
+    deps.cores.fragmentPreset = s.fragmentPreset;
+    deps.connection.fragmentPreset = s.fragmentPreset;
+    deps.cores.fragmentManualPackets = s.fragmentManualPackets;
+    deps.cores.fragmentManualLength = s.fragmentManualLength;
+    deps.cores.fragmentManualInterval = s.fragmentManualInterval;
   }
 
   Widget _section(BuildContext context, String title, List<Widget> children) {

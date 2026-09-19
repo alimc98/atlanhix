@@ -262,5 +262,14 @@
   "pillProxyMode": "حالت پراکسی",
   "pillTlsFragment": "Split HTTPS",
   "modeTun": "TUN",
-  "modeProxy": "پراکسی"
+  "modeProxy": "پراکسی",
+  "screeningSummary": "{xrayOnly} گره مخصوص Xray، {risky} گره با هشدار شکل جریان",
+  "clipboardAddTitle": "افزودن از کلیپ‌بورد؟",
+  "clipboardAddBody": "{count} لینک اشتراکی در کلیپ‌بورد پیدا شد. به Atlanhix اضافه شوند؟",
+  "clipboardAddNodes": "افزودن نودها",
+  "clipboardAddSubscription": "افزودن اشتراک",
+  "clipboardLater": "بعداً",
+  "warpOfferTitle": "نود به نظر فیلتر است",
+  "warpOfferBody": "{node} به {count} تست پیاپی URL از داخل تونل جواب نداد. زنجیر WARP را جلوی آن روشن کنم؟ (هر وقت بخواهی می‌توانی WARP را خاموش کنی.)",
+  "warpOfferEnable": "زنجیر با WARP"
 }

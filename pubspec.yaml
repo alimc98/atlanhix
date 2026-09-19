@@ -34,6 +34,7 @@ flutter:
   assets:
     - assets/fonts/
     - assets/intro/
+    - assets/brand/
   fonts:
     - family: Inter
       fonts:
@@ -42,6 +43,18 @@ flutter:
         - asset: assets/fonts/Inter-Medium.ttf
           weight: 500
         - asset: assets/fonts/Inter-SemiBold.ttf
+          weight: 600
+    # v0.4.7 §brand: Montserrat — the logotype face. Latin text renders in
+    # it so headlines/labels echo the ATLANHIX lettering (wide, geometric).
+    - family: Montserrat
+      fonts:
+        - asset: assets/fonts/Montserrat-Light.ttf
+          weight: 300
+        - asset: assets/fonts/Montserrat-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Montserrat-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Montserrat-SemiBold.ttf
           weight: 600
     - family: Vazirmatn
       fonts:

@@ -235,10 +235,16 @@ class OutboundBuilders {
   }
 
   /// sing-box `endpoints` entry for WireGuard (native profiles + WARP).
+  ///
+  /// v0.4.8 §user: an [AmneziaWG 3.1] profile emits its Jc/Jmin/Jmax/S1/S2
+  /// header remap fields into the endpoint — the peer speaks the masked
+  /// handshake (junk packets + custom message types). Without these the
+  /// AWG-masked WARP peer silently drops every handshake.
   Map<String, dynamic>? singBoxWireguardEndpoint(ProxyProfile p,
       {required String tag, String? detourTag}) {
     final wg = p.wireguard;
     if (wg == null) return null;
+    final amnezia = p.amnezia;
     return {
       'type': 'wireguard',
       'tag': tag,
@@ -260,6 +266,17 @@ class OutboundBuilders {
             'reserved': wg.reserved,
         }
       ],
+      // v0.4.8 §user: AmneziaWG 3.1 obfuscation — emitted only when the
+      // profile actually carries params (plain WARP stays byte-identical).
+      if (amnezia != null && amnezia.jc != null) 'jc': amnezia.jc,
+      if (amnezia != null && amnezia.jmin != null) 'jmin': amnezia.jmin,
+      if (amnezia != null && amnezia.jmax != null) 'jmax': amnezia.jmax,
+      if (amnezia != null && amnezia.s1 != null) 's1': amnezia.s1,
+      if (amnezia != null && amnezia.s2 != null) 's2': amnezia.s2,
+      if (amnezia != null && amnezia.h1 != null) 'h1': amnezia.h1,
+      if (amnezia != null && amnezia.h2 != null) 'h2': amnezia.h2,
+      if (amnezia != null && amnezia.h3 != null) 'h3': amnezia.h3,
+      if (amnezia != null && amnezia.h4 != null) 'h4': amnezia.h4,
       if (detourTag != null) 'detour': detourTag,
     };
   }
@@ -411,6 +428,57 @@ class OutboundBuilders {
         if (j is Map || j is List) s['finalmask'] = j;
       } catch (_) {/* malformed — omit; node still dials without the mask */}
     }
+    // v0.4.6 §xray-fix: `headerType=http` was silently DROPPED — no
+    // tcpSettings was ever emitted for TCP/mKCP streams. Links carrying it
+    // (mKCP especially: the common in-the-wild spelling is
+    // `type=kcp&headerType=http`, vmess JSON `network:"kcp"` with
+    // `header.type:"http"`) then fail against an obfs server; plain mKCP
+    // still dialled because the default header is `none`. Raw tcp with
+    // http obfs dials nothing at all without tcpSettings.
+    // The vmess parser maps `type=kcp|mkcp` to Transport.quic (the
+    // "UDP family" bucket), so mKCP settings are keyed off the RAW param —
+    // not off the enum alone.
+    final isMkcp =
+        _xrNetwork(p.transport) == 'mKCP' ||
+        p.rawParams['type'] == 'mkcp' ||
+        p.rawParams['type'] == 'kcp';
+    if (isMkcp) {
+      final header = _headerType(p, 'none');
+      s['kcpSettings'] = {
+        'mtu': 1350,
+        'tti': 50,
+        if (p.rawParams['seed'] case final String seed?
+            when seed.trim().isNotEmpty)
+          'seed': seed,
+        'header': {'type': header},
+      };
+    } else if (p.transport == Transport.tcp) {
+      final header = _headerType(p, 'none');
+      if (header != 'none') {
+        s['tcpSettings'] = {
+          'header': {
+            'type': header,
+            if (header == 'http' && p.host != null)
+              'request': {
+                'version': '1.1',
+                'method': 'GET',
+                'path': [p.path ?? '/'],
+                'headers': {
+                  'Host': [p.host!],
+                  'User-Agent': [
+                    'Mozilla/5.0 (Windows NT 10.0; WOW64) '
+                        'AppleWebKit/537.36 (KHTML, like Gecko) '
+                        'Chrome/126.0.0.0 Safari/537.36',
+                  ],
+                  'Accept-Encoding': ['gzip, deflate'],
+                  'Connection': ['keep-alive'],
+                  'Pragma': 'no-cache',
+                },
+              },
+          },
+        };
+      }
+    }
     switch (p.transport) {
       case Transport.ws:
         s['wsSettings'] = {
@@ -435,11 +503,30 @@ class OutboundBuilders {
       case Transport.xhttp:
         s['xhttpSettings'] = _xhttpSettings(p);
       case Transport.tcp:
-      case Transport.quic:
+      case Transport.quic: // mKCP settings above — keyed off the raw param
       case Transport.none:
         break;
     }
     return s;
+  }
+
+  /// `headerType` from the link's raw params (vless-style URI) or the
+  /// clash-style header object preserved on the profile. Falls back to
+  /// [fallback] when the link carries none.
+  static String _headerType(ProxyProfile p, String fallback) {
+    final raw = p.rawParams['headerType'] ?? p.rawParams['header-type'];
+    if (raw != null && raw.trim().isNotEmpty) return raw.trim();
+    final hdr = p.rawParams['header'];
+    if (hdr != null) {
+      try {
+        final j = jsonDecode(hdr);
+        if (j is Map) {
+          final t = j['type'] ?? j['request']['type'];
+          if (t is String && t.isNotEmpty) return t;
+        }
+      } catch (_) {}
+    }
+    return fallback;
   }
 
   /// Xray 26.x xhttpSettings: honor the link's `extra` JSON object when

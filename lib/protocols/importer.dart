@@ -2,6 +2,7 @@ import 'dart:convert';
 import '../../domain/entities/proxy_profile.dart';
 import '../../domain/errors/app_error.dart';
 import 'common/uri_utils.dart';
+import 'link_screener.dart';
 import 'adapters/clash_yaml.dart';
 import 'adapters/hysteria2.dart';
 import 'adapters/masterdnsvpn.dart';
@@ -102,6 +103,12 @@ class MultiFormatImporter {
   final _xray = XrayJsonParser();
   final _mdvpn = MasterDnsVpnParser();
 
+  /// v0.4.7 §user: every imported payload is screened for Xray-only
+  /// transports (xhttp/mKCP) and their stream-shape requirements, so the
+  /// summary can report counts BEFORE the user discovers a broken node at
+  /// connect time.
+  final _screener = const LinkScreener();
+
   ImportResult import(String payload, {String? fileName}) {
     final format = _sniffer.detect(payload);
     final profiles = <ProxyProfile>[];
@@ -155,7 +162,13 @@ class MultiFormatImporter {
               ? ['The payload contained no supported entries']
               : warnings);
     }
-    return ImportResult(profiles: profiles, warnings: warnings, format: format);
+    final screen = _screener.screenAll(profiles);
+    return ImportResult(
+      profiles: profiles,
+      warnings: warnings,
+      format: format,
+      screen: screen,
+    );
   }
 
   ProxyProfile _parseShareUri(String line) {
@@ -185,9 +198,15 @@ class ImportResult {
     required this.profiles,
     required this.warnings,
     required this.format,
-  });
+    LinkScreenSummary? screen,
+  }) : screen = screen ??
+            const LinkScreener().screenAll(const <ProxyProfile>[]);
 
   final List<ProxyProfile> profiles;
   final List<String> warnings;
   final SourceFormat format;
+
+  /// v0.4.7 §user: pre-import screening — Xray-only transport counts and
+  /// stream-shape risks (headerType/mode/seed classes), aggregated.
+  final LinkScreenSummary screen;
 }

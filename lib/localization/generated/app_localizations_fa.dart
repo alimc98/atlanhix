@@ -647,4 +647,37 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get modeProxy => 'پراکسی';
+
+  @override
+  String screeningSummary(Object risky, Object xrayOnly) {
+    return '$xrayOnly گره مخصوص Xray، $risky گره با هشدار شکل جریان';
+  }
+
+  @override
+  String get clipboardAddTitle => 'افزودن از کلیپ‌بورد؟';
+
+  @override
+  String clipboardAddBody(Object count) {
+    return '$count لینک اشتراکی در کلیپ‌بورد پیدا شد. به Atlanhix اضافه شوند؟';
+  }
+
+  @override
+  String get clipboardAddNodes => 'افزودن نودها';
+
+  @override
+  String get clipboardAddSubscription => 'افزودن اشتراک';
+
+  @override
+  String get clipboardLater => 'بعداً';
+
+  @override
+  String get warpOfferTitle => 'نود به نظر فیلتر است';
+
+  @override
+  String warpOfferBody(Object count, Object node) {
+    return '$node به $count تست پیاپی URL از داخل تونل جواب نداد. زنجیر WARP را جلوی آن روشن کنم؟ (هر وقت بخواهی می‌توانی WARP را خاموش کنی.)';
+  }
+
+  @override
+  String get warpOfferEnable => 'زنجیر با WARP';
 }

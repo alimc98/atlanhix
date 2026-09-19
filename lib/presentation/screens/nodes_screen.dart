@@ -89,49 +89,97 @@ class _NodesScreenState extends State<NodesScreen> {
     return Column(
       children: [
         _sectionBar(c, fa),
+        // v0.4.7 §user: the SMART SWITCH card — a virtual "node" the user
+        // taps to hand node choice to the app (default mode). Highlighted
+        // while active; a tap on any concrete node de-activates it.
+        _SmartSwitchCard(
+          active: widget.deps.vpnSession.isSmartSwitchActive,
+          onTap: () {
+            // v0.4.8 §user: a REAL toggle — the Switch now turns the mode
+            // OFF as well as ON (the old handler only ever re-enabled it,
+            // so a node that was ON could never be switched off from the
+            // card; device report "اسمارت سوییچ روش می‌زنی خاموش نمی‌شه").
+            if (widget.deps.vpnSession.isSmartSwitchActive) {
+              widget.deps.vpnSession.disableSmartSwitch();
+            } else {
+              widget.deps.vpnSession.enableSmartSwitch();
+              setState(() => _selectedId = null);
+            }
+          },
+        ),
         WarpChainCard(deps: widget.deps),
+        // v0.4.7 §brand (sheet v2): rounded search + pill filter chips + a
+        // compact action row — the mockup's Nodes panel anatomy.
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
           child: Row(
             children: [
               Expanded(
-                child: TextField(
-                  onChanged: (v) => setState(() => _query = v),
-                  decoration: InputDecoration(
-                    hintText: l.search,
-                    prefixIcon: const Icon(Icons.search, size: 20),
-                    isDense: true,
+                child: Container(
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: c.surface,
+                    borderRadius: BorderRadius.circular(22),
+                    border: Border.all(color: c.border),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  child: Row(
+                    children: [
+                      Icon(Icons.search, size: 20, color: c.textSecondary),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextField(
+                          onChanged: (v) => setState(() => _query = v),
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(color: c.textPrimary),
+                          decoration: InputDecoration(
+                            hintText: l.search,
+                            hintStyle: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(color: c.textMuted),
+                            border: InputBorder.none,
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
               const SizedBox(width: 8),
-              IconButton.filledTonal(
-                tooltip: l.import,
-                onPressed: () => _showImportDialog(context),
-                icon: const Icon(Icons.download_rounded),
-              ),
-              // v0.4.3: manual node creation (pick protocol, fill fields).
-              IconButton.filledTonal(
-                tooltip: 'Add node manually',
-                onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                    builder: (_) => NodeEditorScreen(deps: widget.deps))),
-                icon: const Icon(Icons.add),
-              ),
-              IconButton.filledTonal(
-                tooltip: l.testAllNodes,
-                onPressed: () {
-                  widget.deps.scheduler
-                      .updateProfiles(widget.deps.profiles.all);
-                  widget.deps.scheduler.start();
-                  widget.deps.scheduler.enqueueSweep();
-                },
-                icon: const Icon(Icons.speed),
-              ),
+              // Compact ghost actions kept from the functional layout —
+              // import / add / test-all.
+              _GhostIconButton(
+                  icon: Icons.download_rounded,
+                  tooltip: l.import,
+                  onTap: () => _showImportDialog(context)),
+              const SizedBox(width: 6),
+              _GhostIconButton(
+                  icon: Icons.add,
+                  tooltip: 'Add node manually',
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) =>
+                          NodeEditorScreen(deps: widget.deps)))),
+              const SizedBox(width: 6),
+              _GhostIconButton(
+                  icon: Icons.speed,
+                  tooltip: l.testAllNodes,
+                  onTap: () {
+                    widget.deps.scheduler
+                        .updateProfiles(widget.deps.profiles.all);
+                    widget.deps.scheduler.start();
+                    widget.deps.scheduler.enqueueSweep();
+                  }),
             ],
           ),
         ),
+        // Pill filter chips (sheet style): selected = lightened surface +
+        // Accent text; idle = transparent + TextDim + hairline border.
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
           child: Row(
             children: [
               for (final f in const [
@@ -141,16 +189,49 @@ class _NodesScreenState extends State<NodesScreen> {
               ])
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
-                  child: ChoiceChip(
-                    label: Text(_filterLabel(l, f.$2)),
-                    selected: _filter == f.$1,
-                    onSelected: (_) => setState(() => _filter = f.$1),
+                  child: GestureDetector(
+                    onTap: () => setState(() => _filter = f.$1),
+                    child: Container(
+                      height: 32,
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 16),
+                      decoration: BoxDecoration(
+                        color: _filter == f.$1
+                            ? c.surfaceElevated
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color:
+                              _filter == f.$1 ? c.accentSoft : c.border,
+                        ),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        _filterLabel(l, f.$2),
+                        style: Theme.of(context)
+                            .textTheme
+                            .labelMedium
+                            ?.copyWith(
+                              color: _filter == f.$1
+                                  ? c.textPrimary
+                                  : c.textSecondary,
+                              fontWeight: FontWeight.w500,
+                            ),
+                      ),
+                    ),
                   ),
                 ),
               const Spacer(),
               DropdownButtonHideUnderline(
                 child: DropdownButton<String>(
                   value: _sortBy,
+                  style: Theme.of(context)
+                      .textTheme
+                      .labelMedium
+                      ?.copyWith(color: c.textSecondary),
+                  dropdownColor: c.surface,
+                  icon: Icon(Icons.expand_more,
+                      size: 18, color: c.textSecondary),
                   items: [
                     DropdownMenuItem(
                         value: 'latency', child: Text(l.sortByLatency)),
@@ -264,12 +345,21 @@ class _NodesScreenState extends State<NodesScreen> {
   /// immediately via [selectionChanged]), then the connect attempt starts.
   /// Non-runnable nodes are never silently skipped — they connect only via
   /// the explicit Connect ring (auto-pick), and the reason is shown inline.
-  Future<void> _onNodeTap(BuildContext context, ProxyProfile p) async {
+  /// v0.4.7 §user — tapping a node ONLY SELECTS it (sheet v2 behavior):
+  /// the dashboard's power button is the single connect control. Before
+  /// this, a node tap auto-connected, so the user landed on the dashboard
+  /// with the pill still reading CONNECT while the tunnel was already up —
+  /// two competing connect controls, both confusing. Selection is instant
+  /// and silent; connecting happens only via the dashboard pill.
+  void _onNodeTap(BuildContext context, ProxyProfile p) {
     final vpn = widget.deps.vpnSession;
     final runnable = !Platform.isAndroid || AndroidNodeSupport.isRunnable(p);
     if (Platform.isAndroid) {
       if (runnable) vpn.selectNode(p);
       setState(() => _selectedId = runnable ? p.id : _selectedId);
+    } else {
+      // Desktop keeps an explicit selection too — no implicit switch.
+      setState(() => _selectedId = p.id);
     }
     if (!runnable) {
       if (Platform.isAndroid && context.mounted) {
@@ -281,19 +371,11 @@ class _NodesScreenState extends State<NodesScreen> {
       }
       return;
     }
-    if (Platform.isAndroid) {
-      final ok = await vpn.connect(node: p);
-      if (!ok && context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text('Connection failed'
-                '${AndroidNodeSupport.connectErrorHint(vpn.lastError) ?? ''}')));
-      }
-      return;
-    }
-    try {
-      await widget.deps.connection.switchTo(p);
-    } on AppError catch (e) {
-      Logger.instance.error('node-tap', e.userMessage);
+    if (!Platform.isAndroid) {
+      // Desktop: selection alone never redials either — the dashboard
+      // connect/smart-connect owns the tunnel lifecycle there as well.
+      Logger.instance.info('node-tap',
+          'selected ${p.name} (id=${p.id}) — connect via dashboard');
     }
   }
 
@@ -640,13 +722,16 @@ class _NodeTile extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 8, vertical: 3),
                         decoration: BoxDecoration(
+                          // v0.4.7 §palette: engine badge = neutral hairline pill
+                          // (white ink on elevated surface) — the old purple
+                          // `info` fill broke the six-token sheet palette.
                           color: runnable
-                              ? c.info.withValues(alpha: 0.12)
+                              ? c.surfaceElevated
                               : c.warning.withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(999),
                           border: Border.all(
                             color: runnable
-                                ? c.info.withValues(alpha: 0.4)
+                                ? c.border
                                 : c.warning.withValues(alpha: 0.5),
                           ),
                         ),
@@ -654,8 +739,9 @@ class _NodeTile extends StatelessWidget {
                           badgeText,
                           style:
                               Theme.of(context).textTheme.labelSmall?.copyWith(
-                                    color: runnable ? c.info : c.warning,
+                                    color: runnable ? c.textPrimary : c.warning,
                                     fontWeight: FontWeight.w600,
+                                    letterSpacing: 0.5,
                                   ),
                         ),
                       ),
@@ -679,6 +765,113 @@ class _NodeTile extends StatelessWidget {
                   ),
                 ],
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// v0.4.7 §brand (sheet v2) — ghost icon action: 38dp round hit target,
+/// TextDim glyph, hairline border on Surface. Replaces the loud
+/// filledTonal buttons in the Nodes search row.
+class _GhostIconButton extends StatelessWidget {
+  const _GhostIconButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.transparent,
+        shape: CircleBorder(
+            side: BorderSide(color: c.border, width: 1)),
+        child: InkWell(
+          onTap: onTap,
+          customBorder: const CircleBorder(),
+          child: SizedBox(
+            width: 38,
+            height: 38,
+            child: Icon(icon, size: 19, color: c.textSecondary),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// v0.4.7 §user — the SMART SWITCH virtual-node card (mockup-neutral,
+/// sheet-styled): hairline card, auto-awesome glyph, name + one-liner.
+/// Active = white ink + elevated fill (the sheet's selected language).
+class _SmartSwitchCard extends StatelessWidget {
+  const _SmartSwitchCard({required this.active, required this.onTap});
+
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: Material(
+        color: active ? c.surfaceElevated : c.surface,
+        borderRadius: BorderRadius.circular(NexusSpacing.radiusCard),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(NexusSpacing.radiusCard),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(NexusSpacing.radiusCard),
+              border: Border.all(color: active ? c.textPrimary : c.border),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.auto_awesome,
+                    size: 20,
+                    color: active ? c.textPrimary : c.textSecondary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('SMART SWITCH',
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelLarge
+                              ?.copyWith(
+                                  color: active
+                                      ? c.textPrimary
+                                      : c.textSecondary,
+                                  letterSpacing: 2,
+                                  fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Auto-selects the best node and keeps testing — switches on its own',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(color: c.textSecondary),
+                      ),
+                    ],
+                  ),
+                ),
+                Switch(
+                  value: active,
+                  onChanged: (_) => onTap(),
+                ),
+              ],
             ),
           ),
         ),

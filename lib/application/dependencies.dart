@@ -2,6 +2,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import '../data/app_storage.dart';
+import '../core/logger.dart';
 import '../data/profile_repository.dart';
 import '../data/repositories.dart';
 import '../data/secure_vault.dart';
@@ -113,6 +114,19 @@ class AppDependencies {
       subscriptions: deps.subscriptions,
       profiles: deps.profiles,
       importer: deps.importer,
+      // v0.4.7 §user: Happ-style carried routing — a subscription URL with
+      // `?routing=<b64json>` converges its domain/CIDR rules onto the user's
+      // routing settings after a successful fetch.
+      currentRouting: () => deps.routingSettings,
+      onCarriedRouting: (next) async {
+        final problems = await deps.routingSettingsRepo.save(next);
+        if (problems.isEmpty) {
+          deps.routingSettings = next;
+          Logger.instance.info('subs',
+              'carried routing applied: ${next.proxyDomains.length} proxy · '
+              '${next.directDomains.length} direct domains');
+        }
+      },
     );
 
     // v0.4.1 §2 — the Android VPN session owns the platform-channel
@@ -128,6 +142,10 @@ class AppDependencies {
     deps.cores.tlsFragmentEnabled = deps.appSettings.tlsFragment;
     deps.cores.fragmentPreset = deps.appSettings.fragmentPreset;
     deps.connection.fragmentPreset = deps.appSettings.fragmentPreset;
+    // v0.4.7 §user: MANUAL fragment dial rides with the preset.
+    deps.cores.fragmentManualPackets = deps.appSettings.fragmentManualPackets;
+    deps.cores.fragmentManualLength = deps.appSettings.fragmentManualLength;
+    deps.cores.fragmentManualInterval = deps.appSettings.fragmentManualInterval;
     // v0.4.6 §user: per-node winners of the fragment AUTO ladder. A node
     // that already climbed starts its next connect at the proven rung.
     // Exposed on deps too — the subscriptions screen renders the per-rung

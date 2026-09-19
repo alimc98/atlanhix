@@ -204,6 +204,15 @@ class _SubCard extends StatelessWidget {
           // freshness window, gathered from the AUTO ladder's real tunnel
           // probes. Hidden until there is evidence (no fabricated 0/0 rows).
           _FragmentStatsSection(sub: sub, deps: deps),
+          // v0.4.7 §user: last-update screening summary — how many Xray-only
+          // nodes (xhttp/mKCP) and how many carry stream-shape risks.
+          // Hidden when the last update produced no findings.
+          if (sub.screenXrayOnly > 0 || sub.screenRisky > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: _ScreeningSummary(
+                  xrayOnly: sub.screenXrayOnly, risky: sub.screenRisky),
+            ),
           if (sub.lastError != null) ...[
             const SizedBox(height: 8),
             Text(
@@ -405,6 +414,45 @@ class _FragmentStatsSectionState extends State<_FragmentStatsSection> {
     } finally {
       if (mounted) setState(() => _resetting = false);
     }
+  }
+}
+
+/// v0.4.7 §user: one-line screening summary of the last subscription update
+/// — Xray-only node count (xhttp/mKCP need the Xray core) and how many
+/// carry stream-shape risks. Redaction-safe: counts only, never hosts.
+class _ScreeningSummary extends StatelessWidget {
+  const _ScreeningSummary({required this.xrayOnly, required this.risky});
+
+  final int xrayOnly;
+  final int risky;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    final l = AppLocalizations.of(context)!;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: c.surfaceSunken,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.inventory_2_outlined,
+              size: 15, color: c.textSecondary),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              l.screeningSummary(xrayOnly, risky),
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: c.textSecondary),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

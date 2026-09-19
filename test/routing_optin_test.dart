@@ -92,17 +92,17 @@ void main() {
 
       final route = cfg['route'] as Map;
       final rules = (route['rules'] as List).cast<Map>();
-      // Engine minimum only: sniff + DNS hijack.
-      expect(rules, hasLength(2));
+      // Engine minimum: sniff + DNS hijack + the ALWAYS-ON private→direct
+      // safety rule (v0.4.4 device fix: also keeps the `direct` outbound
+      // referenced so sing-box 1.14 does not reject the clean-DNS detour).
+      expect(rules, hasLength(3));
       expect(rules.any((r) => r['action'] == 'sniff'), isTrue);
       expect(rules.any((r) => r['action'] == 'hijack-dns'), isTrue);
+      expect(rules.any((r) => r['ip_is_private'] == true), isTrue);
       // No user rules of any kind.
       expect(rules.where((r) => r.containsKey('domain')), isEmpty);
       expect(rules.where((r) => r.containsKey('ip_cidr')), isEmpty);
       expect(rules.where((r) => r.containsKey('domain_suffix')), isEmpty);
-      expect(rules.where((r) => r.containsKey('ip_is_private')), isEmpty,
-          reason: 'private→direct is part of routing and must NOT be forced '
-              'when routing is off');
       // Selected node still reachable: final stays the proxy selector.
       expect(route['final'], 'proxy');
       // Android handoff (per-app lists) also empty when off.

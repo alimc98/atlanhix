@@ -647,4 +647,37 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get modeProxy => 'Proxy';
+
+  @override
+  String screeningSummary(Object risky, Object xrayOnly) {
+    return '$xrayOnly Xray-only nodes, $risky with stream warnings';
+  }
+
+  @override
+  String get clipboardAddTitle => 'Add from clipboard?';
+
+  @override
+  String clipboardAddBody(Object count) {
+    return '$count share link(s) were detected in your clipboard. Add them to Atlanhix?';
+  }
+
+  @override
+  String get clipboardAddNodes => 'Add nodes';
+
+  @override
+  String get clipboardAddSubscription => 'Add subscription';
+
+  @override
+  String get clipboardLater => 'Later';
+
+  @override
+  String get warpOfferTitle => 'Node looks filtered';
+
+  @override
+  String warpOfferBody(Object count, Object node) {
+    return '$node did not answer $count URL tests through the tunnel. Enable the WARP chain in front of it? (You can turn WARP off any time.)';
+  }
+
+  @override
+  String get warpOfferEnable => 'Chain WARP';
 }

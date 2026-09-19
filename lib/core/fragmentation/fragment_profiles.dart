@@ -70,12 +70,30 @@ class FragmentPresets {
   /// v0.4.6 §user: map the user-selected pill intensity (AppSettings.
   /// fragmentPreset) to the concrete Xray/sing-box profile. `defaultPreset`
   /// intentionally maps to the [standard] profile (id 'default').
+  /// v0.4.7 §user: `manual` maps to the user's OWN dial parameters via
+  /// [profileForManual] — the plain preset table has no entry for it.
   static FragmentProfile profileFor(FragmentPreset preset) => switch (preset) {
         FragmentPreset.conservative => conservative,
         FragmentPreset.defaultPreset => standard,
         FragmentPreset.aggressive => aggressive,
         FragmentPreset.auto => conservative, // placeholder; AUTO uses beginAutoLadder
+        FragmentPreset.manual => standard, // overwritten by manual params
       };
+
+  /// v0.4.7 §user: the MANUAL profile — the user's own packets/length/
+  /// interval strings, exactly as typed in Settings.
+  static FragmentProfile manual({
+    required String packets,
+    required String length,
+    required String interval,
+  }) =>
+      FragmentProfile(
+        id: 'manual',
+        name: 'Manual',
+        packets: packets,
+        length: length,
+        interval: interval,
+      );
 
   /// v0.4.6 §user: the AUTO ladder — safe order by [FragmentationEngine.
   /// orderedAttempts]. [depth] bounds the climb: 1 = conservative only, 2 =

@@ -35,19 +35,35 @@ object InstalledAppsSource {
         }
 
         val out = JSONArray()
-        for (app in apps.sortedBy { pm.getApplicationLabel(it).toString().lowercase() }) {
-            // Launchable user apps only (picker semantics); system services are noise.
-            if (pm.getLaunchIntentForPackage(app.packageName) == null && !app.enabled) continue
+        for (app in apps.sortedBy { safeLabel(pm, it).lowercase() }) {
+            // v0.4.7 §fix(black-screen): BOTH the label and the launch-intent
+            // probe are try-wrapped per app — one broken package (dangling
+            // APK path after a failed update/uninstall) must never abort the
+            // whole inventory scan.
+            val label = safeLabel(pm, app)
+            val launchable = try {
+                pm.getLaunchIntentForPackage(app.packageName) != null
+            } catch (_: Exception) {
+                false
+            }
+            if (!launchable && !app.enabled) continue
             val isSystem = (app.flags and ApplicationInfo.FLAG_SYSTEM) != 0
             val o = JSONObject()
                 .put("package", app.packageName)
-                .put("name", pm.getApplicationLabel(app).toString())
+                .put("name", label)
                 .put("system", isSystem)
             out.put(o)
         }
         cache = out
         fingerprint = current
         return out
+    }
+
+    /** Label that survives broken packages — falls back to the package name. */
+    private fun safeLabel(pm: PackageManager, app: ApplicationInfo): String = try {
+        pm.getApplicationLabel(app).toString()
+    } catch (_: Exception) {
+        app.packageName
     }
 
     private fun fingerprintOf(pm: PackageManager): Int = try {

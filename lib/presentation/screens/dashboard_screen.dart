@@ -9,7 +9,6 @@ import '../../domain/entities/health.dart';
 import '../../domain/entities/proxy_profile.dart';
 import '../../localization/generated/app_localizations.dart';
 import '../../theme/theme.dart';
-import '../widgets/common_widgets.dart';
 import '../widgets/speed_graph.dart';
 
 /// Main dashboard (§30): answers in 5 seconds — connected? which node?
@@ -27,13 +26,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
   ConnectionPhase _phase = ConnectionPhase.disconnected;
   ProxyProfile? _active;
   int? _latencyMs;
-  CoreKind? _core;
-  DateTime? _connectedAt;
   StreamSubscription? _sub;
   StreamSubscription? _trafficSub;
   StreamSubscription? _vpnSub;
-  final _down = List<double>.filled(60, 0);
-  final _up = List<double>.filled(60, 0);
+  // Growable rings: the 1s ticker mutates them with removeAt(0)/add —
+  // a fixed-length List.filled crashed with "Cannot remove from a
+  // fixed-length list" the moment the tunnel connected (device log
+  // 2026-09-17 20:12). Same length, same semantics, mutable.
+  final _down = List<double>.of(List<double>.filled(60, 0));
+  final _up = List<double>.of(List<double>.filled(60, 0));
   int? _lastUp; // for speed delta
   int? _lastDown;
   Timer? _clock;
@@ -48,14 +49,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    // v0.4.7 §user: tab switches UNMOUNT this screen (the shell builds
+    // `screens[_index]` directly), so every stream subscription is lost
+    // while away. Re-reading the authoritative state here restores the
+    // truth the moment the user returns — "tapped connect, switched tab,
+    // came back to DISCONNECTED" is gone.
+    if (widget.deps.vpnSession.controller.isAndroid) {
+      _phase = widget.deps.vpnSession.uiPhase;
+      _active = widget.deps.vpnSession.selectedNode;
+    } else {
+      final snap = widget.deps.connection.state;
+      _active = snap.activeProfile ?? _active;
+      _phase = snap.phase;
+    }
     _sub = widget.deps.connection.states.listen((s) {
       if (!mounted) return;
       setState(() {
         _phase = s.phase;
         _active = s.activeProfile;
         _latencyMs = s.latencyMs;
-        _core = s.core ?? s.activeProfile?.effectiveCore;
-        _connectedAt = s.connectedAt;
         if (s.phase == ConnectionPhase.disconnected) {
           // Reset the graphs on disconnect — honest empty state.
           for (var i = 0; i < 60; i++) {
@@ -145,14 +157,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return '$bps B/s';
   }
 
-  String _fmtSession(DateTime? since) {
-    if (since == null) return '—';
-    final d = DateTime.now().difference(since);
-    final h = d.inHours, m = d.inMinutes % 60, s = d.inSeconds % 60;
-    return '${h.toString().padLeft(2, '0')}:'
-        '${m.toString().padLeft(2, '0')}:'
-        '${s.toString().padLeft(2, '0')}';
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -164,8 +168,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final active = _onAndroid
         ? (widget.deps.vpnSession.selectedNode ?? _active)
         : _active;
-    final health =
-        active == null ? null : widget.deps.healthStore.statsOf(active.id);
     final connected = _phase == ConnectionPhase.connected;
     final coreInfo = active == null
         ? ''
@@ -180,6 +182,54 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // Honest error codes from the last connect attempt (node-selection).
     final lastErr = _onAndroid ? widget.deps.vpnSession.lastError : null;
 
+    // v0.4.7 §brand (sheet v2) — the dashboard IS the mockup: the moon
+    // artwork fills the hero as a fade-out backdrop, the phase word
+    // (CONNECTED / …) sits under it, the active-node card rides ON the
+    // artwork, the 3-metric stats row + hairline speed graph follow, and a
+    // NARROW full-width power pill (Disconnect mockup) closes the hero.
+    final phaseWord = switch (_phase) {
+      ConnectionPhase.connected => l.connected,
+      ConnectionPhase.connecting ||
+      ConnectionPhase.startingCore ||
+      ConnectionPhase.switching ||
+      ConnectionPhase.validating =>
+        l.connecting,
+      ConnectionPhase.error => l.connectionFailed,
+      _ => l.disconnected,
+    };
+    final busy = const [
+      ConnectionPhase.connecting,
+      ConnectionPhase.startingCore,
+      ConnectionPhase.switching,
+      ConnectionPhase.disconnecting,
+      ConnectionPhase.validating,
+    ].contains(_phase);
+    Future<void> toggle() async {
+      if (connected) {
+        if (widget.deps.vpnSession.controller.isAndroid) {
+          await widget.deps.vpnSession.disconnect();
+        } else {
+          await widget.deps.connection.disconnect();
+        }
+      } else {
+        if (widget.deps.vpnSession.controller.isAndroid) {
+          final ok = await widget.deps.vpnSession.connect();
+          if (!ok && mounted) {
+            final vpn = widget.deps.vpnSession;
+            final req = vpn.selectedNode;
+            final why = req == null
+                ? ''
+                : ' (${AndroidNodeSupport.notRunnableReason(req) ?? req.name} cannot run on this device)';
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(AndroidNodeSupport.connectErrorHint(vpn.lastError) ??
+                    'Connection failed$why')));
+          }
+        } else {
+          await widget.deps.connection.smartConnect();
+        }
+      }
+    }
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(NexusSpacing.xl),
       child: Center(
@@ -188,102 +238,116 @@ class _DashboardScreenState extends State<DashboardScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Center(
-                child: _RingWithLatencyBadge(
-                  latencyMs: _latencyMs,
-                  phase: _phase,
-                  ring: ConnectRing(
-                    phase: _phase,
-                  // v0.4.1 §2: on Android the connect path is the VPN session
-                  // (VpnService.prepare → libbox); desktop keeps smartConnect.
-                  onToggle: () async {
-                    if (connected) {
-                      if (widget.deps.vpnSession.controller.isAndroid) {
-                        await widget.deps.vpnSession.disconnect();
-                      } else {
-                        await widget.deps.connection.disconnect();
-                      }
-                    } else {
-                      if (widget.deps.vpnSession.controller.isAndroid) {
-                        final ok = await widget.deps.vpnSession.connect();
-                        if (!ok && mounted) {
-                          final vpn = widget.deps.vpnSession;
-                          final req = vpn.selectedNode;
-                          final why = req == null
-                              ? ''
-                              : ' (${AndroidNodeSupport.notRunnableReason(req) ?? req.name} cannot run on this device)';
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                              content: Text(AndroidNodeSupport
-                                      .connectErrorHint(vpn.lastError) ??
-                                  'Connection failed$why')));
-                        }
-                      } else {
-                        await widget.deps.connection.smartConnect();
-                      }
-                    }
-                  },
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-              Text(
-                switch (_phase) {
-                  ConnectionPhase.connected => l.connected,
-                  ConnectionPhase.connecting ||
-                  ConnectionPhase.startingCore ||
-                  ConnectionPhase.switching ||
-                  ConnectionPhase.validating =>
-                    l.connecting,
-                  ConnectionPhase.error => l.connectionFailed,
-                  _ => l.disconnected,
-                },
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.displayLarge?.copyWith(
-                      color: connected ? c.success : c.textPrimary,
+              // ── HERO: moon artwork + phase word + active-node card ──
+              SizedBox(
+                height: 380,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // Moon backdrop, faded into the page at the bottom.
+                    ShaderMask(
+                      shaderCallback: (r) => const LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Color(0xFFFFFFFF),
+                          Color(0xFFFFFFFF),
+                          Color(0x00FFFFFF),
+                        ],
+                        stops: [0.0, 0.62, 1.0],
+                      ).createShader(r),
+                      blendMode: BlendMode.dstIn,
+                      child: Image.asset(
+                        'assets/brand/moon_hero.png',
+                        fit: BoxFit.cover,
+                        alignment: Alignment.topCenter,
+                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                      ),
                     ),
-              ),
-              if (_active != null) ...[
-                const SizedBox(height: 6),
-                Text(coreInfo,
-                    textAlign: TextAlign.center,
-                    style: Theme.of(context)
-                        .textTheme
-                        .bodyMedium
-                        ?.copyWith(color: c.textSecondary)),
-              ],
-              if (activeCoreLabel != null) ...[
-                const SizedBox(height: 10),
-                // Per-connection core indicator — the core that WILL run (or
-                // is running) this node on Android, from real session state.
-                Tooltip(
-                  message: 'Core that runs this node on Android',
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: c.surface,
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: c.border),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
+                    // Foreground: phase word + node card pinned to the bottom.
+                    Column(
+                      mainAxisAlignment: MainAxisAlignment.end,
                       children: [
-                        Icon(Icons.memory, size: 14, color: c.info),
-                        const SizedBox(width: 6),
                         Text(
-                          activeCoreLabel,
+                          phaseWord,
+                          textAlign: TextAlign.center,
                           style: Theme.of(context)
                               .textTheme
-                              .labelMedium
+                              .labelLarge
                               ?.copyWith(
-                                  color: c.textSecondary,
-                                  fontWeight: FontWeight.w600),
+                                color:
+                                    connected ? c.success : c.textSecondary,
+                                letterSpacing: 5,
+                                fontWeight: FontWeight.w600,
+                              ),
                         ),
+                        const SizedBox(height: 10),
+                        // ACTIVE NODE CARD (mockup center panel): hairline
+                        // rounded row — node name left, latency right.
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 14),
+                          decoration: BoxDecoration(
+                            color: c.surface.withValues(alpha: 0.86),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: c.border),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.shield_outlined,
+                                  size: 16,
+                                  color:
+                                      connected ? c.success : c.textMuted),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  active?.name ??
+                                      (lastErr != null
+                                          ? lastErr.toString()
+                                          : l.tapToConnect),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodyMedium
+                                      ?.copyWith(color: c.textPrimary),
+                                ),
+                              ),
+                              Text(
+                                _latencyMs == null ? '—' : '$_latencyMs ms',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .labelMedium
+                                    ?.copyWith(
+                                      color: (_latencyMs ?? 999) < 300
+                                          ? c.success
+                                          : c.warning,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (coreInfo.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            activeCoreLabel != null
+                                ? '$coreInfo · $activeCoreLabel'
+                                : coreInfo,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(color: c.textMuted),
+                          ),
+                        ],
                       ],
                     ),
-                  ),
+                  ],
                 ),
-              ],
+              ),
               if (lastErr != null && active != null &&
                   AndroidNodeSupport.notRunnableReason(active) != null) ...[
                 const SizedBox(height: 10),
@@ -307,130 +371,50 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ],
                 ),
               ],
-              const SizedBox(height: 28),
+              const SizedBox(height: 18),
+              // ── STATS ROW (mockup: GB/s · ms · uptime tiles) ──
               Row(
                 children: [
                   Expanded(
-                    child: MetricTile(
+                    child: _HeroStat(
                         label: l.downloadSpeed,
                         value: _fmtSpeed(_down.last),
-                        color: c.info),
+                        icon: Icons.south_rounded),
                   ),
-                  const SizedBox(width: 24),
+                  const SizedBox(width: 12),
                   Expanded(
-                    child: MetricTile(
+                    child: _HeroStat(
                         label: l.uploadSpeed,
                         value: _fmtSpeed(_up.last),
-                        color: c.success),
+                        icon: Icons.north_rounded),
                   ),
-                  const SizedBox(width: 24),
+                  const SizedBox(width: 12),
                   Expanded(
-                    child: MetricTile(
-                      label: l.latency,
-                      value: _latencyMs == null
-                          ? '—'
-                          : '$_latencyMs ms',
-                      color: (_latencyMs ?? 999) < 300 ? c.success : c.warning,
-                    ),
+                    child: _HeroStat(
+                        label: l.latency,
+                        value: _latencyMs == null ? '—' : '$_latencyMs ms',
+                        icon: Icons.bolt_rounded),
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
-              Text(
-                '${l.session}: ${_fmtSession(_connectedAt)} · '
-                '↑${_fmtSpeed(_up.last)} · ↓${_fmtSpeed(_down.last)}',
-                textAlign: TextAlign.center,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: c.textMuted),
-              ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               ClipRRect(
                 borderRadius: BorderRadius.circular(NexusSpacing.radiusCard),
                 child: SpeedGraph(downSamples: _down, upSamples: _up),
               ),
+              const SizedBox(height: 18),
+              // ── NARROW POWER PILL (mockup bottom bar) — full width,
+              // hairline ring + power glyph + LIVE localized label. ──
+              _PowerPill(
+                connected: connected,
+                busy: busy,
+                label: connected ? l.disconnect : l.connect,
+                onToggle: toggle,
+              ),
               const SizedBox(height: 20),
-              // v0.4.4 mockup: QUICK SETTINGS — user pills. Iran Apps /
-              // Ads / Proxy Mode / TLS Fragment. Every pill is an explicit
-              // opt-in toggle (never silently preset); changes persist via
-              // the settings repo and take effect on the next connect.
-              _sectionCard(
-                context,
-                title: l.quickSettings,
-                child: _QuickPills(settings: widget.deps.appSettingsRepo),
-              ),
-              const SizedBox(height: 16),
-              _sectionCard(
-                context,
-                title: l.currentNode,
-                child: active == null
-                    ? _emptyNode(context, l)
-                    : Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(active.name,
-                                    style:
-                                        Theme.of(context).textTheme.titleMedium),
-                              ),
-                              StatusDot(
-                                color: _healthColor(health?.state, c),
-                                label: _healthLabel(health?.state, l),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              Chip(label: Text(active.protocol.name)),
-                              Chip(
-                                  label: Text(_onAndroid
-                                      ? AndroidNodeSupport.androidCoreLabel(
-                                          active)
-                                      : widget.deps.detector
-                                          .resolve(active)
-                                          .core
-                                          .name)),
-                              if (active.security != Security.none)
-                                Chip(label: Text(active.security.name)),
-                              if (active.transport != Transport.none)
-                                Chip(label: Text(active.transport.name)),
-                            ],
-                          ),
-                        ],
-                      ),
-              ),
-              const SizedBox(height: 16),
-              _sectionCard(
-                context,
-                title: l.quickActions,
-                child: Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    OutlinedButton.icon(
-                      onPressed: () => widget.deps.connection.smartConnect(),
-                      icon: const Icon(Icons.auto_awesome, size: 18),
-                      label: Text(l.autoSelect),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        widget.deps.scheduler
-                            .updateProfiles(widget.deps.profiles.all);
-                        widget.deps.scheduler.start();
-                        widget.deps.scheduler.enqueueSweep();
-                      },
-                      icon: const Icon(Icons.speed, size: 18),
-                      label: Text(l.testAllNodes),
-                    ),
-                  ],
-                ),
-              ),
+              // v0.4.7 §user: QUICK SETTINGS stays, but the CURRENT NODE card
+              // and QUICK ACTIONS row are gone — node identity now lives in
+              // the Nodes tab, and the power pill above is the single CTA.
               const SizedBox(height: 16),
               // v0.4.4 mockup: RECOMMENDED NODES — top 3 by measured
               // latency (never made up); tap selects AND connects.
@@ -443,6 +427,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         : null)),
               ),
               const SizedBox(height: 32),
+              // v0.4.7 §brand (sheet v2): the FAST / SECURE / FREEDOM brand
+              // card closes the dashboard — pure artwork from the sheet,
+              // hairline-rounded like the other cards.
+              ClipRRect(
+                borderRadius: BorderRadius.circular(NexusSpacing.radiusCard),
+                child: Image.asset(
+                  'assets/brand/brand_card.png',
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                ),
+              ),
             ],
           ),
         ),
@@ -473,185 +468,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
   }
-
-  Widget _emptyNode(BuildContext context, AppLocalizations l) {
-    final c = ThemeExt.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 20),
-      child: Center(
-        child: Column(
-          children: [
-            Icon(Icons.travel_explore, size: 40, color: c.textMuted),
-            const SizedBox(height: 8),
-            Text(l.noNodeSelected,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: c.textSecondary)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Color _healthColor(NodeHealth? s, ThemeExt c) => switch (s) {
-        NodeHealth.healthy => c.success,
-        NodeHealth.degraded => c.warning,
-        NodeHealth.checking => c.info,
-        NodeHealth.timeout ||
-        NodeHealth.offline ||
-        NodeHealth.blocked ||
-        NodeHealth.coreError ||
-        NodeHealth.configError =>
-          c.error,
-        _ => c.textMuted,
-      };
-
-  String _healthLabel(NodeHealth? s, AppLocalizations l) => switch (s) {
-        NodeHealth.healthy => l.healthHealthy,
-        NodeHealth.degraded => l.healthDegraded,
-        NodeHealth.checking => l.healthChecking,
-        NodeHealth.timeout => l.healthTimeout,
-        NodeHealth.offline => l.healthOffline,
-        NodeHealth.blocked => l.healthBlocked,
-        NodeHealth.coreError => l.healthCoreError,
-        NodeHealth.configError => l.healthConfigError,
-        _ => l.healthUnknown,
-      };
 }
 
-/// v0.4.4 mockup: latency pill riding the top edge of the connect ring.
-class _RingWithLatencyBadge extends StatelessWidget {
-  const _RingWithLatencyBadge(
-      {required this.latencyMs, required this.phase, required this.ring});
-
-  final int? latencyMs;
-  final ConnectionPhase phase;
-  final Widget ring;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = ThemeExt.of(context);
-    final connected = phase == ConnectionPhase.connected;
-    final label = latencyMs == null
-        ? (connected ? '— ms' : '0 ms')
-        : '$latencyMs ms';
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        ring,
-        Positioned(
-          top: 6,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-            decoration: BoxDecoration(
-              color: c.surfaceElevated,
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: c.border),
-            ),
-            child: Text(
-              label,
-              style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: (latencyMs ?? 999) < 300 ? c.success : c.textSecondary,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.5),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// v0.4.4 mockup widgets
-// ---------------------------------------------------------------------------
-
-/// QUICK SETTINGS pills (mockup center panel): Iran Apps · Ads · Proxy Mode ·
-/// TLS Fragment. Rounded full pills, purple when active, hairline when off.
-class _QuickPills extends StatelessWidget {
-  const _QuickPills({required this.settings});
-
-  final AppSettingsRepository settings;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = ThemeExt.of(context);
-    final l = AppLocalizations.of(context)!;
-    final s = settings.current;
-    final isAndroid = defaultTargetPlatform == TargetPlatform.android;
-    return Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: [
-        _pill(context, l.pillIranApps, s.iranAppsDirect,
-            () => settings.save(settings.current..iranAppsDirect = !s.iranAppsDirect),
-            tooltip: 'Iranian domains & apps bypass the tunnel (opt-in)'),
-        _pill(context, l.pillAds, s.adsBlock,
-            () => settings.save(settings.current..adsBlock = !s.adsBlock),
-            tooltip: 'Block ad domains through the tunnel (opt-in)'),
-        _pill(context, l.pillProxyMode, s.proxyMode,
-            () => settings.save(settings.current..proxyMode = !s.proxyMode),
-            tooltip: isAndroid
-                ? 'Proxy: system http_proxy instead of full TUN (Android, next connect)'
-                : 'Proxy mode is Android-only',
-            enabled: isAndroid),
-        _pill(context, l.pillTlsFragment, s.tlsFragment,
-            () => settings.save(settings.current..tlsFragment = !s.tlsFragment),
-            tooltip: s.fragmentPreset == FragmentPreset.auto
-                ? 'Fragment AUTO: safe→strong on failure, remembers the winner (next connect)'
-                : 'Fragment the TLS handshake (sing-box tls.fragment, next connect)'),
-      ],
-    );
-  }
-
-  Widget _pill(BuildContext context, String label, bool on, VoidCallback onTap,
-      {String? tooltip, bool enabled = true}) {
-    final c = ThemeExt.of(context);
-    final usable = enabled ? on : false;
-    final pill = Opacity(
-      opacity: enabled ? 1 : 0.45,
-      child: Material(
-        color: usable ? c.accent.withValues(alpha: 0.18) : c.surfaceSunken,
-        borderRadius: BorderRadius.circular(999),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(999),
-          onTap: enabled ? onTap : null,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(
-                color: usable ? c.accent : c.border,
-                width: usable ? 1.4 : 1,
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  on && enabled ? Icons.check_circle : Icons.radio_button_unchecked,
-                  size: 15,
-                  color: on && enabled ? c.accent : c.textMuted,
-                ),
-                const SizedBox(width: 7),
-                Text(label,
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        color: on && enabled ? c.accent : c.textSecondary,
-                        fontWeight: FontWeight.w600)),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-    return tooltip == null ? pill : Tooltip(message: tooltip, child: pill);
-  }
-}
-
-/// RECOMMENDED NODES rows (mockup): green shield mark + name + "tap to
-/// connect", right side CONNECTED badge (purple) / latency pill. Ranked by
-/// REAL measured latency only — nodes never probed sort last.
+/// RECOMMENDED NODES rows: REAL measured latency only — nodes never
+/// probed sort last. (v0.4.7 §user: the old QUICK SETTINGS pills and
+/// their doc comment were removed with the section itself.)
 class _RecommendedNodes extends StatelessWidget {
   const _RecommendedNodes(
       {required this.deps, required this.phase, this.selectedId});
@@ -797,6 +618,142 @@ class _RecommendedNodes extends StatelessWidget {
                           ?.copyWith(color: latColor)),
                 ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// v0.4.7 §brand (sheet v2) — one of the three hero stat tiles
+/// (Download GB/s · ms · uptime): hairline rounded tile, small muted icon
+/// + label over a large value, exactly like the mockup's stat cards.
+class _HeroStat extends StatelessWidget {
+  const _HeroStat(
+      {required this.label, required this.value, required this.icon});
+
+  final String label;
+  final String value;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: c.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: c.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 13, color: c.textMuted),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: c.textSecondary,
+                        letterSpacing: 0.3,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  color: c.textPrimary,
+                  fontWeight: FontWeight.w600,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// v0.4.7 §brand (sheet v2) — the narrow full-width power pill that closes
+/// the dashboard hero (the mockup's "⏻ DISCONNECT" bar): hairline ring on
+/// dark surface, power glyph left, LIVE localized label tracked out. The
+/// whole bar is the tap target; busy swaps the glyph for a spinner.
+class _PowerPill extends StatelessWidget {
+  const _PowerPill({
+    required this.connected,
+    required this.busy,
+    required this.label,
+    required this.onToggle,
+  });
+
+  final bool connected;
+  final bool busy;
+  final String label;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    return Semantics(
+      button: true,
+      label: label,
+      child: Material(
+        color: c.surface,
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          onTap: busy ? null : onToggle,
+          borderRadius: BorderRadius.circular(999),
+          child: Container(
+            height: 58,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(
+                color: connected
+                    ? c.success
+                    : Colors.white.withValues(alpha: 0.15),
+                width: connected ? 1.4 : 1,
+              ),
+              boxShadow: connected
+                  ? [
+                      BoxShadow(
+                        color: c.success.withValues(alpha: 0.18),
+                        blurRadius: 18,
+                        spreadRadius: 1,
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (busy)
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2.2),
+                  )
+                else
+                  Icon(Icons.power_settings_new_rounded,
+                      size: 20, color: connected ? c.success : c.textPrimary),
+                const SizedBox(width: 12),
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: connected ? c.success : c.textPrimary,
+                        letterSpacing: 5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ],
+            ),
           ),
         ),
       ),

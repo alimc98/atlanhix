@@ -86,6 +86,14 @@ class SingBoxConfigGenerator {
     ProxyProfile? warpProfile,
     bool chainWarpOutside = true,
     String? selectedWarpTag,
+
+    /// v0.4.7 §loop-fix: server/resolver IPs the :xray CHILD process dials
+    /// directly. Emitted as `ip_cidr → direct` route rules so the child's
+    /// sockets (which cannot call VpnService.protect) escape the TUN through
+    /// the front engine's protected dialer instead of looping into its own
+    /// SOCKS listener (`software caused connection abort`, Mi 9T 2026-09-17).
+    /// Empty on desktop and for native sing-box nodes — no behavior change.
+    List<String> bypassCidrs = const [],
   }) {
     // v0.4.4: the TLS-fragment pill flows in via options — rebuild the
     // builders with it (stateless, deterministic).
@@ -96,18 +104,31 @@ class SingBoxConfigGenerator {
     final endpoints = <Map<String, dynamic>>[];
     final tags = <String>[];
 
-    // Materialize the WARP endpoint first if chaining is enabled.
+    // Materialize the WARP endpoint first when a WARP profile is present.
     //
-    // Two directions:
-    //  * chainWarpOutside=true  — the NODE dials through WARP (`detour: warp`
-    //    on the node outbound): WARP is the outer tunnel.
-    //  * selectedWarpTag != null — the v0.4.3 user-requested chain
-    //    "config → WARP → Cloudflare IP": the node connects DIRECT and the
-    //    WARP endpoint itself detours through it, so WARP is the LAST hop and
-    //    the observed exit IP is Cloudflare's. The selector then defaults to
-    //    the warp endpoint tag (route final = proxy = warp = node = internet).
+    // Three topologies (v0.4.8 §user — the two explicit chain directions
+    // the user described + the selector-member default):
+    //
+    //  * `warpFirst` (warpOutside) — the NODE dials through WARP
+    //    (`detour: warp` on the node outbound): traffic flows
+    //    app → node → WARP → internet. For nodes whose SERVER IP/SPN is
+    //    blocked so the node handshake itself needs an exit outside the
+    //    censor... more precisely per the user: WARP FIRST, then the
+    //    (filtered) config — app → WARP → node → internet. Implemented as
+    //    the WARP endpoint detouring through the node? NO — detour is a
+    //    DIAL path: node `detour: warp` = node's socket is dialed FROM
+    //    inside the WARP tunnel = app → WARP → node → internet. WARP is
+    //    the first hop the user asked for.
+    //
+    //  * `selectedWarpTag != null` (warpLast) — the node connects DIRECT
+    //    and the WARP endpoint itself detours through it: app → node →
+    //    WARP → internet. The sanctions-evasion shape: the observed exit
+    //    IP is Cloudflare's.
+    //
+    //  * neither flag — WARP is a plain selector MEMBER (manual switch).
     var warpTag = '';
     final warpAsLastHop = selectedWarpTag != null;
+    final warpFirst = warpProfile != null && !warpAsLastHop && chainWarpOutside;
     if (warpProfile != null) {
       warpTag = 'warp';
       final firstNodeTag = runnableProfiles.isEmpty
@@ -122,13 +143,10 @@ class SingBoxConfigGenerator {
     for (final p in runnableProfiles) {
       final tag = 'node:${p.id}';
       final o = builders.singBoxOutbound(p, tag: tag,
-          // Chained: the node's outbound dials through WARP (WARP outside).
-          // Not when WARP is the LAST hop — then the plain node is the detour.
-          detourTag: warpProfile != null &&
-                  chainWarpOutside &&
-                  !warpAsLastHop
-              ? warpTag
-              : null);
+          // warpFirst: the node's own socket is dialed through the WARP
+          // tunnel — app → WARP → node → internet (WARP masks the node
+          // handshake from the censor; see topology comment above).
+          detourTag: warpFirst ? warpTag : null);
       if (o != null) {
         outbounds.add(o);
         tags.add(tag);
@@ -148,19 +166,20 @@ class SingBoxConfigGenerator {
           'server': up.host,
           'server_port': up.port,
           'version': '5',
-          if (warpProfile != null &&
-                  chainWarpOutside &&
-                  !warpAsLastHop)
-            'detour': warpTag,
+          if (warpFirst) 'detour': warpTag,
         });
         tags.add(tag);
       }
     }
 
-    // Last-hop chain: the warp endpoint joins the selector and wins by
-    // default, so every session flows node → WARP → internet (Cloudflare IP).
-    final members = [...tags, if (warpAsLastHop && warpTag.isNotEmpty) warpTag];
-    final defaultTag = warpAsLastHop && warpTag.isNotEmpty && members.contains(warpTag)
+    // Selector: node tags + the WARP tag when a WARP profile exists. In the
+    // warpLast (sanctions-evasion) shape the warp endpoint is the DEFAULT —
+    // every session flows node → WARP → internet (Cloudflare exit IP). In
+    // the warpFirst shape the selected NODE is the default (its detour is
+    // what creates the WARP-first hop; selecting "warp" bare would bypass
+    // the node entirely and give a plain WARP session).
+    final members = [...tags, if (warpProfile != null) warpTag];
+    final defaultTag = warpAsLastHop && members.contains(warpTag)
         ? warpTag
         : (tags.contains(selectedTag) ? selectedTag : (tags.firstOrNull ?? 'direct'));
     outbounds.add({
@@ -251,6 +270,16 @@ class SingBoxConfigGenerator {
             'ip_is_private': true,
             'outbound': 'direct',
           },
+          // v0.4.7 §loop-fix — BEFORE the proxy final: the child :xray
+          // process has no protect hook; its server/resolver dials ride
+          // this direct rule to the front's protected socket. Order matters:
+          // these must never be shadowed by a user rule or the final.
+          for (final cidr in bypassCidrs)
+            {
+              'action': 'route',
+              'ip_cidr': [cidr],
+              'outbound': 'direct',
+            },
           ..._compiler.singBoxRules(routing),
         ],
         'final': 'proxy',
