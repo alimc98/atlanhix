@@ -236,15 +236,30 @@ class OutboundBuilders {
 
   /// sing-box `endpoints` entry for WireGuard (native profiles + WARP).
   ///
-  /// v0.4.8 §user: an [AmneziaWG 3.1] profile emits its Jc/Jmin/Jmax/S1/S2
-  /// header remap fields into the endpoint — the peer speaks the masked
-  /// handshake (junk packets + custom message types). Without these the
-  /// AWG-masked WARP peer silently drops every handshake.
+  /// v0.4.8 §user: an AmneziaWG 3.x profile emits its FULL obfuscation set
+  /// into the endpoint — junk (jc/jmin/jmax), paddings (s1..s4), header
+  /// remap (h1..h4, single value OR "N-M" range string), signature/decoy
+  /// packets (i1..i5, the tag DSL `<b 0x..>` / `<r n>` / `<rd n>` / `<rc n>`
+  /// / `<t>`), AWG-3.x header protection key (hpk) and content padding
+  /// addition. These fields are executed by the forked libbox (see
+  /// docs/android/V0.4.8_AMNEZIAWG_LIBBOX.md); upstream sing-box silently
+  /// STRIPS unknown fields, which is the honest current state of the stock
+  /// AAR. Plain (non-AWG) profiles stay byte-identical.
   Map<String, dynamic>? singBoxWireguardEndpoint(ProxyProfile p,
       {required String tag, String? detourTag}) {
     final wg = p.wireguard;
     if (wg == null) return null;
     final amnezia = p.amnezia;
+
+    /// h1..h4 accept a single number or an "N-M" range — emit int or String
+    /// accordingly so the engine's schema (json.Number-ish) validates.
+    dynamic headerValue(String? v) {
+      if (v == null) return null;
+      final t = v.trim();
+      if (t.isEmpty) return null;
+      return int.tryParse(t) ?? t;
+    }
+
     return {
       'type': 'wireguard',
       'tag': tag,
@@ -266,17 +281,31 @@ class OutboundBuilders {
             'reserved': wg.reserved,
         }
       ],
-      // v0.4.8 §user: AmneziaWG 3.1 obfuscation — emitted only when the
-      // profile actually carries params (plain WARP stays byte-identical).
+      // AmneziaWG 2.0/3.x obfuscation set (executed by with_awg forks).
       if (amnezia != null && amnezia.jc != null) 'jc': amnezia.jc,
       if (amnezia != null && amnezia.jmin != null) 'jmin': amnezia.jmin,
       if (amnezia != null && amnezia.jmax != null) 'jmax': amnezia.jmax,
       if (amnezia != null && amnezia.s1 != null) 's1': amnezia.s1,
       if (amnezia != null && amnezia.s2 != null) 's2': amnezia.s2,
-      if (amnezia != null && amnezia.h1 != null) 'h1': amnezia.h1,
-      if (amnezia != null && amnezia.h2 != null) 'h2': amnezia.h2,
-      if (amnezia != null && amnezia.h3 != null) 'h3': amnezia.h3,
-      if (amnezia != null && amnezia.h4 != null) 'h4': amnezia.h4,
+      if (amnezia != null && amnezia.s3 != null) 's3': amnezia.s3,
+      if (amnezia != null && amnezia.s4 != null) 's4': amnezia.s4,
+      if (amnezia != null) 'h1': headerValue(amnezia.h1),
+      if (amnezia != null) 'h2': headerValue(amnezia.h2),
+      if (amnezia != null) 'h3': headerValue(amnezia.h3),
+      if (amnezia != null) 'h4': headerValue(amnezia.h4),
+      if (amnezia != null && amnezia.i1 != null) 'i1': amnezia.i1,
+      if (amnezia != null && amnezia.i2 != null) 'i2': amnezia.i2,
+      if (amnezia != null && amnezia.i3 != null) 'i3': amnezia.i3,
+      if (amnezia != null && amnezia.i4 != null) 'i4': amnezia.i4,
+      if (amnezia != null && amnezia.i5 != null) 'i5': amnezia.i5,
+      if (amnezia != null &&
+          amnezia.headerProtectionKey != null &&
+          amnezia.headerProtectionKey!.isNotEmpty)
+        'hpk': amnezia.headerProtectionKey,
+      if (amnezia != null &&
+          amnezia.contentPaddingAddition != null &&
+          amnezia.contentPaddingAddition!.isNotEmpty)
+        'padding': amnezia.contentPaddingAddition,
       if (detourTag != null) 'detour': detourTag,
     };
   }

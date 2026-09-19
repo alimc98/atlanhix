@@ -55,8 +55,12 @@ class _WarpChainCardState extends State<WarpChainCard> {
   }
 
   /// The AWG params sheet — manual entry per the user's request: values
-  /// from warp-generator.vercel.app paste straight in. Save → persisted on
-  /// the account → the next connect's WARP endpoint carries them.
+  /// from warp-generator.vercel.app (AWG-2) or any AWG-3.1 generator paste
+  /// straight in. Save → persisted on the account → the next connect's
+  /// WARP endpoint carries them. The full 3.x surface is exposed:
+  /// junk (Jc/Jmin/Jmax), paddings (S1..S4), header remap (H1..H4, single
+  /// value or N-M range), decoy packets (I1..I5 tag DSL) and the 3.x-only
+  /// header-protection key (Hpk).
   Future<void> _editAwgParams() async {
     final a = widget.deps.warpRepo.account;
     if (a == null) return;
@@ -65,27 +69,39 @@ class _WarpChainCardState extends State<WarpChainCard> {
     final jmax = TextEditingController(text: a.awgJmax?.toString() ?? '');
     final s1 = TextEditingController(text: a.awgS1?.toString() ?? '');
     final s2 = TextEditingController(text: a.awgS2?.toString() ?? '');
-    final h1 = TextEditingController(text: a.awgH1?.toString() ?? '');
-    final h2 = TextEditingController(text: a.awgH2?.toString() ?? '');
-    final h3 = TextEditingController(text: a.awgH3?.toString() ?? '');
-    final h4 = TextEditingController(text: a.awgH4?.toString() ?? '');
+    final s3 = TextEditingController(text: a.awgS3?.toString() ?? '');
+    final s4 = TextEditingController(text: a.awgS4?.toString() ?? '');
+    final h1 = TextEditingController(text: a.awgH1 ?? '');
+    final h2 = TextEditingController(text: a.awgH2 ?? '');
+    final h3 = TextEditingController(text: a.awgH3 ?? '');
+    final h4 = TextEditingController(text: a.awgH4 ?? '');
+    final i1 = TextEditingController(text: a.awgI1 ?? '');
+    final i2 = TextEditingController(text: a.awgI2 ?? '');
+    final i3 = TextEditingController(text: a.awgI3 ?? '');
+    final i4 = TextEditingController(text: a.awgI4 ?? '');
+    final i5 = TextEditingController(text: a.awgI5 ?? '');
+    final hpk = TextEditingController(text: a.awgHpk ?? '');
 
     int? p(TextEditingController c) => int.tryParse(c.text.trim());
+    String? s(TextEditingController c) {
+      final t = c.text.trim();
+      return t.isEmpty ? null : t;
+    }
 
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: Theme.of(ctx).colorScheme.surface,
-        title: Text(_fa ? 'پارامترهای AmneziaWG 3.1'
-            : 'AmneziaWG 3.1 parameters'),
+        title: Text(_fa ? 'پارامترهای AmneziaWG 3.x'
+            : 'AmneziaWG 3.x parameters'),
         content: SingleChildScrollView(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Padding(
               padding: const EdgeInsets.only(bottom: 10),
               child: Text(
                 _fa
-                    ? 'مقادیر تولیدشده (مثل warp-generator) را وارد کنید؛ خالی = وارپ ساده.'
-                    : 'Paste the generated values (warp-generator style); empty = plain WARP.',
+                    ? 'مقادیر تولیدشده را وارد کنید؛ خالی = وارپ ساده. H می‌تواند عدد یا بازه‌ی N-M باشد؛ Iها بسته‌های فریب‌اند (اختیاری).'
+                    : 'Paste the generated values; empty = plain WARP. H accepts a number or an N-M range; I are decoy packets (optional).',
                 style: Theme.of(ctx)
                     .textTheme
                     .bodySmall
@@ -94,14 +110,20 @@ class _WarpChainCardState extends State<WarpChainCard> {
             ),
             for (final e in <String, TextEditingController>{
               'Jc': jc, 'Jmin': jmin, 'Jmax': jmax,
-              'S1': s1, 'S2': s2,
+              'S1': s1, 'S2': s2, 'S3': s3, 'S4': s4,
               'H1': h1, 'H2': h2, 'H3': h3, 'H4': h4,
+              'I1': i1, 'I2': i2, 'I3': i3, 'I4': i4, 'I5': i5,
+              'Hpk': hpk,
             }.entries)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 4),
                 child: TextField(
                   controller: e.value,
-                  keyboardType: TextInputType.number,
+                  // H ranges, I tag-DSL strings and the Hpk key are not
+                  // numeric-only inputs.
+                  keyboardType: e.key.startsWith('H') && e.key != 'Hpk'
+                      ? TextInputType.text
+                      : TextInputType.text,
                   decoration: InputDecoration(
                     labelText: e.key,
                     isDense: true,
@@ -122,16 +144,27 @@ class _WarpChainCardState extends State<WarpChainCard> {
       ),
     );
     if (ok != true || !mounted) return;
-    final updated = _WarpAccountPatch(
-      jc: p(jc), jmin: p(jmin), jmax: p(jmax),
-      s1: p(s1), s2: p(s2),
-      h1: p(h1), h2: p(h2), h3: p(h3), h4: p(h4),
+    // Persist through the repository's copy-with-secrets save (secrets
+    // never round-trip through the dialog; we only patch the AWG params).
+    await widget.deps.warpRepo.saveWithAwgParams(
+      jc: p(jc),
+      jmin: p(jmin),
+      jmax: p(jmax),
+      s1: p(s1),
+      s2: p(s2),
+      s3: p(s3),
+      s4: p(s4),
+      h1: s(h1),
+      h2: s(h2),
+      h3: s(h3),
+      h4: s(h4),
+      i1: s(i1),
+      i2: s(i2),
+      i3: s(i3),
+      i4: s(i4),
+      i5: s(i5),
+      hpk: s(hpk),
     );
-    // Persist through the repository's copy-with-secrets save (secrets never
-    // round-trip through the dialog; we only patch the numeric params).
-    await widget.deps.warpRepo.saveWithAwgParams(updated.jc, updated.jmin,
-        updated.jmax, updated.s1, updated.s2, updated.h1, updated.h2,
-        updated.h3, updated.h4);
     if (!mounted) return;
     setState(() {});
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -304,20 +337,4 @@ class _WarpChainCardState extends State<WarpChainCard> {
       ),
     );
   }
-}
-
-/// Dialog payload (numeric AWG params only).
-class _WarpAccountPatch {
-  const _WarpAccountPatch({
-    this.jc,
-    this.jmin,
-    this.jmax,
-    this.s1,
-    this.s2,
-    this.h1,
-    this.h2,
-    this.h3,
-    this.h4,
-  });
-  final int? jc, jmin, jmax, s1, s2, h1, h2, h3, h4;
 }

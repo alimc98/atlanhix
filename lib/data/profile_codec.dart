@@ -104,10 +104,28 @@ Future<ProxyProfile> _profileFromStorable(
             jmax: j['amnezia']['jmax'] as int?,
             s1: j['amnezia']['s1'] as int?,
             s2: j['amnezia']['s2'] as int?,
-            h1: j['amnezia']['h1'] as int?,
-            h2: j['amnezia']['h2'] as int?,
-            h3: j['amnezia']['h3'] as int?,
-            h4: j['amnezia']['h4'] as int?,
+            s3: j['amnezia']['s3'] as int?,
+            s4: j['amnezia']['s4'] as int?,
+            h1: (j['amnezia']['h1'] as String?)?.trim().isEmpty == true
+                ? null
+                : j['amnezia']['h1'] as String?,
+            h2: (j['amnezia']['h2'] as String?)?.trim().isEmpty == true
+                ? null
+                : j['amnezia']['h2'] as String?,
+            h3: (j['amnezia']['h3'] as String?)?.trim().isEmpty == true
+                ? null
+                : j['amnezia']['h3'] as String?,
+            h4: (j['amnezia']['h4'] as String?)?.trim().isEmpty == true
+                ? null
+                : j['amnezia']['h4'] as String?,
+            i1: j['amnezia']['i1'] as String?,
+            i2: j['amnezia']['i2'] as String?,
+            i3: j['amnezia']['i3'] as String?,
+            i4: j['amnezia']['i4'] as String?,
+            i5: j['amnezia']['i5'] as String?,
+            headerProtectionKey: j['amnezia']['hpk'] as String?,
+            contentPaddingAddition:
+                j['amnezia']['padding'] as String?,
           ),
     rawParams: ((j['rawParams'] ?? const {}) as Map).cast<String, String>(),
     rawConfig: await secret((j['raw']?['secret']) as String?) ??

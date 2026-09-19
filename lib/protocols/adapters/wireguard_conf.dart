@@ -29,7 +29,12 @@ class WireGuardConfParser {
       if (section == 'interface') {
         const known = {
           'privatekey', 'address', 'dns', 'mtu', 'listenport', 'fwmark',
-          'jc', 'jmin', 'jmax', 's1', 's2', 'h1', 'h2', 'h3', 'h4',
+          // AmneziaWG 2.0/3.x client set (amneziawg-go v3.1):
+          'jc', 'jmin', 'jmax',
+          's1', 's2', 's3', 's4',
+          'h1', 'h2', 'h3', 'h4',
+          'i1', 'i2', 'i3', 'i4', 'i5',
+          'hpk', 'contentpaddingaddition',
         };
         if (known.contains(key.toLowerCase())) {
           interface[key] = value;
@@ -70,18 +75,40 @@ class WireGuardConfParser {
     final endpoint = _getAny(peer, ['Endpoint', 'endpoint'])!;
     final hp = _parseEndpoint(endpoint)!;
     final privKey = _getAny(interface, ['PrivateKey', 'privatekey'])!;
+    // H1..H4 may be a single value OR a "N-M" range (AWG 3.x) — keep as a
+    // normalized string; the endpoint builder emits int-or-String from it.
+    String? header(String k) {
+      final v = _getAny(interface, [k.toUpperCase(), k])?.trim();
+      return (v == null || v.isEmpty) ? null : v;
+    }
+
+    String? padded(String k) {
+      final v = _getAny(interface, [k.toUpperCase(), k])?.trim();
+      return (v == null || v.isEmpty) ? null : v;
+    }
+
     final awg = AmneziaParams(
       jc: int.tryParse(_getAny(interface, ['Jc', 'jc']) ?? ''),
       jmin: int.tryParse(_getAny(interface, ['Jmin', 'jmin']) ?? ''),
       jmax: int.tryParse(_getAny(interface, ['Jmax', 'jmax']) ?? ''),
       s1: int.tryParse(_getAny(interface, ['S1', 's1']) ?? ''),
       s2: int.tryParse(_getAny(interface, ['S2', 's2']) ?? ''),
-      h1: int.tryParse(_getAny(interface, ['H1', 'h1']) ?? ''),
-      h2: int.tryParse(_getAny(interface, ['H2', 'h2']) ?? ''),
-      h3: int.tryParse(_getAny(interface, ['H3', 'h3']) ?? ''),
-      h4: int.tryParse(_getAny(interface, ['H4', 'h4']) ?? ''),
+      s3: int.tryParse(_getAny(interface, ['S3', 's3']) ?? ''),
+      s4: int.tryParse(_getAny(interface, ['S4', 's4']) ?? ''),
+      h1: header('h1'),
+      h2: header('h2'),
+      h3: header('h3'),
+      h4: header('h4'),
+      i1: padded('i1'),
+      i2: padded('i2'),
+      i3: padded('i3'),
+      i4: padded('i4'),
+      i5: padded('i5'),
+      headerProtectionKey: padded('hpk'),
+      contentPaddingAddition: padded('contentpaddingaddition'),
       extra: Map.fromEntries(unknownInterface.entries.where(
-          (e) => !RegExp(r'^(jc|jmin|jmax|s1|s2|h[1-4])$',
+          (e) => !RegExp(
+                  r'^(jc|jmin|jmax|s[1-4]|h[1-4]|i[1-5]|hpk|contentpaddingaddition)$',
                   caseSensitive: false)
               .hasMatch(e.key))),
     );
@@ -154,6 +181,16 @@ class WireGuardConfParser {
   static String? _getAny(Map<String, String> m, List<String> keys) {
     for (final k in keys) {
       final v = m[k] ?? m[k.toLowerCase()] ?? m[k.toUpperCase()];
+      if (v != null) return v;
+    }
+    // Mixed-case keys ("Hpk", "ContentPaddingAddition") — the AWG conf
+    // headers are neither all-upper nor all-lower, so fall back to a
+    // case-insensitive scan (cheap: interface maps hold ~20 keys).
+    final lower = <String, String>{
+      for (final e in m.entries) e.key.toLowerCase(): e.value
+    };
+    for (final k in keys) {
+      final v = lower[k.toLowerCase()];
       if (v != null) return v;
     }
     return null;

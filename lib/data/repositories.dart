@@ -43,10 +43,18 @@ class WarpRepository {
       awgJmax: section['awgJmax'] as int?,
       awgS1: section['awgS1'] as int?,
       awgS2: section['awgS2'] as int?,
-      awgH1: section['awgH1'] as int?,
-      awgH2: section['awgH2'] as int?,
-      awgH3: section['awgH3'] as int?,
-      awgH4: section['awgH4'] as int?,
+      awgS3: section['awgS3'] as int?,
+      awgS4: section['awgS4'] as int?,
+      awgH1: section['awgH1'] as String?,
+      awgH2: section['awgH2'] as String?,
+      awgH3: section['awgH3'] as String?,
+      awgH4: section['awgH4'] as String?,
+      awgI1: section['awgI1'] as String?,
+      awgI2: section['awgI2'] as String?,
+      awgI3: section['awgI3'] as String?,
+      awgI4: section['awgI4'] as String?,
+      awgI5: section['awgI5'] as String?,
+      awgHpk: section['awgHpk'] as String?,
     );
   }
 
@@ -79,18 +87,45 @@ class WarpRepository {
       if (a.awgJmax != null) 'awgJmax': a.awgJmax,
       if (a.awgS1 != null) 'awgS1': a.awgS1,
       if (a.awgS2 != null) 'awgS2': a.awgS2,
+      if (a.awgS3 != null) 'awgS3': a.awgS3,
+      if (a.awgS4 != null) 'awgS4': a.awgS4,
       if (a.awgH1 != null) 'awgH1': a.awgH1,
       if (a.awgH2 != null) 'awgH2': a.awgH2,
       if (a.awgH3 != null) 'awgH3': a.awgH3,
       if (a.awgH4 != null) 'awgH4': a.awgH4,
+      if (a.awgI1 != null) 'awgI1': a.awgI1,
+      if (a.awgI2 != null) 'awgI2': a.awgI2,
+      if (a.awgI3 != null) 'awgI3': a.awgI3,
+      if (a.awgI4 != null) 'awgI4': a.awgI4,
+      if (a.awgI5 != null) 'awgI5': a.awgI5,
+      if (a.awgHpk != null) 'awgHpk': a.awgHpk,
     });
   }
 
-  /// v0.4.8 §user: patches ONLY the AmneziaWG 3.1 obfuscation params on the
+  /// v0.4.8 §user: patches ONLY the AmneziaWG 3.x obfuscation params on the
   /// stored account (manual entry from the WARP card sheet) — secrets are
   /// never round-tripped through the UI, so the vault values are preserved.
-  Future<void> saveWithAwgParams(int? jc, int? jmin, int? jmax, int? s1,
-      int? s2, int? h1, int? h2, int? h3, int? h4) async {
+  /// [hpk] (header-protection key) is a key-like string, so it goes through
+  /// the secure vault like every other secret.
+  Future<void> saveWithAwgParams({
+    int? jc,
+    int? jmin,
+    int? jmax,
+    int? s1,
+    int? s2,
+    int? s3,
+    int? s4,
+    String? h1,
+    String? h2,
+    String? h3,
+    String? h4,
+    String? i1,
+    String? i2,
+    String? i3,
+    String? i4,
+    String? i5,
+    String? hpk,
+  }) async {
     final a = _account;
     if (a == null) return;
     _account = WarpAccount(
@@ -110,10 +145,18 @@ class WarpRepository {
       awgJmax: jmax,
       awgS1: s1,
       awgS2: s2,
+      awgS3: s3,
+      awgS4: s4,
       awgH1: h1,
       awgH2: h2,
       awgH3: h3,
       awgH4: h4,
+      awgI1: i1,
+      awgI2: i2,
+      awgI3: i3,
+      awgI4: i4,
+      awgI5: i5,
+      awgHpk: hpk,
     );
     await save(_account!);
   }

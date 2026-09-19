@@ -10,6 +10,8 @@ protocol-level interfaces they maintain.
 | Project | License | Role |
 |---|---|---|
 | [sing-box](https://github.com/SagerNet/sing-box) | GPL-3.0 (with linking exception for *-libbox builds) | Primary proxy engine: Shadowsocks, VMess, VLESS, Trojan, Hysteria/2, TUIC, AnyTLS, WireGuard endpoints, TUN, DNS, Clash API |
+| [sing-box-lx](https://github.com/Leadaxe/sing-box-lx) | GPL-3.0 (sing-box fork) | Candidate drop-in libbox AAR adding AmneziaWG 3.x (with_awg), native XHTTP and VLESS `encryption` — evaluated in docs/android/V0.4.8_AMNEZIAWG_LIBBOX.md |
+| [amnezia-box](https://github.com/amnezia-vpn/amnezia-box) | GPL-3.0 (sing-box fork) | Vendor AWG sing-box fork (self-built AAR) — alternative evaluated in docs/android/V0.4.8_AMNEZIAWG_LIBBOX.md |
 | [Xray-core](https://github.com/XTLS/Xray-core) | MPL-2.0 | Secondary engine: VLESS/VMess/Trojan with Reality, XHTTP, XTLS vision, freedom-fragment |
 | [AmneziaWG-Go](https://github.com/amnezia-vpn/amneziawg-go) | MIT | External daemon for AmneziaWG obfuscation profiles |
 | [MasterDnsVPN](https://github.com/masterking32/MasterDnsVPN) | MIT | External client for the DNS-tunnel transport (adapter + TOML generation) |

@@ -289,8 +289,23 @@ class WireGuardConfig {
       '$privateKey|$peerPublicKey|$endpointHost:$endpointPort';
 }
 
-/// AmneziaWG obfuscation parameters. Unknown/forward params are kept so a
-/// future AWG version still round-trips (spec §19: no hardcoded single version).
+/// AmneziaWG obfuscation parameters — the FULL 3.x surface (amneziawg-go
+/// v3.1 semantics, verified 2026-09):
+///
+///  * `Jc/Jmin/Jmax` — junk packets before each handshake (client-side).
+///  * `S1..S4`      — message paddings: init / response / cookie / transport.
+///                    AWG 3.x header protection REQUIRES S1..S4 ≥ 12.
+///  * `H1..H4`      — message-type header remap; a single value ("1234") or
+///                    a range ("1000-2000") — hence String, not int.
+///  * `I1..I5`      — custom signature (decoy) packets sent before every
+///                    handshake in order, tag DSL: `<b 0x..>`, `<r 12>`,
+///                    `<rd 8>`, `<rc 8>`, `<t>` (client-side, no server match
+///                    needed). Mutually exclusive with masquerade sugar.
+///  * `headerProtectionKey` — AWG 3.x `Hpk` (server-side; `awg genkey`).
+///  * `contentPaddingAddition` — AWG 3.x content-padding range.
+///
+/// Unknown/forward params are kept in [extra] so a future AWG version still
+/// round-trips (spec §19: no hardcoded single version).
 class AmneziaParams {
   AmneziaParams({
     this.jc,
@@ -298,14 +313,30 @@ class AmneziaParams {
     this.jmax,
     this.s1,
     this.s2,
+    this.s3,
+    this.s4,
     this.h1,
     this.h2,
     this.h3,
     this.h4,
+    this.i1,
+    this.i2,
+    this.i3,
+    this.i4,
+    this.i5,
+    this.headerProtectionKey,
+    this.contentPaddingAddition,
     this.extra = const {},
   });
 
-  final int? jc, jmin, jmax, s1, s2, h1, h2, h3, h4;
+  final int? jc, jmin, jmax, s1, s2;
+  final int? s3, s4;
+
+  /// Single value ("1234") or range ("1000-2000").
+  final String? h1, h2, h3, h4;
+  final String? i1, i2, i3, i4, i5;
+  final String? headerProtectionKey;
+  final String? contentPaddingAddition;
   final Map<String, String> extra;
 
   bool get isNotEmpty =>
@@ -314,10 +345,20 @@ class AmneziaParams {
       jmax != null ||
       s1 != null ||
       s2 != null ||
+      s3 != null ||
+      s4 != null ||
       h1 != null ||
       h2 != null ||
       h3 != null ||
       h4 != null ||
+      i1 != null ||
+      i2 != null ||
+      i3 != null ||
+      i4 != null ||
+      i5 != null ||
+      (headerProtectionKey != null && headerProtectionKey!.isNotEmpty) ||
+      (contentPaddingAddition != null &&
+          contentPaddingAddition!.isNotEmpty) ||
       extra.isNotEmpty;
 
   Map<String, String> toConfLines() => {
@@ -326,10 +367,23 @@ class AmneziaParams {
         if (jmax != null) 'Jmax': '$jmax',
         if (s1 != null) 'S1': '$s1',
         if (s2 != null) 'S2': '$s2',
+        if (s3 != null) 'S3': '$s3',
+        if (s4 != null) 'S4': '$s4',
         if (h1 != null) 'H1': '$h1',
         if (h2 != null) 'H2': '$h2',
         if (h3 != null) 'H3': '$h3',
         if (h4 != null) 'H4': '$h4',
+        if (i1 != null) 'I1': '$i1',
+        if (i2 != null) 'I2': '$i2',
+        if (i3 != null) 'I3': '$i3',
+        if (i4 != null) 'I4': '$i4',
+        if (i5 != null) 'I5': '$i5',
+        if (headerProtectionKey != null &&
+            headerProtectionKey!.isNotEmpty)
+          'Hpk': headerProtectionKey!,
+        if (contentPaddingAddition != null &&
+            contentPaddingAddition!.isNotEmpty)
+          'ContentPaddingAddition': contentPaddingAddition!,
         ...extra,
       };
 }

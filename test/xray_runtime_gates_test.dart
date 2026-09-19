@@ -83,7 +83,16 @@ void main() {
           server: 'h.example',
           port: 443,
           uuid: 'b1a2798c-6d0a-44dd-9d7f-f8a59e6d7f83',
-          amnezia: AmneziaParams(jc: 1, jmin: 10, jmax: 20, s1: 1, s2: 2, h1: 3, h2: 4, h3: 5, h4: 6),
+          amnezia: AmneziaParams(
+              jc: 1,
+              jmin: 10,
+              jmax: 20,
+              s1: 1,
+              s2: 2,
+              h1: '3',
+              h2: '4',
+              h3: '5',
+              h4: '6'),
         );
         expect(AndroidNodeSupport.isRunnable(p), isFalse);
         expect(AndroidNodeSupport.shortBadge(p), contains('Amnezia'));

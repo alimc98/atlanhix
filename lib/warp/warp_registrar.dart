@@ -27,10 +27,19 @@ class WarpAccount {
     this.awgJmax,
     this.awgS1,
     this.awgS2,
+    this.awgS3,
+    this.awgS4,
     this.awgH1,
     this.awgH2,
     this.awgH3,
     this.awgH4,
+    // AWG 3.x: decoy/signature packets (tag DSL) + header protection key.
+    this.awgI1,
+    this.awgI2,
+    this.awgI3,
+    this.awgI4,
+    this.awgI5,
+    this.awgHpk,
   });
 
   final String deviceId;
@@ -45,21 +54,34 @@ class WarpAccount {
   final String? clientId;
   final DateTime? registeredAt;
 
-  // ---- AmneziaWG 3.1 (RFC: Jc/Jmin/Jmax junk packets, S1/S2 handshake
-  // padding, H1..H4 header-field remap). Kept on the ACCOUNT so a re-save
-  // from the manual-params sheet round-trips losslessly.
+  // ---- AmneziaWG 3.x — the FULL 3.1 surface (see AmneziaParams): junk,
+  // paddings s1..s4, header remap h1..h4 (single or range), decoy packets
+  // i1..i5 (tag DSL) and the header-protection key. Kept on the ACCOUNT so
+  // a re-save from the manual-params sheet round-trips losslessly.
   final int? awgJc;
   final int? awgJmin;
   final int? awgJmax;
   final int? awgS1;
   final int? awgS2;
-  final int? awgH1;
-  final int? awgH2;
-  final int? awgH3;
-  final int? awgH4;
+  final int? awgS3;
+  final int? awgS4;
+  final String? awgH1;
+  final String? awgH2;
+  final String? awgH3;
+  final String? awgH4;
+  final String? awgI1;
+  final String? awgI2;
+  final String? awgI3;
+  final String? awgI4;
+  final String? awgI5;
+  final String? awgHpk;
 
   bool get hasAmneziaParams =>
-      awgJc != null || awgH1 != null || awgS1 != null;
+      awgJc != null ||
+      awgH1 != null ||
+      awgS1 != null ||
+      awgI1 != null ||
+      (awgHpk != null && awgHpk!.isNotEmpty);
 
   /// AmneziaWG params built from the stored fields (null when plain WARP).
   AmneziaParams? get amneziaParams => hasAmneziaParams
@@ -69,10 +91,18 @@ class WarpAccount {
           jmax: awgJmax,
           s1: awgS1,
           s2: awgS2,
+          s3: awgS3,
+          s4: awgS4,
           h1: awgH1,
           h2: awgH2,
           h3: awgH3,
           h4: awgH4,
+          i1: awgI1,
+          i2: awgI2,
+          i3: awgI3,
+          i4: awgI4,
+          i5: awgI5,
+          headerProtectionKey: awgHpk,
         )
       : null;
 

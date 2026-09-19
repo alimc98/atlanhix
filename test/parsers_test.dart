@@ -167,7 +167,9 @@ Endpoint = 1.2.3.4:51820
     final p = WireGuardConfParser().parse(conf);
     expect(p.amnezia, isNotNull);
     expect(p.amnezia!.jc, 4);
-    expect(p.amnezia!.h1, 1234567);
+    // v0.4.8: header values are strings (single value or "N-M" range per
+    // AWG 3.x) — the endpoint builder emits int-or-String from them.
+    expect(p.amnezia!.h1, '1234567');
     expect(p.core, CoreKind.amneziaWg);
     final exported = WireGuardConfParser().exportConf(p);
     expect(exported, contains('Jc = 4'));
