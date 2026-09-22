@@ -78,6 +78,8 @@ Map<String, dynamic> profileToStorable(
         'i5': p.amnezia!.i5,
         'hpk': p.amnezia!.headerProtectionKey,
         'padding': p.amnezia!.contentPaddingAddition,
+        'randomTrailers': p.amnezia!.randomTrailers,
+        'disableCookies': p.amnezia!.disableCookies,
       },
     'rawParams': p.rawParams,
     'raw': {

@@ -157,9 +157,11 @@ void main() {
       expect(w['h2'], 234567);
       expect(w['h3'], '1000-2000');
       expect(w['h4'], 456789);
-      // AWG 3.x extras.
+      // AWG 3.x extras — JSON names verified against option/wireguard_awg.go
+      // of sing-box-lx v1.14.1-lx.8 (NOT the README spellings hpk/padding).
       expect(w['i1'], '<b 0x0102030405060708><r 12>');
-      expect(w['hpk'], 'kF9uPQ0mSFRlZmF1bHRrZXltYXRlcmlhbDEyMzQ1Njc4OTA=');
+      expect(w['header_protection_key'],
+          'kF9uPQ0mSFRlZmF1bHRrZXltYXRlcmlhbDEyMzQ1Njc4OTA=');
       // The generated profile is tagged so the UI/diagnostics can show it.
       expect(WarpRegistrar.profileFor(awg).tags, contains('awg-3.1'));
     });
@@ -176,7 +178,9 @@ void main() {
       final w = warpEndpoint(cfg);
       for (final k in const [
         'jc', 'jmin', 'jmax', 's1', 's2', 's3', 's4',
-        'h1', 'h2', 'h3', 'h4', 'i1', 'i2', 'i3', 'i4', 'i5', 'hpk', 'padding'
+        'h1', 'h2', 'h3', 'h4', 'i1', 'i2', 'i3', 'i4', 'i5',
+        'header_protection_key', 'content_padding_addition',
+        'random_trailers', 'disable_cookies',
       ]) {
         expect(w.containsKey(k), isFalse,
             reason: 'plain WARP must not carry the AWG key "k"'.replaceFirst('k', k));
@@ -219,6 +223,7 @@ void main() {
 [Interface]
 PrivateKey = kJ3xXyQ7Wm9pR5tN2vB8sL4cH6dF1aG0eIuO9qZw8kA=
 Address = 172.16.0.2/32
+Address = 2606:4700:110:85a8:62db:eb3d:7689:9406/128
 Jc = 5
 Jmin = 40
 Jmax = 70
@@ -232,6 +237,8 @@ H3 = 3
 H4 = 4
 I1 = <b 0x1603030001><t>
 Hpk = kF9uPQ0mSFRlZmF1bHRrZXltYXRlcmlhbDEyMzQ1Njc4OTA=
+RandomTrailers = on
+DisableCookies = on
 
 [Peer]
 PublicKey = qF2FiW09KjRWd7pF5bEy9XU9pHc4uTMvE1S0aZnQVXM=
@@ -249,8 +256,61 @@ AllowedIPs = 0.0.0.0/0
     expect(a.i1, '<b 0x1603030001><t>');
     expect(a.headerProtectionKey,
         'kF9uPQ0mSFRlZmF1bHRrZXltYXRlcmlhbDEyMzQ1Njc4OTA=');
+    // AWG 3.x dialect flags (amnezia-client confs).
+    expect(a.randomTrailers, isTrue);
+    expect(a.disableCookies, isTrue);
     // Nothing leaked into the unknown-params bucket.
     expect(a.extra, isEmpty);
+  });
+
+  test('§30c: REPEATED Address lines merge (amnezia-client WARP conf)', () {
+    final conf = '''
+[Interface]
+PrivateKey = kJ3xXyQ7Wm9pR5tN2vB8sL4cH6dF1aG0eIuO9qZw8kA=
+Address = 172.16.0.2/32
+Address = 2606:4700:110:85a8:62db:eb3d:7689:9406/128
+MTU = 1280
+
+[Peer]
+PublicKey = qF2FiW09KjRWd7pF5bEy9XU9pHc4uTMvE1S0aZnQVXM=
+Endpoint = 162.159.192.235:3138
+AllowedIPs = 0.0.0.0/0, ::/0
+''';
+    final p = WireGuardConfParser().parse(conf, fileName: 'awg-warp.conf');
+    expect(p.wireguard!.addresses,
+        ['172.16.0.2/32', '2606:4700:110:85a8:62db:eb3d:7689:9406/128']);
+    expect(p.wireguard!.endpointPort, 3138);
+  });
+
+  test('§30d: bare WARP-API addresses normalize to netip.Prefix (device bug)',
+      () {
+    // The Cloudflare WARP API returns the v4 interface address WITHOUT a
+    // prefix length; sing-box ≥1.12 decodes endpoint addresses as
+    // netip.Prefix → ENGINE_START_FAILED "endpoints[0].address: no '/'"
+    // (seen on device, v0.4.9 build 1).
+    final gen = SingBoxConfigGenerator();
+    final cfg = gen.generate(
+      runnableProfiles: [_ssNode('n1', '203.0.113.10', 8388)],
+      routing: BuiltinRoutingProfiles.all().first,
+      dns: DnsSettings(mode: DnsMode.automatic),
+      selectedTag: 'node:n1',
+      warpProfile: WarpRegistrar.profileFor(WarpAccount(
+        deviceId: 'test-device',
+        token: 't',
+        privateKey: 'kJ3xXyQ7Wm9pR5tN2vB8sL4cH6dF1aG0eIuO9qZw8kA=',
+        peerPublicKey: 'qF2FiW09KjRWd7pF5bEy9XU9pHc4uTMvE1S0aZnQVXM=',
+        endpointV4: '162.159.193.10:2408',
+        addressV4: '172.16.0.2',
+        addressV6: '2606:4700:110:85a8:62db:eb3d:7689:9406',
+        clientId: 'AQIDBAUGBw==',
+      )),
+      chainWarpOutside: true,
+    );
+    final warp = (cfg['endpoints'] as List)
+        .firstWhere((e) => e['tag'] == 'warp') as Map;
+    expect(warp['address'], contains('172.16.0.2/32'));
+    expect(warp['address'],
+        contains('2606:4700:110:85a8:62db:eb3d:7689:9406/128'));
   });
 
   test('§9 tier3 (ATLANHIX_WARP_E2E=1): live WARP chain carries traffic',

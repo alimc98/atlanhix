@@ -386,6 +386,10 @@ class LibboxEngine(
         override fun initializeClashMode(tags: StringIterator, current: String) {}
         override fun updateClashMode(tag: String) {}
         override fun writeConnectionEvents(events: io.nekohasekai.libbox.ConnectionEvents) {}
+        // lx-fork addition (v1.14.1-lx: DNS observability stream). Atlanhix
+        // does not surface per-query events yet — the no-op keeps the
+        // CommandClient protocol contract satisfied against the forked AAR.
+        override fun writeDNSQuery(query: io.nekohasekai.libbox.DnsQuery) {}
     }
 
 }

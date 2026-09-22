@@ -49,7 +49,42 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
   late final TextEditingController _xPadding;
   late final TextEditingController _xmux;
   late final TextEditingController _realitySpx;
+  // v0.4.9 §user: WireGuard / AWG 3.1 field controllers.
+  late final TextEditingController _wgPrivateKey;
+  late final TextEditingController _wgPeerKey;
+  late final TextEditingController _wgPreShared;
+  late final TextEditingController _wgAddresses;
+  late final TextEditingController _wgMtu;
+  late final TextEditingController _awgJc;
+  late final TextEditingController _awgJmin;
+  late final TextEditingController _awgJmax;
+  late final TextEditingController _awgS1;
+  late final TextEditingController _awgS2;
+  late final TextEditingController _awgS3;
+  late final TextEditingController _awgS4;
+  late final TextEditingController _awgH1;
+  late final TextEditingController _awgH2;
+  late final TextEditingController _awgH3;
+  late final TextEditingController _awgH4;
+  late final TextEditingController _awgI1;
+  late final TextEditingController _awgI2;
+  late final TextEditingController _awgI3;
+  late final TextEditingController _awgI4;
+  late final TextEditingController _awgI5;
+  late final TextEditingController _awgHpk;
+  late final TextEditingController _awgPadding;
+  bool _awgRandomTrailers = false;
+  bool _awgDisableCookies = false;
   bool _allowInsecure = false;
+
+  bool get _isWgFamily => _protocol == ProxyProtocol.wireguard;
+
+  String? _t(TextEditingController c) {
+    final v = c.text.trim();
+    return v.isEmpty ? null : v;
+  }
+
+  int? _ti(TextEditingController c) => int.tryParse(c.text.trim());
 
   @override
   void initState() {
@@ -86,6 +121,34 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
     _xPadding = tc(rp['xPaddingBytes'] ?? rp['x_padding_bytes']);
     _xmux = tc(rp['xmux']);
     _realitySpx = tc(p?.realitySpiderX ?? rp['spx']);
+    // v0.4.9 §user: WireGuard / AmneziaWG fields (hand-added nodes).
+    final wg = p?.wireguard;
+    final awg = p?.amnezia;
+    _wgPrivateKey = tc(wg?.privateKey);
+    _wgPeerKey = tc(wg?.peerPublicKey);
+    _wgPreShared = tc(wg?.preSharedKey);
+    _wgAddresses = tc((wg?.addresses ?? const []).join(', '));
+    _wgMtu = tc(wg?.mtu?.toString());
+    _awgJc = tc(awg?.jc?.toString());
+    _awgJmin = tc(awg?.jmin?.toString());
+    _awgJmax = tc(awg?.jmax?.toString());
+    _awgS1 = tc(awg?.s1?.toString());
+    _awgS2 = tc(awg?.s2?.toString());
+    _awgS3 = tc(awg?.s3?.toString());
+    _awgS4 = tc(awg?.s4?.toString());
+    _awgH1 = tc(awg?.h1);
+    _awgH2 = tc(awg?.h2);
+    _awgH3 = tc(awg?.h3);
+    _awgH4 = tc(awg?.h4);
+    _awgI1 = tc(awg?.i1);
+    _awgI2 = tc(awg?.i2);
+    _awgI3 = tc(awg?.i3);
+    _awgI4 = tc(awg?.i4);
+    _awgI5 = tc(awg?.i5);
+    _awgHpk = tc(awg?.headerProtectionKey);
+    _awgPadding = tc(awg?.contentPaddingAddition);
+    _awgRandomTrailers = awg?.randomTrailers ?? false;
+    _awgDisableCookies = awg?.disableCookies ?? false;
   }
 
   @override
@@ -95,6 +158,10 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
       _fp, _alpn, _flow, _pubKey, _shortId, _ssMethod, _obfs, _upMbps, _downMbps,
       _encryption, _xhttpMode, _xhttpExtra, _finalMask, _xPadding, _xmux,
       _realitySpx,
+      _wgPrivateKey, _wgPeerKey, _wgPreShared, _wgAddresses, _wgMtu,
+      _awgJc, _awgJmin, _awgJmax, _awgS1, _awgS2, _awgS3, _awgS4,
+      _awgH1, _awgH2, _awgH3, _awgH4,
+      _awgI1, _awgI2, _awgI3, _awgI4, _awgI5, _awgHpk, _awgPadding,
     ]) {
       c.dispose();
     }
@@ -150,14 +217,73 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
         }
       }
     }
+    // v0.4.9 §user: the AWG param bundle — null when no field is set so a
+    // plain WireGuard node stays plain.
+    final amnezia = _isWgFamily
+        ? (AmneziaParams(
+            jc: _ti(_awgJc),
+            jmin: _ti(_awgJmin),
+            jmax: _ti(_awgJmax),
+            s1: _ti(_awgS1),
+            s2: _ti(_awgS2),
+            s3: _ti(_awgS3),
+            s4: _ti(_awgS4),
+            h1: _t(_awgH1),
+            h2: _t(_awgH2),
+            h3: _t(_awgH3),
+            h4: _t(_awgH4),
+            i1: _t(_awgI1),
+            i2: _t(_awgI2),
+            i3: _t(_awgI3),
+            i4: _t(_awgI4),
+            i5: _t(_awgI5),
+            headerProtectionKey: _t(_awgHpk),
+            contentPaddingAddition: _t(_awgPadding),
+            randomTrailers: _awgRandomTrailers ? true : null,
+            disableCookies: _awgDisableCookies ? true : null,
+          ))
+        : null;
+    final wgCfg = _isWgFamily
+        ? WireGuardConfig(
+            privateKey: _t(_wgPrivateKey) ?? '',
+            peerPublicKey: _t(_wgPeerKey) ?? '',
+            endpointHost: server,
+            endpointPort: port,
+            preSharedKey: _t(_wgPreShared),
+            addresses: (_wgAddresses.text.trim().isEmpty
+                    ? const <String>[]
+                    : _wgAddresses.text
+                        .split(',')
+                        .map((e) => e.trim())
+                        .where((e) => e.isNotEmpty)
+                        .toList())
+                .map((a) => a.contains('/')
+                    ? a
+                    : '$a/${a.contains(':') ? 128 : 32}')
+                .toList(),
+            mtu: _ti(_wgMtu) ?? 1280,
+            allowedIps: const ['0.0.0.0/0', '::/0'],
+          )
+        : null;
     final profile = ProxyProfile(
       id: widget.profile?.id ?? Ids.newId(),
       name: _name.text.trim(),
       server: server,
       port: port,
       protocol: _protocol,
-      transport: _isTcpFamily ? _transport : (_isHysteria ? Transport.none : _transport),
-      security: _security,
+      core: _isWgFamily
+          ? (amnezia?.isNotEmpty == true
+              ? CoreKind.amneziaWg
+              : CoreKind.wireguardSingbox)
+          : (widget.profile?.core ?? CoreKind.unknown),
+      wireguard: wgCfg ?? widget.profile?.wireguard,
+      amnezia: (amnezia?.isNotEmpty == true) ? amnezia : null,
+      transport: _isWgFamily
+          ? Transport.none
+          : _isTcpFamily
+              ? _transport
+              : (_isHysteria ? Transport.none : _transport),
+      security: _isWgFamily ? Security.none : _security,
       uuid: _uuid.text.trim().isEmpty ? null : _uuid.text.trim(),
       password: _password.text.trim().isEmpty ? null : _password.text.trim(),
       alterId: int.tryParse(_alterId.text.trim()),
@@ -224,9 +350,17 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
                 ProxyProtocol.trojan,
                 ProxyProtocol.shadowsocks,
                 ProxyProtocol.hysteria2,
+                // v0.4.9 §user: hand-added WireGuard / AmneziaWG nodes — the
+                // full AWG 3.1 param surface lives in the WireGuard section.
+                // Label names both so users importing amnezia-client configs
+                // know where to put Jc/Jmin/… values.
+                ProxyProtocol.wireguard,
               ])
                 ChoiceChip(
-                  label: Text(proto.name),
+                  label: Text(
+                      proto == ProxyProtocol.wireguard
+                          ? 'WireGuard / AmneziaWG'
+                          : proto.name),
                   selected: _protocol == proto,
                   onSelected: (_) => setState(() => _protocol = proto),
                 ),
@@ -322,6 +456,101 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
               _field(context, _flow,
                   'flow (xtls-rprx-vision or mlkem768x25519plus variant)'),
             ],
+          // v0.4.9 §user: the FULL AmneziaWG 3.1 surface for hand-added
+          // WireGuard-family nodes — junk, paddings, header remap (value or
+          // N-M range), decoy packets, header-protection key and the 3.x
+          // content padding / dialect flags.
+          if (_isWgFamily) ...[
+            _label(context,
+                l ? 'وایرگارد (امنیت لایه ۳)' : 'WIREGUARD'),
+            _field(context, _wgPrivateKey, 'Private key'),
+            _field(context, _wgPeerKey, 'Peer public key'),
+            _field(context, _wgPreShared, 'Pre-shared key (optional)'),
+            _field(context, _wgAddresses,
+                'Interface addresses (comma separated, e.g. 172.16.0.2/32, fd00::2/128)'),
+            _field(context, _wgMtu, 'MTU (default 1280)'),
+            _label(context,
+                l ? 'پارامترهای AmneziaWG 3.1' : 'AMNEZIAWG 3.1 PARAMS'),
+            // v0.4.9 §user: one-tap amnezia-client-style anti-DPI set (same
+            // values as the WARP card) — fills only the EMPTY fields.
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () {
+                  void fill(TextEditingController c, String v) {
+                    if (c.text.trim().isEmpty) c.text = v;
+                  }
+
+                  setState(() {
+                    fill(_awgJc, '4');
+                    fill(_awgJmin, '64');
+                    fill(_awgJmax, '96');
+                    fill(_awgS1, '15');
+                    fill(_awgS2, '15');
+                    fill(_awgH1, '1');
+                    fill(_awgH2, '2');
+                    fill(_awgH3, '3');
+                    fill(_awgH4, '4');
+                  });
+                },
+                icon: const Icon(Icons.auto_fix_high, size: 16),
+                label: Text(l
+                    ? 'پیش‌فرض‌های AWG 3.1 (ضد DPI)'
+                    : 'AWG 3.1 defaults (anti-DPI)'),
+              ),
+            ),
+            Wrap(spacing: 8, runSpacing: 4, children: [
+              SizedBox(
+                  width: 84, child: _field(context, _awgJc, 'Jc')),
+              SizedBox(
+                  width: 84, child: _field(context, _awgJmin, 'Jmin')),
+              SizedBox(
+                  width: 84, child: _field(context, _awgJmax, 'Jmax')),
+            ]),
+            Wrap(spacing: 8, runSpacing: 4, children: [
+              SizedBox(
+                  width: 84, child: _field(context, _awgS1, 'S1')),
+              SizedBox(
+                  width: 84, child: _field(context, _awgS2, 'S2')),
+              SizedBox(
+                  width: 84, child: _field(context, _awgS3, 'S3')),
+              SizedBox(
+                  width: 84, child: _field(context, _awgS4, 'S4')),
+            ]),
+            Wrap(spacing: 8, runSpacing: 4, children: [
+              for (final (c, lbl) in [
+                (_awgH1, 'H1'), (_awgH2, 'H2'), (_awgH3, 'H3'), (_awgH4, 'H4')
+              ])
+                SizedBox(width: 84, child: _field(context, c, '$lbl (n / N-M)')),
+            ]),
+            _field(context, _awgHpk, 'Hpk — header protection key (3.x)'),
+            _field(context, _awgPadding,
+                'ContentPaddingAddition (e.g. 10-100) (3.x)'),
+            _field(context, _awgI1,
+                'I1 — decoy packet DSL, e.g. <b 0x1603030001><t>'),
+            Wrap(spacing: 8, runSpacing: 4, children: [
+              for (final (c, lbl) in [
+                (_awgI2, 'I2'), (_awgI3, 'I3'), (_awgI4, 'I4'), (_awgI5, 'I5')
+              ])
+                SizedBox(width: 84, child: _field(context, c, lbl)),
+            ]),
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              value: _awgRandomTrailers,
+              onChanged: (v) =>
+                  setState(() => _awgRandomTrailers = v ?? false),
+              title: const Text('RandomTrailers'),
+            ),
+            CheckboxListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              value: _awgDisableCookies,
+              onChanged: (v) =>
+                  setState(() => _awgDisableCookies = v ?? false),
+              title: const Text('DisableCookies'),
+            ),
+          ]
           ],
           if (_isHysteria) ...[
             _field(context, _password, 'Password'),

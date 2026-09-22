@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.net.VpnService
+import io.nekohasekai.libbox.Libbox
 import org.json.JSONObject
 
 /**
@@ -25,6 +26,11 @@ class AtlanhixVpnChannel(private val activity: Activity) {
         "prepare" -> prepare()
         "start" -> start(arg ?: JSONObject())
         "stop" -> stop()
+        // v0.4.9: self-reported engine version. The Dart side arms the
+        // AmneziaWG gates only when this is the forked (with_awg) build —
+        // stock sing-box strips the AWG fields, so capability must come
+        // from the version marker, never from an assumption.
+        "engineVersion" -> JSONObject().put("version", Libbox.version())
         "state" -> JSONObject()
             .put("state", AtlanhixVpnService.state.name)
             .put("generation", AtlanhixVpnService.generation ?: JSONObject.NULL)

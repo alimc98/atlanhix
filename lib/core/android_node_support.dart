@@ -44,11 +44,14 @@ class AndroidNodeSupport {
     if (p.effectiveCore == CoreKind.xray) {
       return XrayCoreState.instance.runtimeLoaded;
     }
-    // AmneziaWG needs its patched WireGuard kernel/userspace fork — not
-    // bundled in any engine we ship, in either state (mirrors
-    // notRunnableReason so the two gates can never disagree).
+    // AmneziaWG runs INSIDE the forked libbox (`with_awg`) since v0.4.9 —
+    // gated on the engine's self-reported fork version so a stock AAR keeps
+    // the honest lockout (stock sing-box strips the obfuscation fields and
+    // the handshake silently degrades to plain WireGuard, which an AWG
+    // server drops). Mirrors notRunnableReason so the two gates never
+    // disagree.
     if (p.amnezia?.isNotEmpty == true || p.effectiveCore == CoreKind.amneziaWg) {
-      return false;
+      return AmneziaWgCoreState.instance.runtimeLoaded;
     }
     return switch (p.protocol) {
       ProxyProtocol.vmess ||
@@ -62,9 +65,12 @@ class AndroidNodeSupport {
       ProxyProtocol.shadowtls ||
       ProxyProtocol.naive ||
       ProxyProtocol.socks ||
-      ProxyProtocol.http =>
+      ProxyProtocol.http ||
+      // v0.4.9: plain WireGuard is native to the libbox engine (with_wireguard;
+      // the WARP chain already dials wireguard endpoints on-device) — no
+      // reason to keep standalone WG/WARP nodes locked out.
+      ProxyProtocol.wireguard =>
         true,
-      ProxyProtocol.wireguard ||
       ProxyProtocol.masterDnsVpn ||
       ProxyProtocol.ssh ||
       ProxyProtocol.custom =>
@@ -78,7 +84,9 @@ class AndroidNodeSupport {
     // AmneziaWG first: its reason is more specific than the protocol's.
     if (p.effectiveCore == CoreKind.amneziaWg ||
         p.amnezia?.isNotEmpty == true) {
-      return 'Amnezia (not bundled on Android)';
+      return AmneziaWgCoreState.instance.runtimeLoaded
+          ? null
+          : 'Amnezia (needs the forked sing-box engine)';
     }
     if (p.transport == Transport.xhttp || p.rawParams['type'] == 'mkcp' ||
         p.rawParams['type'] == 'kcp') {
@@ -110,6 +118,11 @@ class AndroidNodeSupport {
     if (_xrayOnly(p) || p.userPinnedCore == CoreKind.xray) {
       return 'Xray (upstream process)';
     }
+    // v0.4.9 §user: an AWG node runs on the AWG engine — the forked libbox
+    // (`with_awg`). Label it honestly instead of the generic "sing-box".
+    if (p.amnezia?.isNotEmpty == true || p.effectiveCore == CoreKind.amneziaWg) {
+      return 'AWG (forked engine)';
+    }
     return 'sing-box';
   }
 
@@ -124,6 +137,10 @@ class AndroidNodeSupport {
     if (reason == null) {
       // runnable — but WHICH core actually dials it?
       if (_xrayOnly(p) || p.userPinnedCore == CoreKind.xray) return 'Xray';
+      if (p.amnezia?.isNotEmpty == true ||
+          p.effectiveCore == CoreKind.amneziaWg) {
+        return 'AWG';
+      }
       return 'sing-box';
     }
     if (reason.startsWith('Amnezia')) return 'no core · Amnezia off';
@@ -155,7 +172,8 @@ class AndroidNodeSupport {
         CoreKind.unknown =>
           true,
         CoreKind.xray => XrayCoreState.instance.runtimeLoaded,
-        CoreKind.amneziaWg ||
+        // v0.4.9: AWG executes in-libbox on the forked engine (with_awg).
+        CoreKind.amneziaWg => AmneziaWgCoreState.instance.runtimeLoaded,
         CoreKind.masterDnsVpn =>
           false,
       };
@@ -169,7 +187,10 @@ class AndroidNodeSupport {
     // AmneziaWG first: its reason is more specific than the protocol's.
     if (p.effectiveCore == CoreKind.amneziaWg ||
         p.amnezia?.isNotEmpty == true) {
-      return 'amnezia_wg: AmneziaWG core (amneziawg-go daemon) is not bundled on Android';
+      return AmneziaWgCoreState.instance.runtimeLoaded
+          ? null
+          : 'amnezia_wg: AmneziaWG needs the forked sing-box engine '
+              '(libbox with_awg), which this build does not report';
     }
     if (p.transport == Transport.xhttp || p.rawParams['type'] == 'mkcp' ||
         p.rawParams['type'] == 'kcp') {
@@ -202,8 +223,8 @@ class AndroidNodeSupport {
         'XRAY_START_FAILED' =>
           'The Xray process refused to start — check the engine logs',
         'NO_RUNNABLE_NODE' =>
-          'No node on this device can run yet — Xray (xhttp), AmneziaWG and '
-              'MDVPN nodes need their desktop cores',
+          'No node on this device can run yet — Xray (xhttp) and MDVPN nodes '
+              'need their desktop cores; AmneziaWG needs the forked engine',
         'NODE_NOT_RUNNABLE_ON_ANDROID' ||
         'CORE_NOT_RUNNABLE_ON_ANDROID' =>
           'This node needs a core that cannot run here '

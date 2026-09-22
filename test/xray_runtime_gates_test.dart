@@ -73,30 +73,62 @@ void main() {
       expect(AndroidNodeSupport.isRunnable(kcp), isTrue);
     });
 
-    test('AmneziaWG stays honestly off in both states', () {
-      for (final on in [false, true]) {
-        XrayCoreState.instance.setRuntimeLoaded(on);
-        final p = ProxyProfile(
-          id: 'p3',
-          name: 'A',
-          protocol: ProxyProtocol.vless,
-          server: 'h.example',
-          port: 443,
-          uuid: 'b1a2798c-6d0a-44dd-9d7f-f8a59e6d7f83',
-          amnezia: AmneziaParams(
-              jc: 1,
-              jmin: 10,
-              jmax: 20,
-              s1: 1,
-              s2: 2,
-              h1: '3',
-              h2: '4',
-              h3: '5',
-              h4: '6'),
-        );
-        expect(AndroidNodeSupport.isRunnable(p), isFalse);
-        expect(AndroidNodeSupport.shortBadge(p), contains('Amnezia'));
-      }
+    test('AmneziaWG is gated on the FORKED engine self-report (v0.4.9)', () {
+      final p = ProxyProfile(
+        id: 'p3',
+        name: 'A',
+        protocol: ProxyProtocol.vless,
+        server: 'h.example',
+        port: 443,
+        uuid: 'b1a2798c-6d0a-44dd-9d7f-f8a59e6d7f83',
+        amnezia: AmneziaParams(
+            jc: 1,
+            jmin: 10,
+            jmax: 20,
+            s1: 1,
+            s2: 2,
+            h1: '3',
+            h2: '4',
+            h3: '5',
+            h4: '6'),
+      );
+      addTearDown(() => AmneziaWgCoreState.instance.setRuntime(null));
+      // Stock AAR (no `-lx.` marker) or unknown engine → honest lockout.
+      AmneziaWgCoreState.instance.setRuntime('1.14.0');
+      expect(AndroidNodeSupport.isRunnable(p), isFalse);
+      expect(AndroidNodeSupport.shortBadge(p), contains('Amnezia'));
+      expect(AndroidNodeSupport.coreAllowedOnAndroid(CoreKind.amneziaWg),
+          isFalse);
+      // Forked libbox (`with_awg`) self-report → the node runs in-engine.
+      AmneziaWgCoreState.instance.setRuntime('v1.14.1-lx.8');
+      expect(AndroidNodeSupport.isRunnable(p), isTrue);
+      expect(AndroidNodeSupport.notRunnableReason(p), isNull);
+      expect(AndroidNodeSupport.androidExclusionReason(p), isNull);
+      expect(
+          AndroidNodeSupport.coreAllowedOnAndroid(CoreKind.amneziaWg), isTrue);
+    });
+
+    test('plain WireGuard nodes (standalone WARP) run on libbox (v0.4.9)', () {
+      final wg = ProxyProfile(
+        id: 'wg1',
+        name: 'WG',
+        protocol: ProxyProtocol.wireguard,
+        server: 'engage.cloudflareclient.com',
+        port: 2408,
+        core: CoreKind.wireguardSingbox,
+        wireguard: WireGuardConfig(
+          privateKey: 'k',
+          peerPublicKey: 'pk',
+          endpointHost: 'engage.cloudflareclient.com',
+          endpointPort: 2408,
+          addresses: const ['172.16.0.2/32'],
+          mtu: 1280,
+        ),
+      );
+      expect(AndroidNodeSupport.isRunnable(wg), isTrue);
+      expect(AndroidNodeSupport.notRunnableReason(wg), isNull);
+      expect(AndroidNodeSupport.coreAllowedOnAndroid(CoreKind.wireguardSingbox),
+          isTrue);
     });
   });
 }

@@ -1,8 +1,12 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import '../../application/dependencies.dart';
 import '../../settings/app_settings.dart';
 import '../../theme/theme.dart';
 import '../widgets/atlanhix_logo.dart';
+import '../../warp/wg_handshake_probe.dart';
 
 /// v0.4.8 §user — WARP chain modes card (rewritten from the v0.4.3 card).
 ///
@@ -30,9 +34,137 @@ class WarpChainCard extends StatefulWidget {
 
 class _WarpChainCardState extends State<WarpChainCard> {
   bool _busy = false;
+  // v0.4.9 §user — endpoint scanner state (WarpServer-style sweep).
+  bool _scanning = false;
+  double _scanProgress = 0;
+  String? _scanWinner; // host:port with the best handshake latency
+  List<(String, Duration)> _scanResults = const [];
+  final _scanCtl = TextEditingController();
 
   AppSettings get _s => widget.deps.appSettings;
   bool get _fa => Localizations.localeOf(context).languageCode == 'fa';
+
+  /// WarpServer-style endpoint sweep — with a REAL WireGuard handshake.
+  /// The old scanner sent a fake initiation whose MAC every honest endpoint
+  /// (Cloudflare included) silently drops, so it always said "no endpoint
+  /// answered". Now we build a genuine Noise-IK initiation from the
+  /// account's own static key and treat only a `type 2` response or a
+  /// cookie reply as liveness+RTT proof. Candidates: the classic
+  /// 162.159.192/193 + 188.114.96/97 spread over the ports WARP listens on.
+  static const _scanPorts = [2408, 500, 1701, 4500, 8443, 3138];
+  static const _scanHosts = [
+    '162.159.192.1', '162.159.192.5', '162.159.192.35', '162.159.192.62',
+    '162.159.193.10', '162.159.193.40', '188.114.97.1', '188.114.97.170',
+  ];
+
+  Future<void> _scanEndpoints() async {
+    if (_scanning) return;
+    final acct = widget.deps.warpRepo.account;
+    if (acct == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(_fa
+              ? 'اول WARP را رجیستر کن — کلید اکانت برای handshake لازم است'
+              : 'register WARP first — the account key is required for the handshake')));
+      return;
+    }
+    setState(() {
+      _scanning = true;
+      _scanProgress = 0;
+      _scanWinner = null;
+    });
+    final candidates = <(String, int)>{
+      for (final h in _scanHosts) for (final p in _scanPorts) (h, p),
+    }.toList();
+    final results = <(String, Duration)>[];
+    Duration best = const Duration(days: 1);
+    var done = 0;
+    RawDatagramSocket? sock;
+    try {
+      sock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+    } catch (_) {
+      if (mounted) setState(() => _scanning = false);
+      return;
+    }
+    for (final (h, p) in candidates) {
+      try {
+        final pkt = await WgHandshakeProbe.buildInitiation(
+          initiatorStaticPrivate: acct.privateKeyBytes,
+          responderStaticPublic: acct.serverKeyBytes,
+          // Cloudflare checks the 3-byte client id on EVERY packet —
+          // an initiation without it is dropped silently.
+          reserved: acct.reservedBytes,
+        );
+        final rtt = await WgHandshakeProbe.probe(h, p, pkt,
+            timeout: const Duration(milliseconds: 900), socket: sock);
+        if (rtt != null) {
+          results.add(('$h:$p', rtt));
+          if (rtt < best) {
+            best = rtt;
+            _scanWinner = '$h:$p';
+          }
+        }
+      } catch (_) {/* skip candidate */}
+      done++;
+      if (mounted) setState(() => _scanProgress = done / candidates.length);
+    }
+    sock.close();
+    results.sort((a, b) => a.$2.compareTo(b.$2));
+    _scanResults = results;
+    if (!mounted) return;
+    if (_scanWinner != null) {
+      await widget.deps.warpRepo.saveWithAwgParams(
+          endpointOverride: _scanWinner);
+    }
+    setState(() => _scanning = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(_scanWinner == null
+            ? (_fa
+                ? 'هیچ endpoint جواب نداد — اینترنت/فایروال را چک کن (یا دستی وارد کن)'
+                : 'no endpoint answered — check network/firewall (or enter one manually)')
+            : (_fa
+                ? 'بهترین endpoint: $_scanWinner (${best.inMilliseconds}ms) — ذخیره شد'
+                : 'best endpoint: $_scanWinner (${best.inMilliseconds}ms) — saved'))));
+  }
+
+  /// v0.4.9 §user: manual host:port entry — the scanner is best-effort; the
+  /// user may already know a working endpoint (WarpServer script output).
+  Future<void> _applyManualEndpoint() async {
+    final v = _scanCtl.text.trim();
+    if (v.isEmpty) return;
+    if (!RegExp(r'^[\w.:-]+$').hasMatch(v)) return; // host:port shaped only
+    await _applyEndpoint(v);
+  }
+
+  Future<void> _applyEndpoint(String hostPort) async {
+    await widget.deps.warpRepo.saveWithAwgParams(endpointOverride: hostPort);
+    if (!mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(_fa
+            ? 'endpoint ست شد: $hostPort — روی اتصال بعدی اعمال می‌شود'
+            : 'endpoint set: $hostPort — applied on the next connect')));
+  }
+
+  Future<void> _clearEndpointOverride() async {
+    await widget.deps.warpRepo.saveWithAwgParams(clearEndpointOverride: true);
+    _scanCtl.clear();
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  String _scannerLabel() {
+    final acct = widget.deps.warpRepo.account;
+    final pinned = acct?.endpointOverride;
+    if (_scanning) return _fa ? 'در حال اسکن…' : 'scanning…';
+    if (pinned != null && pinned.isNotEmpty) {
+      return _fa ? 'endpoint اسکن‌شده: $pinned' : 'scanned endpoint: $pinned';
+    }
+    return _fa
+        ? 'اسکن بهترین endpoint (آی‌پی/پورت وارپ)'
+        : 'scan best WARP endpoint (IP:port)';
+  }
+
+  // (real handshake packets are built by WgHandshakeProbe — see _scanEndpoints)
 
   Future<void> _register() async {
     setState(() => _busy = true);
@@ -81,7 +213,8 @@ class _WarpChainCardState extends State<WarpChainCard> {
     final i4 = TextEditingController(text: a.awgI4 ?? '');
     final i5 = TextEditingController(text: a.awgI5 ?? '');
     final hpk = TextEditingController(text: a.awgHpk ?? '');
-
+    var randTrailers = a.awgRandomTrailers ?? false;
+    var disableCookies = a.awgDisableCookies ?? false;
     int? p(TextEditingController c) => int.tryParse(c.text.trim());
     String? s(TextEditingController c) {
       final t = c.text.trim();
@@ -108,6 +241,36 @@ class _WarpChainCardState extends State<WarpChainCard> {
                     ?.copyWith(color: ThemeExt.of(ctx).textSecondary),
               ),
             ),
+            // v0.4.9 §user: one-tap AWG 3.1 defaults — the widely-used
+            // amnezia-client-style obfuscation set (junk + padding + header
+            // remap). Fills the EMPTY fields; already-set values are kept.
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () {
+                  void fill(TextEditingController c, String v) {
+                    if (c.text.trim().isEmpty) c.text = v;
+                  }
+
+                  fill(jc, '4');
+                  fill(jmin, '64');
+                  fill(jmax, '96');
+                  fill(s1, '15');
+                  fill(s2, '15');
+                  fill(h1, '1');
+                  fill(h2, '2');
+                  fill(h3, '3');
+                  fill(h4, '4');
+                  randTrailers = true;
+                  disableCookies = true;
+                  (ctx as Element).markNeedsBuild();
+                },
+                icon: const Icon(Icons.auto_fix_high, size: 16),
+                label: Text(_fa
+                    ? 'پیش‌فرض‌های AWG 3.1 (ضد DPI)'
+                    : 'AWG 3.1 defaults (anti-DPI)'),
+              ),
+            ),
             for (final e in <String, TextEditingController>{
               'Jc': jc, 'Jmin': jmin, 'Jmax': jmax,
               'S1': s1, 'S2': s2, 'S3': s3, 'S4': s4,
@@ -119,11 +282,7 @@ class _WarpChainCardState extends State<WarpChainCard> {
                 padding: const EdgeInsets.symmetric(vertical: 4),
                 child: TextField(
                   controller: e.value,
-                  // H ranges, I tag-DSL strings and the Hpk key are not
-                  // numeric-only inputs.
-                  keyboardType: e.key.startsWith('H') && e.key != 'Hpk'
-                      ? TextInputType.text
-                      : TextInputType.text,
+                  keyboardType: TextInputType.text,
                   decoration: InputDecoration(
                     labelText: e.key,
                     isDense: true,
@@ -131,6 +290,24 @@ class _WarpChainCardState extends State<WarpChainCard> {
                   ),
                 ),
               ),
+            StatefulBuilder(builder: (ctx, setSheet) => Column(children: [
+              CheckboxListTile(
+                dense: true,
+                value: randTrailers,
+                onChanged: (v) => setSheet(() => randTrailers = v ?? false),
+                title: const Text('RandomTrailers'),
+                subtitle: Text(
+                    _fa ? 'تریلرهای تصادفی (کانفیگ‌های amnezia)' : 'junk trailers (amnezia confs)'),
+              ),
+              CheckboxListTile(
+                dense: true,
+                value: disableCookies,
+                onChanged: (v) => setSheet(() => disableCookies = v ?? false),
+                title: const Text('DisableCookies'),
+                subtitle: Text(
+                    _fa ? 'غیرفعال‌سازی کوکی (کانفیگ‌های amnezia)' : 'disable cookie replies (amnezia confs)'),
+              ),
+            ])),
           ]),
         ),
         actions: [
@@ -164,6 +341,8 @@ class _WarpChainCardState extends State<WarpChainCard> {
       i4: s(i4),
       i5: s(i5),
       hpk: s(hpk),
+      randomTrailers: randTrailers ? true : null,
+      disableCookies: disableCookies ? true : null,
     );
     if (!mounted) return;
     setState(() {});
@@ -283,6 +462,124 @@ class _WarpChainCardState extends State<WarpChainCard> {
                     .textTheme
                     .bodySmall
                     ?.copyWith(color: c.textSecondary),
+              ),
+            ),
+            // v0.4.9 §user: endpoint scanner — find the best host:port
+            // (WarpServer-style sweep) AND a manual entry field. The winner
+            // is shown and can be cleared back to the API default.
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: c.surfaceElevated,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: c.border),
+                ),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Row(children: [
+                    Icon(Icons.radar,
+                        size: 18,
+                        color: (widget.deps.warpRepo.account?.endpointOverride
+                                    ?.isNotEmpty ==
+                                true)
+                            ? c.success
+                            : c.textSecondary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _scannerLabel(),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: widget.deps.warpRepo.account
+                                        ?.endpointOverride?.isNotEmpty ==
+                                    true
+                                ? c.textPrimary
+                                : c.textSecondary),
+                      ),
+                    ),
+                    if (_scanning)
+                      const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                  ]),
+                  if (_scanning)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: LinearProgressIndicator(value: _scanProgress),
+                    ),
+                  const SizedBox(height: 6),
+                  Row(children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _scanCtl,
+                        style: Theme.of(context).textTheme.bodySmall,
+                        keyboardType: TextInputType.text,
+                        decoration: InputDecoration(
+                          hintText: _fa
+                              ? 'دستی: 162.159.192.1:2408'
+                              : 'manual: 162.159.192.1:2408',
+                          isDense: true,
+                          border: const OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    TextButton(
+                      onPressed: _scanning ? null : _applyManualEndpoint,
+                      child: Text(_fa ? 'ست' : 'Set'),
+                    ),
+                    TextButton(
+                      onPressed: _scanning ? null : _scanEndpoints,
+                      child: Text(_fa ? 'اسکن' : 'Scan'),
+                    ),
+                    if (widget.deps.warpRepo.account?.endpointOverride
+                            ?.isNotEmpty ==
+                        true)
+                      IconButton(
+                        tooltip: _fa ? 'بازگشت به پیش‌فرض' : 'back to default',
+                        onPressed: _scanning ? null : _clearEndpointOverride,
+                        icon: Icon(Icons.close,
+                            size: 16, color: c.textSecondary),
+                      ),
+                  ]),
+                  if (_scanResults.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    for (final r in _scanResults.take(4))
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 1),
+                        child: Row(children: [
+                          Icon(
+                              r.$1 == _scanWinner
+                                  ? Icons.check_circle
+                                  : Icons.circle_outlined,
+                              size: 13,
+                              color: r.$1 == _scanWinner
+                                  ? c.success
+                                  : c.textSecondary),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: _scanning
+                                  ? null
+                                  : () => _applyEndpoint(r.$1),
+                              child: Text(
+                                  '${r.$1}  ·  ${r.$2.inMilliseconds}ms',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(
+                                          color: r.$1 == _scanWinner
+                                              ? c.textPrimary
+                                              : c.textSecondary)),
+                            ),
+                          ),
+                        ]),
+                      ),
+                  ],
+                ]),
               ),
             ),
             // v0.4.8 §user: the AWG-3.1 params entry (manual, per account).

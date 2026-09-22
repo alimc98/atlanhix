@@ -45,7 +45,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get disconnect => 'Disconnect';
 
   @override
-  String get connecting => 'Connectingâ€¦';
+  String get connecting => 'Connecting…';
 
   @override
   String get connected => 'Connected';
@@ -63,7 +63,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get testAllNodes => 'Test all nodes';
 
   @override
-  String get testing => 'Testingâ€¦';
+  String get testing => 'Testing…';
 
   @override
   String get currentNode => 'Current node';
@@ -310,7 +310,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get updating => 'Updatingâ€¦';
+  String get updating => 'Updating…';
 
   @override
   String get updateFailed => 'Update failed';

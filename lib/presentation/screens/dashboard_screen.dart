@@ -427,17 +427,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         : null)),
               ),
               const SizedBox(height: 32),
-              // v0.4.7 §brand (sheet v2): the FAST / SECURE / FREEDOM brand
-              // card closes the dashboard — pure artwork from the sheet,
-              // hairline-rounded like the other cards.
-              ClipRRect(
-                borderRadius: BorderRadius.circular(NexusSpacing.radiusCard),
-                child: Image.asset(
-                  'assets/brand/brand_card.png',
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-                ),
-              ),
+              // v0.4.9 §user: the FAST/SECURE/FREEDOM brand card is REMOVED
+              // from the dashboard tail (the hero artwork carries the brand
+              // identity now).
             ],
           ),
         ),

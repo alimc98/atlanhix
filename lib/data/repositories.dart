@@ -55,6 +55,9 @@ class WarpRepository {
       awgI4: section['awgI4'] as String?,
       awgI5: section['awgI5'] as String?,
       awgHpk: section['awgHpk'] as String?,
+      awgRandomTrailers: section['awgRandomTrailers'] as bool?,
+      awgDisableCookies: section['awgDisableCookies'] as bool?,
+      endpointOverride: section['endpointOverride'] as String?,
     );
   }
 
@@ -99,6 +102,9 @@ class WarpRepository {
       if (a.awgI4 != null) 'awgI4': a.awgI4,
       if (a.awgI5 != null) 'awgI5': a.awgI5,
       if (a.awgHpk != null) 'awgHpk': a.awgHpk,
+      if (a.awgRandomTrailers != null) 'awgRandomTrailers': a.awgRandomTrailers,
+      if (a.awgDisableCookies != null) 'awgDisableCookies': a.awgDisableCookies,
+      if (a.endpointOverride != null) 'endpointOverride': a.endpointOverride,
     });
   }
 
@@ -125,6 +131,10 @@ class WarpRepository {
     String? i4,
     String? i5,
     String? hpk,
+    bool? randomTrailers,
+    bool? disableCookies,
+    String? endpointOverride,
+    bool clearEndpointOverride = false,
   }) async {
     final a = _account;
     if (a == null) return;
@@ -157,6 +167,10 @@ class WarpRepository {
       awgI4: i4,
       awgI5: i5,
       awgHpk: hpk,
+      awgRandomTrailers: randomTrailers,
+      awgDisableCookies: disableCookies,
+      endpointOverride:
+          clearEndpointOverride ? null : (endpointOverride ?? a.endpointOverride),
     );
     await save(_account!);
   }

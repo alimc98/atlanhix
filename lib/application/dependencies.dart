@@ -7,6 +7,7 @@ import '../data/profile_repository.dart';
 import '../data/repositories.dart';
 import '../data/secure_vault.dart';
 import '../application/connection_controller.dart';
+import '../application/real_delay_tester.dart';
 import '../application/subscription_service.dart';
 import '../core/core_detector.dart';
 import '../core/fragmentation/fragment_ladder_cache.dart';
@@ -14,6 +15,7 @@ import '../core/health/latency_tester.dart';
 import '../core/health/test_scheduler.dart';
 import '../core/runtime/binary_manager.dart';
 import '../core/runtime/core_manager.dart';
+import '../core/runtime/singbox_runtime.dart';
 import '../protocols/importer.dart';
 import '../routing/builtin_profiles.dart';
 import '../settings/app_settings.dart';
@@ -92,6 +94,20 @@ class AppDependencies {
     deps.tester = LatencyTester();
     deps.healthStore = HealthStore();
     deps.scheduler = TestScheduler(tester: deps.tester, store: deps.healthStore);
+    // v0.4.9 §user: REAL delay tester — the node list's test button and the
+    // background sweep measure the END-TO-END URL delay through each node's
+    // live outbound (engine delay test), never a bare TCP ping. Wired to the
+    // front engine's Clash API; engine-off → honest null result.
+    deps.realDelay = RealDelayTester(tester: deps.tester)
+      ..probeUrl = 'https://www.gstatic.com/generate_204'
+      ..engineDelayTest = (p) async {
+        final api = deps.cores.front.api;
+        if (api == null) return null;
+        return api.delayTest(
+            '${SingBoxRuntime.tagPrefix}${p.id}',
+            deps.realDelay.probeUrl,
+            5000);
+      };
     deps.detector = CoreDetector();
     deps.importer = MultiFormatImporter();
 
@@ -188,6 +204,8 @@ class AppDependencies {
   late final TestScheduler scheduler;
   late final CoreDetector detector;
   late final MultiFormatImporter importer;
+  // v0.4.9 §user: end-to-end URL delay tester for the node list.
+  late final RealDelayTester realDelay;
   late final ConnectionController connection;
   late final SubscriptionService subscriptionService;
   late final WarpRepository warpRepo;

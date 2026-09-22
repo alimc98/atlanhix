@@ -173,7 +173,7 @@ abstract class AppLocalizations {
   /// No description provided for @connecting.
   ///
   /// In en, this message translates to:
-  /// **'Connectingâ€¦'**
+  /// **'Connecting…'**
   String get connecting;
 
   /// No description provided for @connected.
@@ -209,7 +209,7 @@ abstract class AppLocalizations {
   /// No description provided for @testing.
   ///
   /// In en, this message translates to:
-  /// **'Testingâ€¦'**
+  /// **'Testing…'**
   String get testing;
 
   /// No description provided for @currentNode.
@@ -695,7 +695,7 @@ abstract class AppLocalizations {
   /// No description provided for @updating.
   ///
   /// In en, this message translates to:
-  /// **'Updatingâ€¦'**
+  /// **'Updating…'**
   String get updating;
 
   /// No description provided for @updateFailed.

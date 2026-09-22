@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import '../core/engine_availability.dart';
 import '../core/logger.dart';
 
 /// v0.4.1 (§2-§6) — Android VPN runtime controller.
@@ -414,4 +415,23 @@ abstract final class VpnErrorCode {
   static const networkUnavailable = 'NETWORK_UNAVAILABLE';
   static const coreUnavailable = 'CORE_UNAVAILABLE';
   static const unknown = 'UNKNOWN';
+}
+
+/// v0.4.9: asks the native side for the libbox engine version and arms the
+/// AmneziaWG capability gates when the AAR is the forked (`with_awg`, `-lx.`)
+/// build. A stock AAR — or desktop, where the channel does not exist — keeps
+/// the gates closed. Called once from the boot warm-up, next to the Xray
+/// handshake. Never throws.
+Future<void> probeEngineVersion() async {
+  String? version;
+  try {
+    version = await const MethodChannel('dev.atlanhix/vpn')
+        .invokeMethod<String>('engineVersion');
+  } on MissingPluginException {
+    version = null; // desktop / tests: AWG daemon path, not libbox
+  } catch (_) {
+    version = null;
+  }
+  AmneziaWgCoreState.instance
+      .setRuntime((version == null || version.isEmpty) ? null : version);
 }

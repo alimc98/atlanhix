@@ -40,6 +40,12 @@ class WarpAccount {
     this.awgI4,
     this.awgI5,
     this.awgHpk,
+    this.awgRandomTrailers,
+    this.awgDisableCookies,
+    // v0.4.9 §user: the WARP API hands out ONE default endpoint (host:port);
+    // carriers block the popular ones, so the account can carry a SCANNED
+    // best endpoint (WarpServer-style IP:port sweep). Null/empty = default.
+    this.endpointOverride,
   });
 
   final String deviceId;
@@ -76,6 +82,54 @@ class WarpAccount {
   final String? awgI5;
   final String? awgHpk;
 
+  /// AWG 3.x dialect flags (amnezia-client confs: RandomTrailers /
+  /// DisableCookies). Null = server default.
+  final bool? awgRandomTrailers;
+  final bool? awgDisableCookies;
+
+  /// Scanned best `host:port` for the WARP peer (overrides the API default).
+  final String? endpointOverride;
+
+  /// Raw x25519 bytes of our static private key (for the real handshake
+  /// probe used by the endpoint scanner).
+  List<int> get privateKeyBytes {
+    try {
+      return base64.decode(privateKey);
+    } on FormatException {
+      return List.filled(32, 0);
+    }
+  }
+
+  /// Raw x25519 bytes of the server's public key.
+  List<int> get serverKeyBytes {
+    try {
+      return base64.decode(peerPublicKey);
+    } on FormatException {
+      return List.filled(32, 0);
+    }
+  }
+
+  /// The endpoint the tunnels actually dial: the scanned override when set,
+  /// else the API default.
+  String get dialHost {
+    final o = endpointOverride;
+    if (o != null && o.contains(':') && !o.startsWith('[')) {
+      final i = o.lastIndexOf(':');
+      final h = o.substring(0, i).trim();
+      if (h.isNotEmpty) return h;
+    }
+    return endpointV4;
+  }
+
+  int get dialPort {
+    final o = endpointOverride;
+    if (o != null && o.contains(':')) {
+      final p = int.tryParse(o.substring(o.lastIndexOf(':') + 1).trim());
+      if (p != null && p > 0 && p <= 65535) return p;
+    }
+    return 2408;
+  }
+
   bool get hasAmneziaParams =>
       awgJc != null ||
       awgH1 != null ||
@@ -103,6 +157,8 @@ class WarpAccount {
           i4: awgI4,
           i5: awgI5,
           headerProtectionKey: awgHpk,
+          randomTrailers: awgRandomTrailers,
+          disableCookies: awgDisableCookies,
         )
       : null;
 
@@ -124,6 +180,7 @@ class WarpAccount {
         'addressV6': addressV6,
         'license': license,
         'registeredAt': registeredAt?.toIso8601String(),
+        if (endpointOverride != null) 'endpointOverride': endpointOverride,
         if (hasAmneziaParams) 'amneziaWG': true,
       };
 }
@@ -249,15 +306,15 @@ class WarpRegistrar {
     return ProxyProfile(
       id: Ids.newId(),
       name: name,
-      server: a.endpointV4,
-      port: 2408,
+      server: a.dialHost,
+      port: a.dialPort,
       protocol: ProxyProtocol.wireguard,
       core: CoreKind.wireguardSingbox,
       wireguard: WireGuardConfig(
         privateKey: a.privateKey,
         peerPublicKey: a.peerPublicKey,
-        endpointHost: a.endpointV4,
-        endpointPort: 2408,
+        endpointHost: a.dialHost,
+        endpointPort: a.dialPort,
         allowedIps: const ['0.0.0.0/0', '::/0'],
         addresses: [
           if (a.addressV4 != null && a.addressV4!.isNotEmpty) a.addressV4!,

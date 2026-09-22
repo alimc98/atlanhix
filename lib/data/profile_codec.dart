@@ -126,6 +126,8 @@ Future<ProxyProfile> _profileFromStorable(
             headerProtectionKey: j['amnezia']['hpk'] as String?,
             contentPaddingAddition:
                 j['amnezia']['padding'] as String?,
+            randomTrailers: j['amnezia']['randomTrailers'] as bool?,
+            disableCookies: j['amnezia']['disableCookies'] as bool?,
           ),
     rawParams: ((j['rawParams'] ?? const {}) as Map).cast<String, String>(),
     rawConfig: await secret((j['raw']?['secret']) as String?) ??

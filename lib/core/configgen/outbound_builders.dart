@@ -234,6 +234,17 @@ class OutboundBuilders {
     }
   }
 
+  /// sing-box ≥1.12 decodes wireguard endpoint `address` / `allowed_ips`
+  /// entries as netip.Prefix — a bare IP fails with `ParsePrefix: no '/'`
+  /// (seen on device: ENGINE_START_FAILED "endpoints[0].address"). The
+  /// Cloudflare WARP API hands the v4 address out WITHOUT its prefix
+  /// ("172.16.0.2"), so normalize: v4 → /32, v6 → /128 when omitted.
+  static String _wgPrefix(String entry) {
+    final t = entry.trim();
+    if (t.contains('/')) return t;
+    return '$t/${t.contains(':') ? 128 : 32}';
+  }
+
   /// sing-box `endpoints` entry for WireGuard (native profiles + WARP).
   ///
   /// v0.4.8 §user: an AmneziaWG 3.x profile emits its FULL obfuscation set
@@ -263,9 +274,14 @@ class OutboundBuilders {
     return {
       'type': 'wireguard',
       'tag': tag,
-      'address': wg.addresses.isNotEmpty
-          ? wg.addresses
-          : ['172.16.0.2/32', 'fd01:5ca1:ab1e:80fa:ab85:6eea:213f:f4a5/128'],
+      'address': (wg.addresses.isNotEmpty
+              ? wg.addresses
+              : const [
+                  '172.16.0.2/32',
+                  'fd01:5ca1:ab1e:80fa:ab85:6eea:213f:f4a5/128',
+                ])
+          .map(_wgPrefix)
+          .toList(),
       'private_key': wg.privateKey,
       'mtu': wg.mtu ?? 1408,
       'peers': [
@@ -274,7 +290,7 @@ class OutboundBuilders {
           'port': wg.endpointPort,
           'public_key': wg.peerPublicKey,
           if (wg.preSharedKey != null) 'pre_shared_key': wg.preSharedKey,
-          'allowed_ips': wg.allowedIps,
+          'allowed_ips': wg.allowedIps.map(_wgPrefix).toList(),
           if (wg.persistentKeepalive != null)
             'persistent_keepalive_interval': wg.persistentKeepalive,
           if (wg.reserved != null && wg.reserved!.length == 3)
@@ -301,11 +317,16 @@ class OutboundBuilders {
       if (amnezia != null &&
           amnezia.headerProtectionKey != null &&
           amnezia.headerProtectionKey!.isNotEmpty)
-        'hpk': amnezia.headerProtectionKey,
+        // Fork JSON names verified against option/wireguard_awg.go of
+        // sing-box-lx v1.14.1-lx.8 (the README spellings `hpk`/`padding`
+        // are NOT the wire names).
+        'header_protection_key': amnezia.headerProtectionKey,
       if (amnezia != null &&
           amnezia.contentPaddingAddition != null &&
           amnezia.contentPaddingAddition!.isNotEmpty)
-        'padding': amnezia.contentPaddingAddition,
+        'content_padding_addition': amnezia.contentPaddingAddition,
+      if (amnezia?.randomTrailers == true) 'random_trailers': true,
+      if (amnezia?.disableCookies == true) 'disable_cookies': true,
       if (detourTag != null) 'detour': detourTag,
     };
   }

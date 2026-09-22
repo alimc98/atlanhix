@@ -104,6 +104,35 @@ class XrayCoreState {
   }
 }
 
+/// v0.4.9: AmneziaWG capability of the ANDROID engine (libbox). The AWG
+/// obfuscated handshake only executes when the AAR is the forked sing-box
+/// build (`with_awg`); stock sing-box parses the `jc/jmin/...` fields and
+/// silently strips them, so the handshake degrades to plain WireGuard and
+/// an AWG server drops it — the exact "registered WARP, nothing connects"
+/// bug. The flag is armed from the engine's SELF-REPORTED version string
+/// (`-lx.` marker, stamped at AAR build time); a stock AAR keeps the gates
+/// closed instead of lying. Desktop runs the AWG daemon path and never
+/// consults this state.
+class AmneziaWgCoreState {
+  AmneziaWgCoreState._();
+  static final AmneziaWgCoreState instance = AmneziaWgCoreState._();
+
+  bool _runtimeLoaded = false;
+  String? _version;
+
+  bool get runtimeLoaded => _runtimeLoaded;
+  String? get version => _version;
+
+  /// Arm from the engine version report; `null` (desktop / unknown) disarms.
+  void setRuntime(String? version) {
+    _version = version;
+    final loaded = version != null && version.contains('-lx.');
+    if (_runtimeLoaded == loaded) return;
+    _runtimeLoaded = loaded;
+    VpnRefresh.notify();
+  }
+}
+
 /// Tiny event hub so screens repaint when the engine report arrives.
 class VpnRefresh {
   static final ValueNotifier<int> tick = ValueNotifier<int>(0);

@@ -107,7 +107,10 @@ class _NodesScreenState extends State<NodesScreen> {
             }
           },
         ),
-        WarpChainCard(deps: widget.deps),
+        // v0.4.9 §user: the WARP card eats the panel — collapsed by default
+        // (one-row header), expands only on tap so the node list gets its
+        // space back.
+        _CollapsibleWarpCard(deps: widget.deps),
         // v0.4.7 §brand (sheet v2): rounded search + pill filter chips + a
         // compact action row — the mockup's Nodes panel anatomy.
         Padding(
@@ -167,12 +170,8 @@ class _NodesScreenState extends State<NodesScreen> {
               _GhostIconButton(
                   icon: Icons.speed,
                   tooltip: l.testAllNodes,
-                  onTap: () {
-                    widget.deps.scheduler
-                        .updateProfiles(widget.deps.profiles.all);
-                    widget.deps.scheduler.start();
-                    widget.deps.scheduler.enqueueSweep();
-                  }),
+                  busy: _sweeping,
+                  onTap: _sweeping ? null : () => _runRealUrlSweep()),
             ],
           ),
         ),
@@ -268,6 +267,7 @@ class _NodesScreenState extends State<NodesScreen> {
                                 deps: widget.deps, profile: p)));
                         if (mounted) setState(() {});
                       },
+                      onDelete: () => _confirmDelete(context, p),
                     );
                   },
                 ),
@@ -303,6 +303,46 @@ class _NodesScreenState extends State<NodesScreen> {
         style: const ButtonStyle(visualDensity: VisualDensity.compact),
       ),
     );
+  }
+
+  /// v0.4.9 §user: REAL URL sweep — every runnable node is tested
+  /// END-TO-END (HTTP GET through the node's live outbound via the running
+  /// engine), NOT with a bare TCP ping to the node IP. An Iran-internal
+  /// tunnel IP answers TCP in 50 ms and still cannot fetch anything —
+  /// exactly the "ping says alive, tunnel dead" bug. Results land in the
+  /// shared HealthStore so the latency column, filters, sorting, Smart
+  /// Switch and the fragment ladder all read the SAME real numbers.
+  bool _sweeping = false;
+
+  Future<void> _runRealUrlSweep() async {
+    if (_sweeping) return;
+    final runnable = widget.deps.profiles.all
+        .where((p) =>
+            p.enabled &&
+            (!Platform.isAndroid || AndroidNodeSupport.isRunnable(p)))
+        .toList();
+    if (runnable.isEmpty) return;
+    _sweeping = true;
+    if (mounted) setState(() {});
+    const chunk = 6;
+    for (var i = 0; i < runnable.length; i += chunk) {
+      final part = runnable.sublist(
+          i, i + chunk > runnable.length ? runnable.length : i + chunk);
+      await Future.wait(part.map((p) async {
+        final r = await widget.deps.realDelay.test(p);
+        if (r.errorKind == 'engine-off') return; // nothing real measured
+        widget.deps.healthStore.record(HealthRecord(
+          profileId: p.id,
+          at: DateTime.now(),
+          ok: r.ok,
+          latencyMs: r.latencyMs,
+          errorKind: r.errorKind,
+        ));
+      }));
+      if (mounted) setState(() {});
+    }
+    _sweeping = false;
+    if (mounted) setState(() {});
   }
 
   List<ProxyProfile> _filterSort(List<ProxyProfile> all) {
@@ -379,7 +419,35 @@ class _NodesScreenState extends State<NodesScreen> {
     }
   }
 
-  /// v0.4.1 per-node core picker: Auto (default) / sing-box / Xray.
+  /// v0.4.9 §user: per-node delete with confirmation. Also un-selects the
+  /// node if it was the active selection so the dashboard never points at a
+  /// ghost.
+  Future<void> _confirmDelete(BuildContext context, ProxyProfile p) async {
+    final l = AppLocalizations.of(context)!;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l.delete),
+        content: Text('${p.name} — ${l.delete}?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(MaterialLocalizations.of(ctx).cancelButtonLabel)),
+          FilledButton(
+              style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(ctx).colorScheme.error),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(l.delete)),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await widget.deps.profiles.remove(p.id);
+    if (_selectedId == p.id) _selectedId = null;
+    if (mounted) setState(() {});
+  }
+
+  /// v0.4.1 per-node core picker: Auto (default) / sing-box / AWG / Xray.
   /// Persisted via [ProxyProfile.userPinnedCore] so it survives restarts and
   /// drives CoreDetector.resolve() on every connect. Xray on Android is
   /// selectable but honest: it explains the platform limit (no exec() of
@@ -389,6 +457,23 @@ class _NodesScreenState extends State<NodesScreen> {
   Future<void> _showCorePicker(BuildContext context, ProxyProfile p) async {
     final onAndroid = Platform.isAndroid;
     final xrayWarn = NodeCoreChoice.xrayWarning(p, onAndroid: onAndroid);
+    // v0.4.9 §user: capability-aware picker — a core that CANNOT run the
+    // node is disabled with the honest reason, per node type:
+    //   * xhttp/mKCP (Xray-only transports): sing-box AND AWG disabled.
+    //   * AWG nodes (amnezia params): sing-box AND Xray disabled.
+    final isXrayOnly = p.transport == Transport.xhttp ||
+        p.rawParams['type'] == 'mkcp' ||
+        p.rawParams['type'] == 'kcp';
+    final isAwgNode = p.amnezia?.isNotEmpty == true;
+    final singBoxReason = isXrayOnly
+        ? 'sing-box cannot run Xray-only transports (xhttp/mKCP)'
+        : (isAwgNode
+            ? 'plain sing-box strips the AWG obfuscation fields — the handshake degrades to WireGuard and dies'
+            : null);
+    final awgReason = !isAwgNode && p.protocol != ProxyProtocol.wireguard
+        ? 'only WireGuard-family nodes carry AWG params'
+        : (isXrayOnly ? 'xhttp/mKCP cannot run through a WireGuard-family engine' : null);
+    final xrayCapable = xrayWarn == null || !onAndroid;
     final picked = await showModalBottomSheet<CoreKind>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -406,36 +491,57 @@ class _NodesScreenState extends State<NodesScreen> {
                   ? Icons.radio_button_checked
                   : Icons.radio_button_unchecked),
               title: const Text('Auto (recommended)'),
-              subtitle: const Text(
-                  'Detect the best engine for this node automatically'),
+              subtitle: Text(
+                  'Detect the best engine for this node automatically'
+                  '${p.amnezia?.isNotEmpty == true ? ' — AmneziaWG params detected, runs on the AWG engine' : ''}'),
               onTap: () => Navigator.pop(ctx, CoreKind.unknown),
             ),
             ListTile(
+              enabled: singBoxReason == null,
               leading: Icon(p.userPinnedCore == CoreKind.singbox
                   ? Icons.radio_button_checked
                   : Icons.radio_button_unchecked),
               title: const Text('sing-box'),
-              subtitle: Text(onAndroid
-                  ? 'The on-device engine — runs this node in-app'
-                  : 'Force the sing-box core'),
-              onTap: () => Navigator.pop(ctx, CoreKind.singbox),
+              subtitle: Text(singBoxReason ??
+                  (onAndroid
+                      ? 'The on-device engine — runs this node in-app'
+                      : 'Force the sing-box core')),
+              onTap:
+                  singBoxReason != null ? null : () => Navigator.pop(ctx, CoreKind.singbox),
+            ),
+            // v0.4.9 §user: AmneziaWG pin — meaningful for WireGuard-family
+            // nodes carrying AWG params (the forked libbox executes them).
+            ListTile(
+              enabled: awgReason == null,
+              leading: Icon(p.userPinnedCore == CoreKind.amneziaWg
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked),
+              title: const Text('AmneziaWG'),
+              subtitle: Text(awgReason ??
+                  (isAwgNode
+                      ? 'Run the AWG-obfuscated handshake (forked engine)'
+                      : 'WireGuard node — set AWG params first (WARP card or an imported .conf)')),
+              onTap:
+                  awgReason != null ? null : () => Navigator.pop(ctx, CoreKind.amneziaWg),
             ),
             ListTile(
-              enabled: xrayWarn == null || !onAndroid,
+              enabled: xrayCapable && !isAwgNode,
               leading: Icon(p.userPinnedCore == CoreKind.xray
                   ? Icons.radio_button_checked
                   : Icons.radio_button_unchecked),
               title: const Text('Xray'),
-              subtitle: Text(xrayWarn ??
-                  (onAndroid
-                      ? 'Runs this node through the Xray core'
-                      : 'Force the Xray core (separate process)'),
-                  style: xrayWarn != null
+              subtitle: Text(isAwgNode
+                  ? 'Xray cannot execute a WireGuard-family handshake'
+                  : (xrayWarn ??
+                      (onAndroid
+                          ? 'Runs this node through the Xray core'
+                          : 'Force the Xray core (separate process)')),
+                  style: (xrayWarn != null || isAwgNode)
                       ? TextStyle(
                           color: Theme.of(ctx).colorScheme.error,
                           fontSize: 12)
                       : null),
-              onTap: xrayWarn != null && onAndroid
+              onTap: (xrayWarn != null && onAndroid) || isAwgNode
                   ? null
                   : () => Navigator.pop(ctx, CoreKind.xray),
             ),
@@ -555,6 +661,7 @@ class _NodeTile extends StatelessWidget {
     required this.onConnect,
     required this.onCoreTap,
     this.onEdit,
+    this.onDelete,
     this.selected = false,
     this.isAndroid = false,
   });
@@ -564,8 +671,10 @@ class _NodeTile extends StatelessWidget {
   final VoidCallback onConnect;
   /// v0.4.3: long-press (or menu) → edit this node's fields in place.
   final VoidCallback? onEdit;
+  /// v0.4.9 §user: per-node delete (confirm dialog lives in the screen).
+  final VoidCallback? onDelete;
   /// v0.4.1: tap on the core badge opens the per-node core picker
-  /// (Auto / sing-box / Xray).
+  /// (Auto / sing-box / AWG / Xray).
   final VoidCallback onCoreTap;
   final bool selected;
   final bool isAndroid;
@@ -763,6 +872,22 @@ class _NodeTile extends StatelessWidget {
                     message: healthLabel,
                     child: StatusDot(color: healthColor),
                   ),
+                  // v0.4.9 §user: per-node delete — a quiet ghost glyph so
+                  // the row anatomy stays clean; confirmation lives in the
+                  // screen (never delete on a single accidental tap).
+                  if (onDelete != null)
+                    Tooltip(
+                      message: 'Delete node',
+                      child: InkWell(
+                        onTap: onDelete,
+                        borderRadius: BorderRadius.circular(999),
+                        child: Padding(
+                          padding: const EdgeInsets.all(6),
+                          child: Icon(Icons.delete_outline,
+                              size: 16, color: c.textSecondary),
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -781,11 +906,13 @@ class _GhostIconButton extends StatelessWidget {
     required this.icon,
     required this.tooltip,
     required this.onTap,
+    this.busy = false,
   });
 
   final IconData icon;
   final String tooltip;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
@@ -802,7 +929,11 @@ class _GhostIconButton extends StatelessWidget {
           child: SizedBox(
             width: 38,
             height: 38,
-            child: Icon(icon, size: 19, color: c.textSecondary),
+            child: busy
+                ? const Padding(
+                    padding: EdgeInsets.all(10),
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : Icon(icon, size: 19, color: c.textSecondary),
           ),
         ),
       ),
@@ -874,6 +1005,73 @@ class _SmartSwitchCard extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// v0.4.9 §user: the WARP/chain card collapsed by default — a one-row
+// header with a chevron; the full card only mounts when opened so the
+// node list keeps its vertical space ("کادر کلودفلر خیلی بزرگ شده").
+class _CollapsibleWarpCard extends StatefulWidget {
+  const _CollapsibleWarpCard({required this.deps});
+  final AppDependencies deps;
+
+  @override
+  State<_CollapsibleWarpCard> createState() => _CollapsibleWarpCardState();
+}
+
+class _CollapsibleWarpCardState extends State<_CollapsibleWarpCard> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    final fa = Localizations.localeOf(context).languageCode == 'fa';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: Container(
+        decoration: BoxDecoration(
+          color: c.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: c.border),
+        ),
+        child: Column(
+          children: [
+            InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () => setState(() => _open = !_open),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                child: Row(
+                  children: [
+                    Icon(Icons.shield_outlined,
+                        size: 18, color: c.textSecondary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                          fa
+                              ? 'کلودفلر WARP / زنجیره'
+                              : 'Cloudflare WARP / chain',
+                          style: TextStyle(color: c.textPrimary, fontSize: 13)),
+                    ),
+                    AnimatedRotation(
+                      turns: _open ? 0.5 : 0,
+                      duration: const Duration(milliseconds: 180),
+                      child: Icon(Icons.expand_more,
+                          size: 20, color: c.textSecondary),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (_open)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(0, 0, 0, 4),
+                child: WarpChainCard(deps: widget.deps, compact: true),
+              ),
+          ],
         ),
       ),
     );

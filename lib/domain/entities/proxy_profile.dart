@@ -326,6 +326,8 @@ class AmneziaParams {
     this.i5,
     this.headerProtectionKey,
     this.contentPaddingAddition,
+    this.randomTrailers,
+    this.disableCookies,
     this.extra = const {},
   });
 
@@ -337,6 +339,11 @@ class AmneziaParams {
   final String? i1, i2, i3, i4, i5;
   final String? headerProtectionKey;
   final String? contentPaddingAddition;
+
+  /// AWG 3.x dialect flags (amnezia-client WARP confs): junk TRAILERS after
+  /// each packet and cookie replies disabled. Absent = server default.
+  final bool? randomTrailers;
+  final bool? disableCookies;
   final Map<String, String> extra;
 
   bool get isNotEmpty =>
@@ -359,6 +366,8 @@ class AmneziaParams {
       (headerProtectionKey != null && headerProtectionKey!.isNotEmpty) ||
       (contentPaddingAddition != null &&
           contentPaddingAddition!.isNotEmpty) ||
+      randomTrailers == true ||
+      disableCookies == true ||
       extra.isNotEmpty;
 
   Map<String, String> toConfLines() => {
@@ -384,6 +393,8 @@ class AmneziaParams {
         if (contentPaddingAddition != null &&
             contentPaddingAddition!.isNotEmpty)
           'ContentPaddingAddition': contentPaddingAddition!,
+        if (randomTrailers == true) 'RandomTrailers': 'on',
+        if (disableCookies == true) 'DisableCookies': 'on',
         ...extra,
       };
 }

@@ -7,6 +7,7 @@ import 'application/update_checker.dart';
 import 'core/engine_availability.dart';
 import 'core/logger.dart';
 import 'localization/generated/app_localizations.dart';
+import 'platform/android_vpn.dart';
 import 'platform/xray_bridge.dart';
 import 'presentation/app_shell.dart';
 import 'presentation/screens/warp_screen.dart';
@@ -27,6 +28,10 @@ Future<void> main() async {
     // in the :xray process) before the UI paints a single badge.
     await XrayBridge.instance.probe();
     XrayCoreState.instance.setRuntimeLoaded(XrayBridge.instance.available);
+    // v0.4.9: arm the AmneziaWG gates from the libbox engine's self-reported
+    // version (fork marker `-lx.`) — same honesty contract as the Xray
+    // handshake above.
+    await probeEngineVersion();
     return deps;
   }();
   runApp(AtlanhixRoot(warmup: warmup));
@@ -63,33 +68,19 @@ class AtlanhixRoot extends StatelessWidget {
           );
         }
         if (!snap.hasData) {
-          // Branded dark intro with the user-provided artwork — same paint
-          // as the native launch window, so the transition is seamless.
+          // v0.4.9 §user: the intro is ONE user-provided artwork (logo mark
+          // + wordmark in a single image) — the previous two-image stack
+          // (mark_square + tagline) is gone.
           return MaterialApp(
             debugShowCheckedModeBanner: false,
             home: Container(
               color: const Color(0xFF0A0B0E),
               alignment: Alignment.center,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // v0.4.7 §brand (sheet v2): the rounded-square 'A' mark
-                  // (marble texture) IS the splash lead — the tagline strip
-                  // follows, exactly like the sheet's brand column.
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(28),
-                    child: Image.asset('assets/brand/mark_square.png',
-                        width: 120,
-                        height: 120,
-                        fit: BoxFit.contain,
-                        errorBuilder: (c, e, s) => const SizedBox(height: 120)),
-                  ),
-                  const SizedBox(height: 22),
-                  Image.asset('assets/brand/tagline.png',
-                      height: 13,
-                      fit: BoxFit.contain,
-                      errorBuilder: (c, e, s) => const SizedBox.shrink()),
-                ],
+              child: Image.asset(
+                'assets/brand/intro.jpg',
+                width: 280,
+                fit: BoxFit.contain,
+                errorBuilder: (c, e, s) => const SizedBox(height: 120),
               ),
             ),
           );
@@ -209,6 +200,11 @@ class _AtlanhixAppState extends State<AtlanhixApp> {
 
   Future<void> _offerClipboardImport() async {
     final deps = widget.deps;
+    // v0.4.9 §fix: NULL-SAFE localization — this callback fires from the
+    // FIRST post-frame callback, where the Localizations delegate may not
+    // have installed itself yet (device crash: "Null check operator used on
+    // a null value" at the `!` right here). Localization is re-read AFTER
+    // the async gap, null-guarded, before the dialog is shown.
     final service = ClipboardImportService(
       importer: deps.importer,
       onAddNodes: (profiles) => deps.profiles.upsertMany(profiles),
@@ -222,30 +218,33 @@ class _AtlanhixAppState extends State<AtlanhixApp> {
     );
     final offer = await service.peekOffer();
     if (offer == null || !mounted) return;
-    final l = AppLocalizations.of(context)!;
+    // Localization is available NOW (post-build, post-async-gap); bail
+    // honestly when the delegate never arrived.
+    final loc = AppLocalizations.of(context);
+    if (loc == null) return;
     final action = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(l.clipboardAddTitle),
-        content: Text(l.clipboardAddBody(offer.lineCount)),
+        title: Text(loc.clipboardAddTitle),
+        content: Text(loc.clipboardAddBody(offer.lineCount)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, 'later'),
-            child: Text(l.clipboardLater),
+            child: Text(loc.clipboardLater),
           ),
           if (offer.kind == ClipboardPayloadKind.subscriptionUrl)
             FilledButton(
               onPressed: () => Navigator.pop(ctx, 'sub'),
-              child: Text(l.clipboardAddSubscription),
+              child: Text(loc.clipboardAddSubscription),
             )
           else ...[
             TextButton(
               onPressed: () => Navigator.pop(ctx, 'sub'),
-              child: Text(l.clipboardAddSubscription),
+              child: Text(loc.clipboardAddSubscription),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(ctx, 'nodes'),
-              child: Text(l.clipboardAddNodes),
+              child: Text(loc.clipboardAddNodes),
             ),
           ],
         ],

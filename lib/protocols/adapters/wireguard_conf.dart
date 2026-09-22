@@ -29,14 +29,24 @@ class WireGuardConfParser {
       if (section == 'interface') {
         const known = {
           'privatekey', 'address', 'dns', 'mtu', 'listenport', 'fwmark',
+          // v0.4.9: wg-quick allows REPEATED Address lines (the amnezia-client
+          // WARP conf carries one v4 + one v6 line) — collect instead of
+          // keeping only the last one.
           // AmneziaWG 2.0/3.x client set (amneziawg-go v3.1):
           'jc', 'jmin', 'jmax',
           's1', 's2', 's3', 's4',
           'h1', 'h2', 'h3', 'h4',
           'i1', 'i2', 'i3', 'i4', 'i5',
           'hpk', 'contentpaddingaddition',
+          // AWG 3.x dialect flags (amnezia-client WARP confs).
+          'randomtrailers', 'disablecookies',
         };
-        if (known.contains(key.toLowerCase())) {
+        final lk = key.toLowerCase();
+        if (lk == 'address') {
+          final prev = interface['Address'];
+          interface['Address'] =
+              (prev == null || prev.isEmpty) ? value : '$prev, $value';
+        } else if (known.contains(lk)) {
           interface[key] = value;
         } else {
           unknownInterface[key] = value;
@@ -106,9 +116,13 @@ class WireGuardConfParser {
       i5: padded('i5'),
       headerProtectionKey: padded('hpk'),
       contentPaddingAddition: padded('contentpaddingaddition'),
+      randomTrailers: _flag(_getAny(
+          interface, ['RandomTrailers', 'randomtrailers'])),
+      disableCookies: _flag(_getAny(
+          interface, ['DisableCookies', 'disablecookies'])),
       extra: Map.fromEntries(unknownInterface.entries.where(
           (e) => !RegExp(
-                  r'^(jc|jmin|jmax|s[1-4]|h[1-4]|i[1-5]|hpk|contentpaddingaddition)$',
+                  r'^(jc|jmin|jmax|s[1-4]|h[1-4]|i[1-5]|hpk|contentpaddingaddition|randomtrailers|disablecookies)$',
                   caseSensitive: false)
               .hasMatch(e.key))),
     );
@@ -117,10 +131,12 @@ class WireGuardConfParser {
         .map((e) => e.trim())
         .where((e) => e.isNotEmpty)
         .toList();
-    final addresses = (_getAny(interface, ['Address', 'address']) ?? '')
-        .split(',')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
+    final addresses = ((_getAny(interface, ['Address', 'address']) ?? '')
+            .split(',')
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty)
+            .toList())
+        .map(_prefix) // bare IPs → netip.Prefix-compatible (see _prefix)
         .toList();
     final isAwg = awg.isNotEmpty;
     return ProxyProfile(
@@ -176,6 +192,23 @@ class WireGuardConfParser {
       b.writeln('PersistentKeepalive = ${wg.persistentKeepalive}');
     }
     return b.toString();
+  }
+
+  /// sing-box ≥1.12 wants `address` entries as netip.Prefix; bare IPs
+  /// ("172.16.0.2") fail the engine decode with `no '/'`. v4 → /32,
+  /// v6 → /128 when the conf omitted the prefix length.
+  static String _prefix(String entry) {
+    final t = entry.trim();
+    if (t.contains('/')) return t;
+    return '$t/${t.contains(':') ? 128 : 32}';
+  }
+
+  /// wg-quick dialect tri-state: absent → null (server default);
+  /// "on"/"true"/"yes"/"1" → true; anything else → false.
+  static bool? _flag(String? v) {
+    if (v == null) return null;
+    final t = v.trim().toLowerCase();
+    return t == 'on' || t == 'true' || t == 'yes' || t == '1';
   }
 
   static String? _getAny(Map<String, String> m, List<String> keys) {

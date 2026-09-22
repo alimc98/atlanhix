@@ -1,7 +1,9 @@
 // One-shot app-socket DNS matrix on the DEVICE: for every resolver, test
 // TCP:53 reachability and UDP:53 answer, with byte-level logs. Built for the
 // 'why does the app not get what nc gets' question. Run: dart run tool/dns_matrix.dart
+import 'dart:async';
 import 'dart:io';
+
 
 import 'package:nexus/core/dns_scanner.dart';
 

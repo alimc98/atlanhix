@@ -756,9 +756,21 @@ class VpnSession {
           twinOut['tag'] = rescueTag;
           final outbounds = cfg['outbounds'] as List;
           outbounds.add(twinOut);
-          final selector = outbounds.firstWhere(
-              (o) => (o as Map)['tag'] == 'proxy',
-              orElse: () => null) as Map<String, dynamic>?;
+          // v0.4.9 §fix: the previous firstWhere(orElse: () => null) cast the
+          // closure's return to Map<String, dynamic>? — Dart infers the
+          // orElse body as `Null` against the LIST's element type (dynamic),
+          // and the runtime threw "'() => Null' is not a subtype of
+          // '() => Map<String, dynamic>?'" the moment the selector was
+          // missing (device log 2026-09-20, WARP rescue twin). A typed search
+          // over the cast list removes the mismatch entirely.
+          final outs = cfg['outbounds'] as List<Map<String, dynamic>>;
+          Map<String, dynamic>? selector;
+          for (final o in outs) {
+            if (o['tag'] == 'proxy') {
+              selector = o;
+              break;
+            }
+          }
           if (selector != null) {
             (selector['outbounds'] as List).add(rescueTag);
           }
