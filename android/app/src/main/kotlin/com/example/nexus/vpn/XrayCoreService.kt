@@ -38,6 +38,14 @@ class XrayCoreService : Service() {
         // service due to app idle' — measured on Mi 9T 2026-09-15, THE root
         // cause of xhttp nodes never connecting on the phone while PC's
         // xray.exe worked). Foreground + notification = untouchable.
+        //
+        // v0.4.9 §user-fix (notification survived app close): the channel
+        // is created HERE, but startForeground moved OUT of onCreate —
+        // merely constructing the service (even for an ACTION_STOP that
+        // arrives after a failed start) used to post the "Atlanhix core"
+        // notification with nothing ever removing it. The notification now
+        // appears only while a start is being handled and is torn down on
+        // stop / start-failure / destroy.
         if (android.os.Build.VERSION.SDK_INT >= 26) {
             val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(
@@ -45,6 +53,10 @@ class XrayCoreService : Service() {
                     CHANNEL_ID, "Xray core", NotificationManager
                         .IMPORTANCE_MIN))
         }
+    }
+
+    /** Post the foreground notification (start path only — see onCreate). */
+    private fun promoteForeground() {
         val notif = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Atlanhix core")
             .setContentText("Secure engine running")
@@ -53,15 +65,52 @@ class XrayCoreService : Service() {
         startForeground(NOTIFY_ID, notif)
     }
 
+    /** Remove the notification; safe to call in any state. */
+    private fun clearForeground() {
+        try {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        } catch (_: Throwable) {
+        }
+    }
+
+    override fun onDestroy() {
+        // Last line of defense: whatever path destroyed us (stopSelf,
+        // fail, system), the core dies and the notification goes — no
+        // orphaned "Atlanhix core" after the app is closed.
+        handleStop()
+        clearForeground()
+        super.onDestroy()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> handleStart(intent)
-            ACTION_STOP -> { handleStop(); stopSelf() }
+            ACTION_STOP -> {
+                handleStop()
+                clearForeground()
+                stopSelf()
+            }
+            // v0.4.9 §user-fix: null action = OS redelivery. START_NOT_STICKY
+            // cannot fully prevent a queued redelivery after the runner died;
+            // answer by standing down instead of promoting a notification
+            // with no config (the old silent fall-through left the service
+            // alive doing nothing, keeping the pill on screen).
+            else -> {
+                handleStop()
+                clearForeground()
+                stopSelf()
+            }
         }
         return START_NOT_STICKY
     }
 
     private fun handleStart(intent: Intent) {
+        // Foreground FIRST: this action arrives via startForegroundService
+        // (API 26+) which requires startForeground() within 5s of delivery
+        // even when the attempt is about to fail — and fail() below tears
+        // the notification right back down again.
+        promoteForeground()
         handleStop()
         val config = intent.getStringExtra(EXTRA_CONFIG) ?: return fail("no config")
         val port = intent.getIntExtra(EXTRA_SOCKS_PORT, 0)
@@ -141,6 +190,11 @@ class XrayCoreService : Service() {
         Log.e(XTAG, msg)
         running = false
         writeState()
+        // v0.4.9 §user-fix: a failed start used to leave the foreground
+        // notification up forever (nothing stopped the service) — the
+        // stuck "atlanhix core" after closing the app. Drop it now.
+        clearForeground()
+        stopSelf()
     }
 
     /** Cross-process state hand-off (service = :xray, channel = main). */

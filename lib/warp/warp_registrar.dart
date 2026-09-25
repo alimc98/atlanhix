@@ -40,6 +40,9 @@ class WarpAccount {
     this.awgI4,
     this.awgI5,
     this.awgHpk,
+    this.awgMasqId,
+    this.awgMasqIp,
+    this.awgMasqIb,
     this.awgRandomTrailers,
     this.awgDisableCookies,
     // v0.4.9 §user: the WARP API hands out ONE default endpoint (host:port);
@@ -82,6 +85,13 @@ class WarpAccount {
   final String? awgI5;
   final String? awgHpk;
 
+  /// Masquerade sugar (sing-box-lx wire names `id`/`ip`/`ib`): decoy
+  /// domain + protocol + browser profile. Builds the I1 masquerade decoy
+  /// without hand-writing the tag DSL. Live-proven vs Cloudflare (warp=on).
+  final String? awgMasqId;
+  final String? awgMasqIp;
+  final String? awgMasqIb;
+
   /// AWG 3.x dialect flags (amnezia-client confs: RandomTrailers /
   /// DisableCookies). Null = server default.
   final bool? awgRandomTrailers;
@@ -109,25 +119,58 @@ class WarpAccount {
     }
   }
 
-  /// The endpoint the tunnels actually dial: the scanned override when set,
-  /// else the API default.
-  String get dialHost {
-    final o = endpointOverride;
-    if (o != null && o.contains(':') && !o.startsWith('[')) {
-      final i = o.lastIndexOf(':');
-      final h = o.substring(0, i).trim();
-      if (h.isNotEmpty) return h;
-    }
-    return endpointV4;
+  /// The endpoint string actually dialed: the scanned override when it has
+  /// any content, else the API default. Both may be `host`, `host:port`,
+  /// `[v6]` or `[v6]:port`.
+  String get _endpointSource {
+    final o = endpointOverride?.trim();
+    if (o != null && o.isNotEmpty) return o;
+    return endpointV4.trim();
   }
 
-  int get dialPort {
-    final o = endpointOverride;
-    if (o != null && o.contains(':')) {
-      final p = int.tryParse(o.substring(o.lastIndexOf(':') + 1).trim());
-      if (p != null && p > 0 && p <= 65535) return p;
+  /// Host part of the dial endpoint.
+  ///
+  /// v0.4.9: previously returned `endpointV4` RAW — the WARP API hands out
+  /// `162.159.192.6:0`, so the engine received a "host" containing the port
+  /// (and a zero port) and failed to start the tunnel.
+  String get dialHost => _splitEndpoint(_endpointSource).$1;
+
+  /// Port of the dial endpoint — never 0 (API's `:0` means "WireGuard
+  /// default"), clamped to a valid range, default 2408.
+  int get dialPort => _splitEndpoint(_endpointSource).$2;
+
+  /// Splits `host`, `host:port`, `[v6]` or `[v6]:port`. A missing, zero or
+  /// invalid port resolves to [defaultPort] (2408 = WireGuard/WARP default).
+  static (String, int) _splitEndpoint(String raw, {int defaultPort = 2408}) {
+    final s = raw.trim();
+    if (s.isEmpty) return ('', defaultPort);
+    if (s.startsWith('[')) {
+      final i = s.indexOf(']');
+      if (i > 0) {
+        final host = s.substring(1, i);
+        final rest = s.substring(i + 1);
+        final p =
+            rest.startsWith(':') ? int.tryParse(rest.substring(1).trim()) : null;
+        return (host, (p != null && p > 0 && p <= 65535) ? p : defaultPort);
+      }
+      return (s, defaultPort);
     }
-    return 2408;
+    final i = s.lastIndexOf(':');
+    if (i > 0) {
+      final head = s.substring(0, i);
+      if (!head.contains(':')) {
+        // Exactly one colon → host:port.
+        final host = head.trim();
+        final p = int.tryParse(s.substring(i + 1).trim());
+        if (host.isNotEmpty) {
+          return (host, (p != null && p > 0 && p <= 65535) ? p : defaultPort);
+        }
+      }
+      // Several colons, no brackets → naked IPv6 without a port.
+      return (s, defaultPort);
+    }
+    // Plain hostname / IPv4 with no port.
+    return (s, defaultPort);
   }
 
   bool get hasAmneziaParams =>
@@ -135,6 +178,7 @@ class WarpAccount {
       awgH1 != null ||
       awgS1 != null ||
       awgI1 != null ||
+      (awgMasqId != null && awgMasqId!.isNotEmpty) ||
       (awgHpk != null && awgHpk!.isNotEmpty);
 
   /// AmneziaWG params built from the stored fields (null when plain WARP).
@@ -156,6 +200,9 @@ class WarpAccount {
           i3: awgI3,
           i4: awgI4,
           i5: awgI5,
+          masqId: awgMasqId,
+          masqIp: awgMasqIp,
+          masqIb: awgMasqIb,
           headerProtectionKey: awgHpk,
           randomTrailers: awgRandomTrailers,
           disableCookies: awgDisableCookies,
@@ -267,6 +314,22 @@ class WarpRegistrar {
       license: '${resp['license'] ?? ''}',
       clientId: '${config['client_id'] ?? ''}',
       registeredAt: DateTime.now(),
+      // v0.4.9 §user — WARP runs as AmneziaWG 3.1 by default. This exact
+      // set was validated LIVE against Cloudflare (the tool/warp_e2e_
+      // config.dart matrix: plain/awg/awgjunk/awgmasc/awgjt/awgfinal/
+      // awgdc runs through sing-box-lx → cdn-cgi/trace warp=on): junk
+      // packets (jc/jmin/jmax), the masquerade decoy (id/ip/ib) and
+      // random trailers. s1/s2/h1..h4 are deliberately ABSENT — they
+      // reshape the handshake and Cloudflare's vanilla parser drops it
+      // ("handshake did not complete after 5 seconds"). Clearing the
+      // fields in the WARP sheet reverts to plain WireGuard.
+      awgJc: 4,
+      awgJmin: 64,
+      awgJmax: 96,
+      awgMasqId: 'www.google.com',
+      awgMasqIp: 'quic',
+      awgMasqIb: 'chrome',
+      awgRandomTrailers: true,
     );
   }
 

@@ -324,6 +324,9 @@ class AmneziaParams {
     this.i3,
     this.i4,
     this.i5,
+    this.masqId,
+    this.masqIp,
+    this.masqIb,
     this.headerProtectionKey,
     this.contentPaddingAddition,
     this.randomTrailers,
@@ -337,6 +340,13 @@ class AmneziaParams {
   /// Single value ("1234") or range ("1000-2000").
   final String? h1, h2, h3, h4;
   final String? i1, i2, i3, i4, i5;
+
+  /// Masquerade sugar (sing-box-lx wire names `id`/`ip`/`ib`, verified in
+  /// v1.14.1-lx.8's option struct): builds the I1 decoy for you —
+  /// `masqId` = decoy domain, `masqIp` = protocol (`quic`/`ipip`/…),
+  /// `masqIb` = browser profile (`chrome`/…). Mutually exclusive with a
+  /// hand-written i1. Live-proven against Cloudflare WARP (warp=on).
+  final String? masqId, masqIp, masqIb;
   final String? headerProtectionKey;
   final String? contentPaddingAddition;
 
@@ -363,6 +373,9 @@ class AmneziaParams {
       i3 != null ||
       i4 != null ||
       i5 != null ||
+      (masqId != null && masqId!.isNotEmpty) ||
+      (masqIp != null && masqIp!.isNotEmpty) ||
+      (masqIb != null && masqIb!.isNotEmpty) ||
       (headerProtectionKey != null && headerProtectionKey!.isNotEmpty) ||
       (contentPaddingAddition != null &&
           contentPaddingAddition!.isNotEmpty) ||

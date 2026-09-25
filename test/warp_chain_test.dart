@@ -82,6 +82,44 @@ void main() {
           reason: 'inside-direction: node dials directly');
     });
 
+    test('warp-last binds the warp handshake to the SELECTED node (device bug)',
+        () {
+      // v0.4.9 §user: "warp first connects, warp last does not". The warp-last
+      // shape used to detour the warp endpoint through the FIRST pool member,
+      // so with a multi-node pool the chain ignored the user's pick.
+      final pool = [_ssNode('n1', '203.0.113.10', 8388),
+                    _ssNode('n2', '203.0.113.11', 8388)];
+      final cfg = gen.generate(
+        runnableProfiles: pool,
+        routing: BuiltinRoutingProfiles.all().first,
+        dns: DnsSettings(mode: DnsMode.automatic),
+        selectedTag: 'node:n2',
+        warpProfile: WarpRegistrar.profileFor(_fakeAccount()),
+        chainWarpOutside: false,
+        selectedWarpTag: 'warp',
+      );
+      final warp = (cfg['endpoints'] as List)
+          .firstWhere((e) => e['tag'] == 'warp') as Map;
+      expect(warp['detour'], 'node:n2',
+          reason: 'warp exit handshake must ride the SELECTED node');
+      // The warp endpoint must be the DEFAULT selector member.
+      final selector = (cfg['outbounds'] as List)
+          .firstWhere((o) => o['tag'] == 'proxy') as Map;
+      expect(selector['default'], 'warp');
+      // n2 itself must NOT be wrapped (that is the warp-FIRST direction).
+      final n2 = (cfg['outbounds'] as List)
+          .firstWhere((o) => o['tag'] == 'node:n2') as Map;
+      expect(n2.containsKey('detour'), isFalse);
+      // A direct-dial warp fallback member keeps the selector live when the
+      // selected node's outbound is unavailable.
+      final members = (selector['outbounds'] as List).cast<String>();
+      expect(members, contains('warp:direct'));
+      final directWarp = (cfg['endpoints'] as List)
+          .firstWhere((e) => e['tag'] == 'warp:direct') as Map;
+      expect(directWarp.containsKey('detour'), isFalse,
+          reason: 'the fallback warp endpoint must dial straight out');
+    });
+
     test('no warpProfile → plain topology, no detour anywhere', () {
       final cfg = gen.generate(
         runnableProfiles: [node],

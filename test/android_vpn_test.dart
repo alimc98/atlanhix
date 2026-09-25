@@ -44,14 +44,18 @@ void main() {
   test('connect: granted → starting → validating → real probe → connected',
       () async {
     final c = AndroidVpnController()..permissionPollSeconds = 1;
+    // v0.4.x race fix: `state` must echo the generation delivered with
+    // `start` — the controller skips payloads from a PREVIOUS session.
+    var gen = '';
     handler = (m, a) {
       switch (m) {
         case 'prepare':
           return {'granted': true, 'needsUserConsent': false};
         case 'start':
+          gen = '${(jsonDecode(a! as String) as Map)['generation']}';
           return {'ok': true};
         case 'state':
-          return {'state': 'VALIDATING', 'detail': ''};
+          return {'state': 'VALIDATING', 'detail': '', 'generation': gen};
       }
       return {};
     };
@@ -68,14 +72,20 @@ void main() {
   test('connect: engine fails natively → failed, never connected (§5)',
       () async {
     final c = AndroidVpnController()..permissionPollSeconds = 1;
+    var gen = '';
     handler = (m, a) {
       switch (m) {
         case 'prepare':
           return {'granted': true};
         case 'start':
+          gen = '${(jsonDecode(a! as String) as Map)['generation']}';
           return {'ok': true};
         case 'state':
-          return {'state': 'FAILED', 'detail': 'engineUnavailable: no libbox'};
+          return {
+            'state': 'FAILED',
+            'detail': 'engineUnavailable: no libbox',
+            'generation': gen
+          };
       }
       return {};
     };
@@ -94,14 +104,16 @@ void main() {
   test('connect: engine up but probe fails → failed (no fake success)',
       () async {
     final c = AndroidVpnController()..permissionPollSeconds = 1;
+    var gen = '';
     handler = (m, a) {
       switch (m) {
         case 'prepare':
           return {'granted': true};
         case 'start':
+          gen = '${(jsonDecode(a! as String) as Map)['generation']}';
           return {'ok': true};
         case 'state':
-          return {'state': 'VALIDATING'};
+          return {'state': 'VALIDATING', 'generation': gen};
       }
       return {};
     };
@@ -160,11 +172,13 @@ void main() {
     final c = AndroidVpnController()..watcherInterval = const Duration(milliseconds: 50);
     var stopped = false;
     var revokedSeen = false;
+    var gen = '';
     handler = (m, a) {
       switch (m) {
         case 'prepare':
           return {'granted': true};
         case 'start':
+          gen = '${(jsonDecode(a! as String) as Map)['generation']}';
           return {'ok': true};
         case 'state':
           // VALIDATING once (probe gate) → CONNECTED → then REVOKED.
@@ -173,11 +187,12 @@ void main() {
             return {
               'state': 'REVOKED',
               'detail': 'revoked by system',
-              'errorCode': 'VPN_REVOKED'
+              'errorCode': 'VPN_REVOKED',
+              'generation': gen
             };
           }
-          if (revokedSeen) return {'state': 'STOPPED'};
-          return {'state': 'VALIDATING', 'detail': ''};
+          if (revokedSeen) return {'state': 'STOPPED', 'generation': gen};
+          return {'state': 'VALIDATING', 'detail': '', 'generation': gen};
         case 'stop':
           stopped = true;
           return {'ok': true};
@@ -197,17 +212,20 @@ void main() {
   test('§6 native failure carries structured errorCode into diagnostics',
       () async {
     final c = AndroidVpnController();
+    var gen = '';
     handler = (m, a) {
       switch (m) {
         case 'prepare':
           return {'granted': true};
         case 'start':
+          gen = '${(jsonDecode(a! as String) as Map)['generation']}';
           return {'ok': true};
         case 'state':
           return {
             'state': 'FAILED',
             'detail': 'engineUnavailable: no libbox',
-            'errorCode': 'ENGINE_START_FAILED'
+            'errorCode': 'ENGINE_START_FAILED',
+            'generation': gen
           };
       }
       return {};

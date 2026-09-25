@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/android_node_support.dart';
 import 'package:nexus/core/core_detector.dart';
+import 'package:nexus/core/engine_availability.dart';
 import 'package:nexus/core/node_core_choice.dart';
 import 'package:nexus/data/profile_codec_write.dart';
 import 'package:nexus/data/secure_vault.dart';
@@ -74,7 +75,27 @@ void main() {
       final w =
           NodeCoreChoice.xrayWarning(p(ProxyProtocol.vless), onAndroid: true);
       expect(w, isNotNull);
-      expect(w, contains('Android'));
+      expect(w, contains('Xray core is off'));
+    });
+
+    test('on Android with the runtime LOADED, Xray becomes selectable', () {
+      // v0.4.9 §user: the exec'd binary ships in the APK and the :xray
+      // handshake reports it — the picker must stop calling Xray a
+      // desktop-only core once the runtime is actually loaded.
+      addTearDown(() => XrayCoreState.instance.setRuntimeLoaded(false));
+      XrayCoreState.instance.setRuntimeLoaded(true);
+      expect(NodeCoreChoice.xrayWarning(p(ProxyProtocol.vless),
+          onAndroid: true), isNull);
+      expect(
+          NodeCoreChoice.labelFor(
+              p(ProxyProtocol.vless).copyWith(userPinnedCore: CoreKind.xray),
+              onAndroid: true),
+          'Xray');
+      // sing-box-only protocols stay locked out even with the runtime on.
+      expect(
+          NodeCoreChoice.xrayWarning(p(ProxyProtocol.hysteria2),
+              onAndroid: true),
+          isNotNull);
     });
 
     test('pinning survives the storage codec roundtrip', () {

@@ -151,11 +151,29 @@ object LibboxSetup {
 
     /** One-time global libbox init (paths, log limits, version metadata). */
     fun initialize(context: Context) {
+        initializeWithPaths(context, null)
+    }
+
+    /**
+     * v0.4.9 §cache-fix: libbox's setup is GLOBAL per process (base/working
+     * dirs) and sing-box derives its default cache.db path from the working
+     * dir. The VPN service and the TRANSIENT probe engine share the main
+     * process — two Boxes booting with the same workingDir raced over
+     * cache.db and the tunnel start died with `initialize cache-file:
+     * timeout` (device log 2026-09-25 19:57). The probe passes its own
+     * working dir so its cache file lives in a DIFFERENT directory and
+     * never contends with the service's. First setup wins for the process
+     * (the service initializes before the first connect — the probe only
+     * runs pre-connect), which is why the probe must carry its own paths.
+     */
+    fun initializeWithPaths(context: Context, workingPathOverride: String?) {
         if (initialized) return
         synchronized(this) {
             if (initialized) return
             val baseDir = context.filesDir
-            val workingDir = context.getExternalFilesDir(null) ?: baseDir
+            val workingDir = workingPathOverride?.let { File(it) }
+                ?: context.getExternalFilesDir(null)
+                ?: baseDir
             val tempDir = context.cacheDir
             baseDir.mkdirs(); workingDir.mkdirs(); tempDir.mkdirs()
             val options = SetupOptions().also {
@@ -165,8 +183,8 @@ object LibboxSetup {
                 it.logMaxLines = 3000
                 it.debug = false
                 it.crashReportSource = "Atlanhix"
-                it.appVersion = "7"
-                it.appMarketingVersion = "0.4.1"
+                it.appVersion = "8"
+                it.appMarketingVersion = "0.4.2"
             }
             Libbox.setup(options)
             initialized = true
@@ -188,18 +206,25 @@ class LibboxEngine(
      * OverrideOptions per-app lists (v0.4.1 §13/§16) — when include is
      * non-empty ONLY those apps ride the VPN; otherwise exclude lists the
      * DIRECT apps that bypass it.
+     *
+     * [workingPathOverride] (v0.4.9 §cache-fix): engine-private libbox
+     * working dir — used by the TRANSIENT probe engine so its cache.db
+     * never contends with the service's (both Boxes share the process).
+     * Ignored when another engine already initialized libbox in this
+     * process (first setup wins — documented in [LibboxSetup]).
      */
     fun start(
         configJson: String,
         includePackages: List<String>,
         excludePackages: List<String>,
         listener: EngineEvents,
+        workingPathOverride: String? = null,
     ) {
         AtlanhixTrace.log("LIBBOX_INITIALIZING")
         // NOTE: the engine log file is opened by the SERVICE (startTunnel)
         // BEFORE the config capture — opening it here a second time would
         // truncate away CONFIG_SUMMARY / FINAL_CONFIG (observed on device).
-        LibboxSetup.initialize(context)
+        LibboxSetup.initializeWithPaths(context, workingPathOverride)
         try {
             val server = CommandServer(Handler(listener), platformInterface)
             server.start()
@@ -461,12 +486,21 @@ interface AtlanhixPlatformInterface : PlatformInterface {
         // must leave via the physical NIC, not the tunnel).
         android.util.Log.i("AtlanhixVpn", "AUTO_DETECT_PROTECT fd=$fd this=${this.javaClass.simpleName}")
         val vpn = this as? android.net.VpnService
-        if (vpn == null) {
-            android.util.Log.w("AtlanhixVpn", "AUTO_DETECT_PROTECT_FAILED: platformInterface is not VpnService")
+        if (vpn != null) {
+            vpn.protect(fd)
+            android.util.Log.i("AtlanhixVpn", "AUTO_DETECT_PROTECT_OK fd=$fd")
             return
         }
-        vpn.protect(fd)
-        android.util.Log.i("AtlanhixVpn", "AUTO_DETECT_PROTECT_OK fd=$fd")
+        // v0.4.9 §probe-fix: the TRANSIENT probe engine runs inside the
+        // plain app process — it is NOT a VpnService and there is nothing
+        // to protect from. Its platform interface now declares
+        // usePlatformAutoDetectInterfaceControl()=false, so libbox never
+        // even calls this for the probe engine (the old bindProcessToNetwork
+        // fallback here was dead code AND wrong: a process-wide network bind
+        // leaks across engines sharing the process). The VPN service is the
+        // only engine that protects sockets — exactly the branch above.
+        android.util.Log.i(
+            "AtlanhixVpn", "AUTO_DETECT_PROTECT_SKIP fd=$fd (no VPN on this engine)")
     }
 
     override fun useProcFS(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q

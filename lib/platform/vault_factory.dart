@@ -25,4 +25,13 @@ class FlutterSecureVault implements SecureVault {
 
   @override
   Future<void> write(String key, String value) => _s.write(key: key, value: value);
+
+  /// v0.4.9 §boot: ONE readAll() channel call replaces N per-key reads —
+  /// the profile-load prefetch used to cost one EncryptedSharedPreferences
+  /// IPC per secret per node (hundreds of reads dominating cold boot).
+  @override
+  Future<Map<String, String?>> readAll(Iterable<String> keys) async {
+    final all = await _s.readAll();
+    return {for (final k in keys) k: all[k]};
+  }
 }

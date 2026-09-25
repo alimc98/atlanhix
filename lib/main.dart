@@ -1,4 +1,8 @@
-﻿import 'package:flutter/material.dart';
+﻿import 'dart:async';
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart' as crypto;
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'application/clipboard_import_service.dart';
@@ -7,7 +11,9 @@ import 'application/update_checker.dart';
 import 'core/engine_availability.dart';
 import 'core/logger.dart';
 import 'localization/generated/app_localizations.dart';
+import 'settings/app_settings.dart';
 import 'platform/android_vpn.dart';
+import 'platform/probe_engine.dart';
 import 'platform/xray_bridge.dart';
 import 'presentation/app_shell.dart';
 import 'presentation/screens/warp_screen.dart';
@@ -23,15 +29,21 @@ Future<void> main() async {
   // runApp — that blocked the first frame (white) for seconds. Warm-up now
   // runs while the branded intro is on screen.
   final warmup = () async {
+    // v0.4.9 §boot: deps (storage, repos, session) first — the shell can
+    // paint as soon as THIS resolves. The engine handshakes below gate only
+    // badges/capability text, so they ride behind unawaited and land while
+    // the user is already looking at the UI (hundreds of ms earlier).
     final deps = await AppDependencies.bootstrap();
-    // v0.4.3: learn the TRUTH about the Xray runtime (exec'd native binary
-    // in the :xray process) before the UI paints a single badge.
-    await XrayBridge.instance.probe();
-    XrayCoreState.instance.setRuntimeLoaded(XrayBridge.instance.available);
-    // v0.4.9: arm the AmneziaWG gates from the libbox engine's self-reported
-    // version (fork marker `-lx.`) — same honesty contract as the Xray
-    // handshake above.
-    await probeEngineVersion();
+    unawaited(() async {
+      // v0.4.3: learn the TRUTH about the Xray runtime (exec'd native binary
+      // in the :xray process) before badges paint — but never blocking the
+      // first interactive frame for it.
+      await XrayBridge.instance.probe();
+      XrayCoreState.instance.setRuntimeLoaded(XrayBridge.instance.available);
+      // v0.4.9: arm the AmneziaWG gates from the libbox engine's
+      // self-reported version (fork marker `-lx.`).
+      await probeEngineVersion();
+    }());
     return deps;
   }();
   runApp(AtlanhixRoot(warmup: warmup));
@@ -100,12 +112,58 @@ class AtlanhixApp extends StatefulWidget {
   State<AtlanhixApp> createState() => _AtlanhixAppState();
 }
 
-class _AtlanhixAppState extends State<AtlanhixApp> {
+class _AtlanhixAppState extends State<AtlanhixApp>
+    with WidgetsBindingObserver {
   AtlanhixThemeMode _mode = AtlanhixThemeMode.dark;
   Locale _locale = const Locale('en');
   bool _clipboardAsked = false;
   bool _warpOfferWired = false;
   DateTime? _updateCheckedAt;
+  // v0.4.9 §user-fix (clipboard auto-detect): dialogs must resolve their
+  // context INSIDE MaterialApp — this State's context sits ABOVE it, where
+  // Localizations/ScaffoldMessenger/Navigator don't exist.
+  final GlobalKey<NavigatorState> _navKey = GlobalKey<NavigatorState>();
+  String? _lastClipboardOffer;
+  bool _clipboardCheckInFlight = false;
+
+  /// v0.4.9 §user-fix: stable hash of a clipboard payload for the
+  /// PERSISTED offer memory (settings.clipboardOfferedHashes) — survives
+  /// app restarts, unlike the session-only [_lastClipboardOffer].
+  String _clipboardHash(String payload) =>
+      crypto.sha256.convert(utf8.encode(payload.trim())).toString();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // v0.4.9 §user-fix (auto-detect never fired): the config/subscription
+      // link is almost always copied in ANOTHER app — the one-shot boot
+      // check can't see content copied afterwards. Re-check on every
+      // return (deduped by clipboard content inside the presenter).
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _checkClipboardOnResume());
+    }
+    // v0.4.9 §battery: the transient probe engine exists ONLY for foreground
+    // delay tests. Backgrounded with no live VPN it is a hidden Go runtime
+    // with open sockets — shut it down the moment the app leaves the
+    // foreground (the idle timer already stops it after 20 s anyway).
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      ProbeEngine.instance.stop();
+    }
+  }
 
   void setTheme(AtlanhixThemeMode m) => setState(() => _mode = m);
   void setLocale(Locale l) => setState(() => _locale = l);
@@ -141,12 +199,18 @@ class _AtlanhixAppState extends State<AtlanhixApp> {
 
   Future<bool> _offerWarpRescue(String nodeName) async {
     if (!mounted) return false;
-    final l = AppLocalizations.of(context)!;
+    // v0.4.9 §user-fix: resolve localization INSIDE MaterialApp — the
+    // State's own context can never see the LocalizationsScope (the old
+    // `of(context)!` threw every time the rescue dialog was requested).
+    final navCtx = _navKey.currentContext;
+    if (navCtx == null) return false;
+    final l = AppLocalizations.of(navCtx);
+    if (l == null) return false;
     final go = await showDialog<bool>(
-      context: context,
+      context: navCtx,
       builder: (ctx) => AlertDialog(
-        title: Text(AppLocalizations.of(ctx)!.warpOfferTitle),
-        content: Text(AppLocalizations.of(ctx)!.warpOfferBody(
+        title: Text(l.warpOfferTitle),
+        content: Text(l.warpOfferBody(
             nodeName,
             widget.deps.appSettings.warpAutoOfferThreshold)),
         actions: [
@@ -156,7 +220,7 @@ class _AtlanhixAppState extends State<AtlanhixApp> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: Text(AppLocalizations.of(ctx)!.warpOfferEnable),
+            child: Text(l.warpOfferEnable),
           ),
         ],
       ),
@@ -167,9 +231,14 @@ class _AtlanhixAppState extends State<AtlanhixApp> {
   Future<void> _offerUpdate() async {
     final info = await UpdateChecker().check(currentVersion: kAppVersion);
     if (info == null || !mounted) return;
-    final l = AppLocalizations.of(context)!;
+    final navCtx = _navKey.currentContext;
+    if (navCtx == null) return;
+    // v0.4.9 §user-fix: same above-MaterialApp context bug — the `!` here
+    // crashed whenever an update was actually available.
+    final l = AppLocalizations.of(navCtx);
+    if (l == null) return;
     final go = await showDialog<bool>(
-      context: context,
+      context: navCtx,
       builder: (ctx) => AlertDialog(
         title: Text('Update ${info.version}'),
         content: Text(
@@ -198,14 +267,9 @@ class _AtlanhixAppState extends State<AtlanhixApp> {
     }
   }
 
-  Future<void> _offerClipboardImport() async {
+  ClipboardImportService _clipboardService() {
     final deps = widget.deps;
-    // v0.4.9 §fix: NULL-SAFE localization — this callback fires from the
-    // FIRST post-frame callback, where the Localizations delegate may not
-    // have installed itself yet (device crash: "Null check operator used on
-    // a null value" at the `!` right here). Localization is re-read AFTER
-    // the async gap, null-guarded, before the dialog is shown.
-    final service = ClipboardImportService(
+    return ClipboardImportService(
       importer: deps.importer,
       onAddNodes: (profiles) => deps.profiles.upsertMany(profiles),
       onAddSubscription: (url) async {
@@ -215,15 +279,89 @@ class _AtlanhixAppState extends State<AtlanhixApp> {
         if (existing != null) return; // already added — idempotent offer
         await deps.subscriptionService.add(url);
       },
+      // v0.4.9 §user-fix ("بازم میگه ادد کنم در حالی که ادد شده"): a
+      // clipboard payload that is ALREADY inside the app never re-offers —
+      // across app runs too, because this reads the LIVE repositories:
+      //  * a subscription URL → matched against every added subscription,
+      //  * share links → imported; the offer is skipped only when EVERY
+      //    imported node matches an existing profile by identity hash
+      //    (protocol|server|port|transport|security|credentials — cosmetics
+      //    excluded), so a renamed/edited node still counts as known and
+      //    one NEW link inside a pasted bundle still gets offered.
+      knownPayload: (payload) {
+        final p = payload.trim();
+        // v0.4.9 §user-fix layer 2: this exact payload was ALREADY offered
+        // (answered add/later) — persisted, so a restart never re-asks.
+        if (widget.deps.appSettings.clipboardOfferedHashes
+            .contains(_clipboardHash(p))) {
+          return true;
+        }
+        if (p.startsWith('http://') || p.startsWith('https://')) {
+          return deps.subscriptions.all
+              .any((s) => s.url.trim() == p);
+        }
+        try {
+          final result = deps.importer.import(p);
+          final nodes = result.profiles;
+          if (nodes.isEmpty) return false;
+          final known = deps.profiles.all
+              .map((n) => n.identityHash)
+              .toSet();
+          return nodes.every((n) => known.contains(n.identityHash));
+        } catch (_) {
+          return false;
+        }
+      },
     );
-    final offer = await service.peekOffer();
+  }
+
+  Future<void> _offerClipboardImport() async {
+    final offer = await _clipboardService().peekOffer();
     if (offer == null || !mounted) return;
-    // Localization is available NOW (post-build, post-async-gap); bail
-    // honestly when the delegate never arrived.
-    final loc = AppLocalizations.of(context);
+    await _presentClipboardOffer(_clipboardService(), offer);
+  }
+
+  /// v0.4.9 §user-fix: re-checked on every resume — the payload is copied
+  /// in ANOTHER app, so the one-shot boot check can never see it.
+  Future<void> _checkClipboardOnResume() async {
+    if (_clipboardCheckInFlight) return;
+    _clipboardCheckInFlight = true;
+    try {
+      // Focus (and Android's clipboard access rights) settle a beat after
+      // the resume callback — read too early and the OS hands back empty.
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+      if (!mounted) return;
+      final offer = await _clipboardService().peekOffer();
+      if (offer == null || !mounted) return;
+      await _presentClipboardOffer(_clipboardService(), offer);
+    } finally {
+      _clipboardCheckInFlight = false;
+    }
+  }
+
+  Future<void> _presentClipboardOffer(
+      ClipboardImportService service, ClipboardOffer offer) async {
+    // Same clipboard content already offered this session → don't nag.
+    if (_lastClipboardOffer == offer.text) return;
+    // v0.4.9 §user-fix layer 2 (persisted): offered before (any past run)
+    // → never again.
+    if (widget.deps.appSettings.clipboardOfferedHashes
+        .contains(_clipboardHash(offer.text))) {
+      _lastClipboardOffer = offer.text;
+      return;
+    }
+    // v0.4.9 §fix (ROOT CAUSE): every dialog resource must resolve INSIDE
+    // MaterialApp. The State's own context sits ABOVE it — localization
+    // was null there, so the offer silently bailed EVERY time (the
+    // device-crash guard below used to be a permanent dead end).
+    final navCtx = _navKey.currentContext;
+    if (navCtx == null || !mounted) return;
+    final loc = AppLocalizations.of(navCtx);
     if (loc == null) return;
+    _lastClipboardOffer = offer.text;
+    final hash = _clipboardHash(offer.text);
     final action = await showDialog<String>(
-      context: context,
+      context: navCtx,
       builder: (ctx) => AlertDialog(
         title: Text(loc.clipboardAddTitle),
         content: Text(loc.clipboardAddBody(offer.lineCount)),
@@ -250,16 +388,29 @@ class _AtlanhixAppState extends State<AtlanhixApp> {
         ],
       ),
     );
+    // v0.4.9 §user-fix: the offer was ANSWERED — remember it forever so a
+    // restart never shows the same payload's dialog again ("ادد شده، دوباره
+    // نپرس"). Both answers (add AND later) are remembered: the user chose.
+    final st = widget.deps.appSettings;
+    if (!st.clipboardOfferedHashes.contains(hash)) {
+      st.clipboardOfferedHashes = [
+        ...st.clipboardOfferedHashes,
+        hash,
+      ].reversed.take(AppSettings.clipboardOfferLimit).toList().reversed
+          .toList();
+      await widget.deps.appSettingsRepo.save(st);
+    }
     if (action == null || action == 'later' || !mounted) return;
     try {
       if (action == 'sub') {
         await service.onAddSubscription(offer.text);
       } else {
-        final result = deps.importer.import(offer.text);
+        final result = widget.deps.importer.import(offer.text);
         await service.onAddNodes(result.profiles);
       }
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+      final snCtx = _navKey.currentContext;
+      if (mounted && snCtx != null) {
+        ScaffoldMessenger.of(snCtx).showSnackBar(
           const SnackBar(content: Text('✔')),
         );
       }
@@ -273,6 +424,9 @@ class _AtlanhixAppState extends State<AtlanhixApp> {
     return MaterialApp(
       title: 'Atlanhix',
       debugShowCheckedModeBanner: false,
+      // v0.4.9 §user-fix: the key that lets lifecycle callbacks reach a
+      // context INSIDE the app (dialogs/localization/snackbars).
+      navigatorKey: _navKey,
       theme: AtlanhixTheme.theme(AtlanhixThemeMode.light, locale: _locale.toString()),
       darkTheme: AtlanhixTheme.theme(_mode, locale: _locale.toString()),
       themeMode: _mode == AtlanhixThemeMode.light ? ThemeMode.light : ThemeMode.dark,

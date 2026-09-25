@@ -18,6 +18,7 @@ import '../warp/warp_registrar.dart';
 import 'app_settings.dart';
 import 'smart_switch.dart';
 import '../platform/android_vpn.dart';
+import '../platform/probe_engine.dart';
 import '../application/connection_controller.dart';
 import '../application/dependencies.dart';
 
@@ -379,6 +380,16 @@ class VpnSession {
   /// or auto) funnels through here after node selection, so the single-core
   /// guarantee is enforced in exactly ONE place.
   Future<bool> _connectProfile(ProxyProfile profile, String trace) async {
+    // v0.4.9 §cache-fix (LIBBOX_START_FAILED: initialize cache-file: timeout
+    // on device, 2026-09-25 19:57): the transient probe engine and the VPN
+    // engine live in the SAME process (the service has no :process of its
+    // own), so both libbox instances share ONE setup workingDir and fight
+    // over cache.db — the tunnel start TIMED OUT on the lock. The probe
+    // (and its :xray child) must be fully down before the tunnel boots; the
+    // sweep can restart it afterwards.
+    try {
+      await ProbeEngine.instance.stop();
+    } catch (_) {}
     // ── ENGINE RESOLUTION (v0.4.7 §user device fix) ──
     // Imported/persisted profiles carry core=unknown (only the desktop
     // ConnectionController ran the detector, on its in-memory copy that is
@@ -450,6 +461,15 @@ class VpnSession {
     // upstream path — before this, PQ-encryption CDN nodes fell through to
     // the native sing-box outbound and every handshake died with EOF.
     if (CoreManager.needsXrayUpstream(profile)) {
+      // v0.4.9 §user-fix ("first tap after open fails"): the runtime probe
+      // rides an unawaited warmup — racing it here answered a false
+      // XRAY_RUNTIME_UNAVAILABLE for a node that CAN run. Wait briefly for
+      // the handshake instead of failing on a race.
+      if (!XrayCoreState.instance.runtimeLoaded) {
+        for (var i = 0; i < 10 && !XrayCoreState.instance.runtimeLoaded; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+        }
+      }
       if (!XrayCoreState.instance.runtimeLoaded) {
         lastError = 'XRAY_RUNTIME_UNAVAILABLE';
         Logger.instance.error('vpn-session',

@@ -73,6 +73,8 @@ class AppSettings {
     // How often the Smart Switch re-tests the candidate pool (seconds).
     // 0 disables the periodic re-test (single test at connect time).
     this.smartSwitchIntervalSeconds = 120,
+    // ---- v0.4.9 §user-fix: clipboard dedup (persisted offer memory) ----
+    this.clipboardOfferedHashes = const [],
   });
 
   // General
@@ -147,6 +149,14 @@ class AppSettings {
   bool connectionLogs;
   bool debugLogging;
 
+  /// v0.4.9 §user-fix (clipboard dedup): sha256 hashes of clipboard
+  /// payloads ALREADY offered (and answered) — persisted so a link that
+  /// was added (or declined) never prompts again, across app runs.
+  /// Capped: oldest entries are dropped beyond [clipboardOfferLimit].
+  List<String> clipboardOfferedHashes;
+
+  static const int clipboardOfferLimit = 64;
+
   /// v0.4.7 §user: Smart Switch re-test period (seconds). The switcher
   /// re-runs its candidate sweep on this cadence and migrates the tunnel
   /// when a materially better node appears. 0 = test only at connect time.
@@ -191,6 +201,7 @@ class AppSettings {
         'connectionLogs': connectionLogs,
         'debugLogging': debugLogging,
         'smartSwitchIntervalSeconds': smartSwitchIntervalSeconds,
+        'clipboardOfferedHashes': clipboardOfferedHashes,
       };
 
   static AppSettings fromJson(Map<String, dynamic> j) => AppSettings(
@@ -243,6 +254,8 @@ class AppSettings {
         debugLogging: j['debugLogging'] as bool? ?? false,
         smartSwitchIntervalSeconds:
             j['smartSwitchIntervalSeconds'] as int? ?? 120,
+        clipboardOfferedHashes:
+            (j['clipboardOfferedHashes'] as List?)?.cast<String>() ?? const [],
       );
 }
 

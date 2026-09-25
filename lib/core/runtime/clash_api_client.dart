@@ -76,7 +76,23 @@ class ClashApiClient {
       timeout: Duration(milliseconds: timeoutMs + 1500),
     );
     if (j == null) return null;
+    // v0.4.9 §user-fix: a 404 ('Resource not found' — the RUNNING config
+    // does not hold this tag) is NOT a failed measurement; null lets the
+    // caller fall through honestly (engine-off → transient probe).
+    if (j.containsKey('message') && !j.containsKey('delay')) return null;
     return (j['delay'] as num?)?.toInt();
+  }
+
+  /// v0.4.9 §user-fix: tags the RUNNING config exposes (GET /proxies).
+  /// Pre-check before a null delay is misread as a 5 s timeout — a node
+  /// absent from the config was never measured at all, and reporting it
+  /// as dead would be a lie. Null = table unreadable (API hiccup).
+  Future<Set<String>?> proxyTags() async {
+    final j = await _getJson('/proxies');
+    if (j == null) return null;
+    final proxies = j['proxies'];
+    if (proxies is! Map) return null;
+    return proxies.keys.map((k) => '$k').toSet();
   }
 
   /// Currently selected node of a selector (for state verification).

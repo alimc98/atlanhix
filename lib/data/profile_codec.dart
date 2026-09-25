@@ -21,14 +21,59 @@ bool isVaultRef(String? v) => v != null && v.startsWith(vaultPrefix);
 String vaultKeyOf(String v) => v.substring(vaultPrefix.length);
 
 /// Loads profiles from the store, resolving vault-backed secrets.
+///
+/// v0.4.9 §boot: the resolve is TWO-PHASE — first every `@vault:` token in
+/// the section is collected and read from the OS vault in PARALLEL
+/// (Future.wait), then profiles decode from the prefetched map. The naive
+/// loop awaited one EncryptedSharedPreferences IPC per secret per profile
+/// (uuid+password+… × hundreds of subscription nodes) and dominated cold
+/// boot; parallel prefetch collapses that to one round-trip batch.
 Future<List<ProxyProfile>> loadProfiles(
     JsonStore store, SecureVault vault) async {
   final section = store.section(StoreKeys.profiles);
+  // Phase 1 — collect + prefetch all vault keys in parallel.
+  final keys = <String>{};
+  void collect(String? v) {
+    if (isVaultRef(v)) keys.add(vaultKeyOf(v!));
+  }
+
+  for (final entry in section.entries) {
+    final j = (entry.value as Map).cast<String, dynamic>();
+    collect(j['uuid'] as String?);
+    collect(j['password'] as String?);
+    collect(j['hysteriaObfsPassword'] as String?);
+    collect(j['tuicUuid'] as String?);
+    collect(j['tuicToken'] as String?);
+    final rawSecret = (j['raw'] as Map?)?['secret'] as String?;
+    collect(rawSecret);
+    final wg = j['wireguard'] as Map<String, dynamic>?;
+    if (wg != null) {
+      collect(wg['privateKey'] as String?);
+      collect(wg['preSharedKey'] as String?);
+    }
+  }
+  final prefetched = <String, String?>{};
+  if (keys.isNotEmpty) {
+    // Platform vaults override readAll with a native batch read; the
+    // default implementation fans out read() in parallel.
+    prefetched.addAll(await vault.readAll(keys));
+  }
+  // Phase 2 — decode with the prefetched map (no vault IPC in the loop).
+  String? Function(String?) resolverFor(Map<String, String?> pre) {
+    String? resolve(String? v) {
+      if (isVaultRef(v)) return pre[vaultKeyOf(v!)];
+      return v;
+    }
+
+    return resolve;
+  }
+
+  final resolve = resolverFor(prefetched);
   final out = <ProxyProfile>[];
   for (final entry in section.entries) {
     try {
       final j = (entry.value as Map).cast<String, dynamic>();
-      out.add(await _profileFromStorable(j, vault));
+      out.add(_profileFromStorable(j, resolve));
     } on FormatException catch (e) {
       Logger.instance.warn(
           'profiles', 'Skipping corrupt profile ${entry.key}: ${e.message}');
@@ -37,22 +82,19 @@ Future<List<ProxyProfile>> loadProfiles(
   return out;
 }
 
-Future<ProxyProfile> _profileFromStorable(
-    Map<String, dynamic> j, SecureVault vault) async {
-  Future<String?> secret(String? v) async {
-    if (isVaultRef(v)) return vault.read(vaultKeyOf(v!));
-    return v;
-  }
+ProxyProfile _profileFromStorable(
+    Map<String, dynamic> j, String? Function(String?) resolve) {
+  final secret = resolve;
 
   final wgRaw = j['wireguard'] as Map<String, dynamic>?;
   final wg = wgRaw == null
       ? null
       : WireGuardConfig(
-          privateKey: await secret(wgRaw['privateKey'] as String?) ?? '',
+          privateKey: secret(wgRaw['privateKey'] as String?) ?? '',
           peerPublicKey: (wgRaw['peerPublicKey'] ?? '') as String,
           endpointHost: (wgRaw['endpointHost'] ?? '') as String,
           endpointPort: (wgRaw['endpointPort'] ?? 0) as int,
-          preSharedKey: await secret(wgRaw['preSharedKey'] as String?),
+          preSharedKey: secret(wgRaw['preSharedKey'] as String?),
           allowedIps: ((wgRaw['allowedIps'] ?? const []) as List).cast<String>(),
           dns: ((wgRaw['dns'] ?? const []) as List).cast<String>(),
           addresses: ((wgRaw['addresses'] ?? const []) as List).cast<String>(),
@@ -74,8 +116,8 @@ Future<ProxyProfile> _profileFromStorable(
         orElse: () => Security.none),
     core: CoreKind.values.firstWhere((e) => e.name == j['core'],
         orElse: () => CoreKind.unknown),
-    uuid: await secret(j['uuid'] as String?),
-    password: await secret(j['password'] as String?),
+    uuid: secret(j['uuid'] as String?),
+    password: secret(j['password'] as String?),
     alterId: j['alterId'] as int?,
     encryption: j['encryption'] as String?,
     flow: j['flow'] as String?,
@@ -90,11 +132,11 @@ Future<ProxyProfile> _profileFromStorable(
     realityShortId: j['realityShortId'] as String?,
     realitySpiderX: j['realitySpiderX'] as String?,
     ssMethod: j['ssMethod'] as String?,
-    hysteriaObfsPassword: await secret(j['hysteriaObfsPassword'] as String?),
+    hysteriaObfsPassword: secret(j['hysteriaObfsPassword'] as String?),
     hysteriaUpMbps: j['hysteriaUpMbps'] as int?,
     hysteriaDownMbps: j['hysteriaDownMbps'] as int?,
-    tuicUuid: await secret(j['tuicUuid'] as String?),
-    tuicToken: await secret(j['tuicToken'] as String?),
+    tuicUuid: secret(j['tuicUuid'] as String?),
+    tuicToken: secret(j['tuicToken'] as String?),
     wireguard: wg,
     amnezia: j['amnezia'] == null
         ? null
@@ -123,6 +165,9 @@ Future<ProxyProfile> _profileFromStorable(
             i3: j['amnezia']['i3'] as String?,
             i4: j['amnezia']['i4'] as String?,
             i5: j['amnezia']['i5'] as String?,
+            masqId: j['amnezia']['masqId'] as String?,
+            masqIp: j['amnezia']['masqIp'] as String?,
+            masqIb: j['amnezia']['masqIb'] as String?,
             headerProtectionKey: j['amnezia']['hpk'] as String?,
             contentPaddingAddition:
                 j['amnezia']['padding'] as String?,
@@ -130,7 +175,7 @@ Future<ProxyProfile> _profileFromStorable(
             disableCookies: j['amnezia']['disableCookies'] as bool?,
           ),
     rawParams: ((j['rawParams'] ?? const {}) as Map).cast<String, String>(),
-    rawConfig: await secret((j['raw']?['secret']) as String?) ??
+    rawConfig: secret((j['raw']?['secret']) as String?) ??
         (j['raw']?['text']) as String?,
     source: ProfileSource.values.firstWhere((e) => e.name == j['source'],
         orElse: () => ProfileSource.manual),

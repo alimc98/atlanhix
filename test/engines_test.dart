@@ -97,9 +97,14 @@ void main() {
       final outbounds = cfg['outbounds'] as List;
       final selector = outbounds.firstWhere((o) => o['tag'] == 'proxy');
       expect(selector['type'], 'selector');
-      // hysteria2 is native; vless+xhttp is now a SOCKS stub (W2).
+      // v0.4.9 §connect-fix: a LIVE upstream port (real :xray child) still
+      // emits the socks stub — removing it unconditionally broke every
+      // Xray-owned connect. Only the stub-less probe case drops the node.
       expect((selector['outbounds'] as List).length, 2);
-      final stub = outbounds.firstWhere((o) => o['tag'] == 'node:1');
+      expect(
+          (selector['outbounds'] as List).contains('node:1'), isTrue);
+      final stub =
+          outbounds.firstWhere((o) => o['tag'] == 'node:1') as Map;
       expect(stub['type'], 'socks');
       expect(stub['server_port'], 2081);
       final inbounds = cfg['inbounds'] as List;
@@ -107,6 +112,20 @@ void main() {
       final experimental = cfg['experimental'] as Map;
       expect((experimental['clash_api'] as Map)['external_controller'],
           contains('127.0.0.1'));
+    });
+
+    test('Xray node with NO upstream port is dropped (probe shape)', () {
+      final cfg = gen.generate(
+        runnableProfiles: [_hysteria2(), _vlessXhttpReality()],
+        routing: BuiltinRoutingProfiles.all().first,
+        dns: DnsSettings(mode: DnsMode.automatic),
+        selectedTag: 'node:2',
+      );
+      final outbounds = cfg['outbounds'] as List;
+      final selector = outbounds.firstWhere((o) => o['tag'] == 'proxy');
+      expect((selector['outbounds'] as List).length, 1);
+      expect(
+          (selector['outbounds'] as List).contains('node:1'), isFalse);
     });
 
     test('emits wireguard endpoint for wg profiles', () {

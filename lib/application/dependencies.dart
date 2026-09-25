@@ -1,4 +1,5 @@
-﻿import 'dart:io';
+﻿import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import '../data/app_storage.dart';
@@ -14,6 +15,7 @@ import '../core/fragmentation/fragment_ladder_cache.dart';
 import '../core/health/latency_tester.dart';
 import '../core/health/test_scheduler.dart';
 import '../core/runtime/binary_manager.dart';
+import '../core/runtime/clash_api_client.dart';
 import '../core/runtime/core_manager.dart';
 import '../core/runtime/singbox_runtime.dart';
 import '../protocols/importer.dart';
@@ -22,6 +24,7 @@ import '../settings/app_settings.dart';
 import '../settings/routing_settings.dart';
 import '../settings/runtime_config_bridge.dart';
 import '../settings/vpn_session.dart';
+import '../platform/probe_engine.dart';
 import '../platform/vault_factory.dart';
 import '../warp/warp_http.dart';
 import '../warp/warp_registrar.dart';
@@ -93,7 +96,15 @@ class AppDependencies {
 
     deps.tester = LatencyTester();
     deps.healthStore = HealthStore();
-    deps.scheduler = TestScheduler(tester: deps.tester, store: deps.healthStore);
+    deps.scheduler = TestScheduler(tester: deps.tester, store: deps.healthStore)
+      // v0.4.9 §user-fix (ping/sweep dead): the scheduler was CONSTRUCTED
+      // but never started (its pump refuses every job while stopped) and
+      // never told which profiles exist (jobs for unknown ids no-op) — so
+      // every enqueue silently evaporated and no latency ever moved. Wire
+      // both here, and keep the set fresh across add/remove/refresh.
+      ..updateProfiles(deps.profiles.all)
+      ..start();
+    deps.profiles.changes.listen(deps.scheduler.updateProfiles);
     // v0.4.9 §user: REAL delay tester — the node list's test button and the
     // background sweep measure the END-TO-END URL delay through each node's
     // live outbound (engine delay test), never a bare TCP ping. Wired to the
@@ -101,12 +112,79 @@ class AppDependencies {
     deps.realDelay = RealDelayTester(tester: deps.tester)
       ..probeUrl = 'https://www.gstatic.com/generate_204'
       ..engineDelayTest = (p) async {
-        final api = deps.cores.front.api;
-        if (api == null) return null;
-        return api.delayTest(
-            '${SingBoxRuntime.tagPrefix}${p.id}',
+        // v0.4.9 §device: on Android the engine runs INSIDE the VPN service
+        // (libbox) — SingBoxRuntime._api is never constructed because there
+        // is no child process, so `front.api` was always null and EVERY
+        // node read as 'engine-off' (UI stayed '—'). The Clash API listener
+        // itself is real though (127.0.0.1:9097 confirmed on device), so
+        // build the client lazily when the port answers.
+        var api = deps.cores.front.api;
+        api ??= await _probeAndBuildClashApi(deps);
+        if (api == null) return null; // engine off — honest 'engine-off'
+        // v0.4.9 §user-fix: verify the tag EXISTS in the running config
+        // first. A node filtered out of the pool (disabled / not runnable)
+        // is simply not in the table — its delayTest would 404 and the old
+        // code reported that as a REAL 5-second timeout. Honest null lets
+        // the caller fall through to the transient engine instead.
+        final tag = '${SingBoxRuntime.tagPrefix}${p.id}';
+        final tags = await api.proxyTags();
+        if (tags != null && !tags.contains(tag)) return null;
+        final ms = await api.delayTest(
+            tag,
             deps.realDelay.probeUrl,
             5000);
+        if (ms == null) {
+          // Engine IS running and the node tag exists, but the real URL
+          // fetch failed within 5 s → a REAL dead/unreachable measurement.
+          return ProbeResult(
+              ok: false,
+              latencyMs: null,
+              errorKind: 'timeout',
+              detail: 'engine delay test: no answer within 5s');
+        }
+        return ProbeResult(ok: true, latencyMs: ms);
+      }
+      // v0.4.9 §user: no VPN connected → the TRANSIENT probe engine boots
+      // a consent-free libbox with the candidate nodes (proxy-only config)
+      // so "test all nodes" works right after a fresh app open. The engine
+      // stops itself after an idle gap — zero battery cost while idle.
+      ..transientBatchTest = (batch) async {
+        // v0.4.9 §testall-fix: the sweep calls this per chunk of 6. The old
+        // flow restarted the probe Box whenever the chunk's set differed
+        // from the loaded one — every in-flight delay test died mid-sweep
+        // (two "probe engine UP" lines one second apart in the device log)
+        // and the WHOLE list painted ×. The engine now GROWS its union
+        // (no restart when up), and this loop re-checks the table per node:
+        // a node absent from the running config (dropped Xray node after a
+        // failed child boot, or a grown-in tag that has not landed yet) is
+        // answered honestly ('engine-off') instead of a fake 5 s timeout.
+        final api = await ProbeEngine.instance.ensureUp(batch);
+        if (api == null) return const {};
+        final out = <String, ProbeResult>{};
+        for (final p in batch) {
+          final tag = '${SingBoxRuntime.tagPrefix}${p.id}';
+          final tags = await api.proxyTags();
+          if (tags == null || !tags.contains(tag)) {
+            out[p.id] = ProbeResult(
+                ok: false,
+                latencyMs: null,
+                errorKind: 'engine-off',
+                detail: 'not in probe config');
+            continue;
+          }
+          final ms = await api.delayTest(
+              tag,
+              deps.realDelay.probeUrl,
+              5000);
+          out[p.id] = ms == null
+              ? ProbeResult(
+                  ok: false,
+                  latencyMs: null,
+                  errorKind: 'timeout',
+                  detail: 'probe engine: no answer within 5s')
+              : ProbeResult(ok: true, latencyMs: ms);
+        }
+        return out;
       };
     deps.detector = CoreDetector();
     deps.importer = MultiFormatImporter();
@@ -149,6 +227,14 @@ class AppDependencies {
     // controller; Connect on Android routes through it, never the
     // desktop core path.
     deps.vpnSession = VpnSession(deps: deps);
+    // v0.4.9 §boot-speed ("سرعت بوت شدن برنامه کند است"): reconcile runs
+    // WITHOUT blocking bootstrap. The native state read races the
+    // platform-channel handshake and this await sat between repository
+    // load and the first paint — while the shell itself re-syncs from
+    // vpnSession.uiPhase on every build anyway. A stale CONNECTED pill
+    // self-corrects a frame later; a blank shell for 300+ ms every open
+    // was the worse trade.
+    unawaited(deps.vpnSession.controller.reconcileWithNative().catchError((_) {}));
 
     // v0.4.6 WIRING: seed the TLS-Fragment pill into both engines at boot.
     // Runtime re-pushes happen per connect (VpnSession._connectProfile on
@@ -215,5 +301,28 @@ class AppDependencies {
   /// rung win-rate stats of the fragment AUTO ladder (shared by CoreManager
   /// and the subscriptions screen).
   late final FragmentLadderCache fragmentLadderCache;
+
+  /// Cached in-process Clash API client for the LIVE engine (Android libbox
+  /// path never creates `front.api`; see engineDelayTest above).
+  ///
+  /// v0.4.9 §testall-fix: the cache is VALIDATED — after a disconnect the
+  /// listener dies, and a stale client made every node read as a REAL
+  /// 'timeout' dead (the worst lie: engine-off at least falls through).
+  static ClashApiClient? _liveClashApi;
+
+  /// Returns a working Clash API client when a listener answers on the
+  /// configured port, null otherwise (engine off → 'engine-off' results).
+  static Future<ClashApiClient?> _probeAndBuildClashApi(AppDependencies deps) async {
+    final client0 = _liveClashApi;
+    if (client0 != null && await client0.isAlive()) return client0;
+    _liveClashApi = null;
+    final client = ClashApiClient(
+        port: deps.cores.front.apiPort,
+        secret: deps.cores.front.clashSecret);
+    if (await client.isAlive()) {
+      return _liveClashApi = client;
+    }
+    return null;
+  }
 }
 

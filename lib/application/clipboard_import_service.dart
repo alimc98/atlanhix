@@ -14,14 +14,16 @@ import '../protocols/importer.dart';
 ///   * an http(s) URL  → subscription (SubscriptionService.add)
 ///   * anything else   → nodes (importer.import + profiles.upsertMany)
 ///
-/// Reading the clipboard is opt-in per offer (Android 12+ shows the system
-/// paste toast on the FIRST read of each process lifetime — this service
-/// reads once, right after warm-up, so the toast rides the prompt itself).
+/// Reading the clipboard is opt-in per offer (Android 12+ shows a system
+/// paste toast when it happens): checked right after warm-up AND on every
+/// resume (main.dart re-checks — the payload is usually copied in ANOTHER
+/// app), deduplicated by content so one payload is offered exactly once.
 class ClipboardImportService {
   ClipboardImportService({
     required this.importer,
     required this.onAddNodes,
     required this.onAddSubscription,
+    this.knownPayload,
   });
 
   final MultiFormatImporter importer;
@@ -32,6 +34,14 @@ class ClipboardImportService {
 
   /// Persists + fetches a subscription. Injected for the same reason.
   final Future<void> Function(String url) onAddSubscription;
+
+  /// v0.4.9 §user-fix ("هر بار میگه لینک رو ادد کنم در حالی که ادد شده"):
+  /// returns TRUE when the clipboard payload is ALREADY inside the app —
+  /// an identical subscription URL, or share links whose nodes all match
+  /// existing profiles (identity hash, not the display name). A known
+  /// payload never re-offers, across app runs too (the check is against
+  /// the live repositories, not session memory).
+  final bool Function(String payload)? knownPayload;
 
   static final _subUri = RegExp(
     r'^(vless|vmess|ss|ssr|trojan|hysteria2?|tuic|juicity|socks5?|wireguard|wg|mdvpn)://',
@@ -73,9 +83,17 @@ class ClipboardImportService {
     }
     switch (classify(text)) {
       case ClipboardPayloadKind.subscriptionUrl:
-        return ClipboardOffer(kind: ClipboardPayloadKind.subscriptionUrl, text: text.trim());
       case ClipboardPayloadKind.shareLinks:
-        return ClipboardOffer(kind: ClipboardPayloadKind.shareLinks, text: text.trim());
+        final t = text.trim();
+        // v0.4.9 §user-fix: already-added content is never offered again —
+        // the user switches apps and back and the SAME link kept asking.
+        if (knownPayload?.call(t) ?? false) return null;
+        return ClipboardOffer(
+            kind:
+                classify(t) == ClipboardPayloadKind.subscriptionUrl
+                    ? ClipboardPayloadKind.subscriptionUrl
+                    : ClipboardPayloadKind.shareLinks,
+            text: t);
       case ClipboardPayloadKind.none:
         return null;
     }

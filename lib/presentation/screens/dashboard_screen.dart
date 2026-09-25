@@ -9,6 +9,7 @@ import '../../domain/entities/health.dart';
 import '../../domain/entities/proxy_profile.dart';
 import '../../localization/generated/app_localizations.dart';
 import '../../theme/theme.dart';
+import '../widgets/galaxy_background.dart';
 import '../widgets/speed_graph.dart';
 
 /// Main dashboard (§30): answers in 5 seconds — connected? which node?
@@ -22,7 +23,8 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
+class _DashboardScreenState extends State<DashboardScreen>
+    with WidgetsBindingObserver {
   ConnectionPhase _phase = ConnectionPhase.disconnected;
   ProxyProfile? _active;
   int? _latencyMs;
@@ -43,12 +45,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // dashboard also listens to explicit selection events and re-reads
   // selectedNode — the tapped node shows immediately, BEFORE any connect.
   StreamSubscription? _selectionSub;
+  StreamSubscription<HealthRecord>? _healthSub;
 
   bool get _onAndroid => widget.deps.vpnSession.controller.isAndroid;
+
+  bool _appVisible = true;
 
   @override
   void initState() {
     super.initState();
+    // v0.4.9 §battery: the 1 Hz clock below is the dashboard's heartbeat —
+    // it must NOT keep waking a backgrounded app. Android already throttles
+    // timers for hidden apps, but each fired tick still costs a wake; the
+    // observer pauses/resumes the timer outright.
+    WidgetsBinding.instance.addObserver(this);
     // v0.4.7 §user: tab switches UNMOUNT this screen (the shell builds
     // `screens[_index]` directly), so every stream subscription is lost
     // while away. Re-reading the authoritative state here restores the
@@ -115,8 +125,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _up..removeAt(0)..add(upSpeed.toDouble());
       });
     });
+    // v0.4.9 §user-fix (latency chip never updated): the scheduler's
+    // records reached HealthStore but nothing here listened — the health
+    // figures only changed after an unrelated repaint.
+    _healthSub = widget.deps.scheduler.results.listen((_) {
+      if (mounted) setState(() {});
+    });
     _clock = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && _phase == ConnectionPhase.connected) {
+      // v0.4.9 §battery: hidden app → no ticks, no redraws, no wakeups.
+      if (!_appVisible || !mounted) return;
+      if (_phase == ConnectionPhase.connected) {
         // v0.4.4 §user-2: on Android there is no Clash-API polling — the
         // engine's REAL counters ride the vpn controller (native state
         // poll). Fold them into the same speed graph the desktop uses.
@@ -142,11 +160,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appVisible = state == AppLifecycleState.resumed;
+    // While hidden: drop the chart samples instead of letting them pile up
+    // with zero deltas, so a resume shows a fresh window (cosmetic + free).
+    if (!_appVisible) {
+      _lastUp = null;
+      _lastDown = null;
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _sub?.cancel();
     _trafficSub?.cancel();
     _vpnSub?.cancel();
     _selectionSub?.cancel();
+    _healthSub?.cancel();
     _clock?.cancel();
     super.dispose();
   }
@@ -238,13 +269,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // ── HERO: moon artwork + phase word + active-node card ──
+              // ── HERO: galaxy backdrop + phase word + active-node card ──
               SizedBox(
                 height: 380,
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    // Moon backdrop, faded into the page at the bottom.
+                    // v0.4.9 §user (EXPERIMENTAL): the painted galaxy scene
+                    // (Claude's Compose proposal, ported 1:1) rides UNDER the
+                    // moon artwork — if the asset is present the artwork
+                    // covers it exactly as before; on devices/variants
+                    // without the asset the painted scene shows instead.
+                    // Same fade-out mask keeps the phase word readable.
                     ShaderMask(
                       shaderCallback: (r) => const LinearGradient(
                         begin: Alignment.topCenter,
@@ -261,7 +297,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         'assets/brand/moon_hero.png',
                         fit: BoxFit.cover,
                         alignment: Alignment.topCenter,
-                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                        // Painted galaxy beneath: the artwork error-falls
+                        // THROUGH to the scene instead of an empty box.
+                        errorBuilder: (_, __, ___) => const GalaxyBackground(),
                       ),
                     ),
                     // Foreground: phase word + node card pinned to the bottom.

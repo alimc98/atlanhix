@@ -50,11 +50,15 @@ class _WarpChainCardState extends State<WarpChainCard> {
   /// answered". Now we build a genuine Noise-IK initiation from the
   /// account's own static key and treat only a `type 2` response or a
   /// cookie reply as liveness+RTT proof. Candidates: the classic
-  /// 162.159.192/193 + 188.114.96/97 spread over the ports WARP listens on.
+  /// 162.159.192/193/195 + 188.114.96/97 spread over the ports WARP listens
+  /// on — 162.159.192.1 / 162.159.195.1 / 188.114.96.1 / 188.114.97.1 are
+  /// live-verified against real Cloudflare (v0.4.9 sweep; 162.159.193.10
+  /// consistently silent, kept for completeness).
   static const _scanPorts = [2408, 500, 1701, 4500, 8443, 3138];
   static const _scanHosts = [
     '162.159.192.1', '162.159.192.5', '162.159.192.35', '162.159.192.62',
-    '162.159.193.10', '162.159.193.40', '188.114.97.1', '188.114.97.170',
+    '162.159.193.10', '162.159.193.40', '162.159.195.1', '188.114.96.1',
+    '188.114.97.1', '188.114.97.170',
   ];
 
   Future<void> _scanEndpoints() async {
@@ -90,8 +94,9 @@ class _WarpChainCardState extends State<WarpChainCard> {
         final pkt = await WgHandshakeProbe.buildInitiation(
           initiatorStaticPrivate: acct.privateKeyBytes,
           responderStaticPublic: acct.serverKeyBytes,
-          // Cloudflare checks the 3-byte client id on EVERY packet —
-          // an initiation without it is dropped silently.
+          // The 3-byte client_id rides in the reserved field — CF
+          // validates its VALUE (garbage → silent drop) — while MAC1
+          // covers the reserved-ZEROED body. Live-proven both ways.
           reserved: acct.reservedBytes,
         );
         final rtt = await WgHandshakeProbe.probe(h, p, pkt,
@@ -213,6 +218,9 @@ class _WarpChainCardState extends State<WarpChainCard> {
     final i4 = TextEditingController(text: a.awgI4 ?? '');
     final i5 = TextEditingController(text: a.awgI5 ?? '');
     final hpk = TextEditingController(text: a.awgHpk ?? '');
+    final masqId = TextEditingController(text: a.awgMasqId ?? '');
+    final masqIp = TextEditingController(text: a.awgMasqIp ?? '');
+    final masqIb = TextEditingController(text: a.awgMasqIb ?? '');
     var randTrailers = a.awgRandomTrailers ?? false;
     var disableCookies = a.awgDisableCookies ?? false;
     int? p(TextEditingController c) => int.tryParse(c.text.trim());
@@ -241,9 +249,12 @@ class _WarpChainCardState extends State<WarpChainCard> {
                     ?.copyWith(color: ThemeExt.of(ctx).textSecondary),
               ),
             ),
-            // v0.4.9 §user: one-tap AWG 3.1 defaults — the widely-used
-            // amnezia-client-style obfuscation set (junk + padding + header
-            // remap). Fills the EMPTY fields; already-set values are kept.
+            // v0.4.9 §user: one-tap AWG 3.1 defaults — the LIVE-PROVEN
+            // Cloudflare combo (the warp_e2e_config matrix: every run of
+            // this set → warp=on): junk (Jc/Jmin/Jmax) + masquerade decoy
+            // (id/ip/ib) + random trailers. S1..S4/H1..H4 are CLEARED on
+            // purpose — they reshape the handshake and Cloudflare's vanilla
+            // parser drops it ("handshake did not complete").
             Align(
               alignment: Alignment.centerLeft,
               child: TextButton.icon(
@@ -255,20 +266,25 @@ class _WarpChainCardState extends State<WarpChainCard> {
                   fill(jc, '4');
                   fill(jmin, '64');
                   fill(jmax, '96');
-                  fill(s1, '15');
-                  fill(s2, '15');
-                  fill(h1, '1');
-                  fill(h2, '2');
-                  fill(h3, '3');
-                  fill(h4, '4');
+                  fill(masqId, 'www.google.com');
+                  fill(masqIp, 'quic');
+                  fill(masqIb, 'chrome');
+                  // Break CF interop — remove any stale generator paste.
+                  s1.clear();
+                  s2.clear();
+                  s3.clear();
+                  s4.clear();
+                  h1.clear();
+                  h2.clear();
+                  h3.clear();
+                  h4.clear();
                   randTrailers = true;
-                  disableCookies = true;
                   (ctx as Element).markNeedsBuild();
                 },
                 icon: const Icon(Icons.auto_fix_high, size: 16),
                 label: Text(_fa
-                    ? 'پیش‌فرض‌های AWG 3.1 (ضد DPI)'
-                    : 'AWG 3.1 defaults (anti-DPI)'),
+                    ? 'پیش‌فرض‌های AWG 3.1 (ضد DPI، تست‌شده روی WARP)'
+                    : 'AWG 3.1 defaults (anti-DPI, WARP-tested)'),
               ),
             ),
             for (final e in <String, TextEditingController>{
@@ -276,6 +292,9 @@ class _WarpChainCardState extends State<WarpChainCard> {
               'S1': s1, 'S2': s2, 'S3': s3, 'S4': s4,
               'H1': h1, 'H2': h2, 'H3': h3, 'H4': h4,
               'I1': i1, 'I2': i2, 'I3': i3, 'I4': i4, 'I5': i5,
+              'Masq id (domain)': masqId,
+              'Masq ip (proto)': masqIp,
+              'Masq ib (browser)': masqIb,
               'Hpk': hpk,
             }.entries)
               Padding(
@@ -324,6 +343,7 @@ class _WarpChainCardState extends State<WarpChainCard> {
     // Persist through the repository's copy-with-secrets save (secrets
     // never round-trip through the dialog; we only patch the AWG params).
     await widget.deps.warpRepo.saveWithAwgParams(
+      replaceAwgParams: true,
       jc: p(jc),
       jmin: p(jmin),
       jmax: p(jmax),
@@ -340,6 +360,9 @@ class _WarpChainCardState extends State<WarpChainCard> {
       i3: s(i3),
       i4: s(i4),
       i5: s(i5),
+      masqId: s(masqId),
+      masqIp: s(masqIp),
+      masqIb: s(masqIb),
       hpk: s(hpk),
       randomTrailers: randTrailers ? true : null,
       disableCookies: disableCookies ? true : null,

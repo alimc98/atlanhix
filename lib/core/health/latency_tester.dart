@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 /// One connectivity probe result.
 class ProbeResult {
@@ -34,11 +35,152 @@ class LatencyTester {
       socket.destroy();
       return ProbeResult(ok: true, latencyMs: sw.elapsedMilliseconds);
     } on SocketException catch (e) {
-      final isDns = e.osError == null && e.message.contains('Failed host lookup');
-      return ProbeResult(
-          ok: false, errorKind: isDns ? 'dns' : 'tcp', detail: e.message);
+      if (_isDnsFailure(e)) {
+        // v0.4.9 §user-fix (ping broken for domain nodes): the carrier DNS
+        // can't resolve the node hostname (poisoned/blocked) — every probe
+        // died with a dns error while the node itself was fine. Retry ONCE
+        // through a CLEAN resolver before declaring the node dead.
+        final ip = await _resolveClean(host);
+        if (ip != null && ip != host) {
+          final again = await testTcp(ip, port, timeout: t);
+          // Numeric IP → no DNS can fail in the retry, so this result is
+          // the truth now: ok, or a genuine tcp/timeout — not "dns".
+          return again;
+        }
+        return ProbeResult(ok: false, errorKind: 'dns', detail: e.message);
+      }
+      return ProbeResult(ok: false, errorKind: 'tcp', detail: e.message);
     } on TimeoutException {
       return ProbeResult(ok: false, errorKind: 'timeout', detail: 'connect timeout');
+    }
+  }
+
+  // ── CLEAN DNS fallback (v0.4.9 §user) ─────────────────────────────────
+  // System DNS on the carriers this app targets lies or fails outright; a
+  // node hostname then reads as dead. A raw UDP A-record query (no new
+  // dependencies) to 1.1.1.1, then 8.8.8.8, rescues the probe.
+
+  static final Random _rng = Random.secure();
+
+  static bool _isDnsFailure(SocketException e) {
+    final msg = '${e.message} ${e.osError?.message ?? ''}'.toLowerCase();
+    return msg.contains('host lookup') ||
+        msg.contains('name or service not known') ||
+        msg.contains('no address associated with hostname') ||
+        msg.contains('nodename nor servname') ||
+        msg.contains('no such host');
+  }
+
+  Future<String?> _resolveClean(String host) async {
+    if (InternetAddress.tryParse(host) != null) return host;
+    for (final resolver in const ['1.1.1.1', '8.8.8.8']) {
+      final ip = await _udpDnsA(host, resolver);
+      if (ip != null) return ip;
+    }
+    return null;
+  }
+
+  /// Minimal DNS client: one A-record question over UDP, first response
+  /// with our transaction id wins. Null = timeout/error (filtering).
+  Future<String?> _udpDnsA(
+    String host,
+    String resolver, {
+    Duration timeout = const Duration(milliseconds: 1600),
+  }) async {
+    final name = host.trim().toLowerCase().replaceAll(RegExp(r'\.+$'), '');
+    if (name.isEmpty) return null;
+    final id = _rng.nextInt(0x10000);
+    final q = BytesBuilder()
+      ..addByte(id >> 8)
+      ..addByte(id & 0xff)
+      ..addByte(0x01) // flags: recursion desired
+      ..addByte(0x00)
+      ..addByte(0x00)
+      ..addByte(0x01) // QDCOUNT
+      ..addByte(0x00)
+      ..addByte(0x00)
+      ..addByte(0x00)
+      ..addByte(0x00)
+      ..addByte(0x00)
+      ..addByte(0x00);
+    for (final label in name.split('.')) {
+      final lb = utf8.encode(label);
+      if (lb.isEmpty || lb.length > 63) return null;
+      q
+        ..addByte(lb.length)
+        ..add(lb);
+    }
+    q
+      ..addByte(0) // root label
+      ..addByte(0x00)
+      ..addByte(0x01) // QTYPE A
+      ..addByte(0x00)
+      ..addByte(0x01); // QCLASS IN
+    RawDatagramSocket? sock;
+    try {
+      final s = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      sock = s;
+      s.send(q.takeBytes(), InternetAddress(resolver), 53);
+      final done = Completer<String?>();
+      final sub = s.listen((ev) {
+        if (ev != RawSocketEvent.read || done.isCompleted) return;
+        final d = s.receive();
+        if (d == null) return;
+        final ip = _parseDnsA(d.data, id);
+        if (ip != null && !done.isCompleted) done.complete(ip);
+      }, onError: (Object _) {
+        if (!done.isCompleted) done.complete(null);
+      }, onDone: () {
+        if (!done.isCompleted) done.complete(null);
+      });
+      final ip = await done.future.timeout(timeout, onTimeout: () => null);
+      await sub.cancel();
+      return ip;
+    } catch (_) {
+      return null; // filtered resolver — caller tries the next one
+    } finally {
+      sock?.close();
+    }
+  }
+
+  /// First A record in a DNS response whose id matches [expectId].
+  static String? _parseDnsA(List<int> d, int expectId) {
+    if (d.length < 12) return null;
+    if (((d[0] << 8) | d[1]) != expectId) return null;
+    final flags = (d[2] << 8) | d[3];
+    if ((flags & 0x8000) == 0) return null; // not a response
+    if ((flags & 0x000f) != 0) return null; // NXDOMAIN/SERVFAIL/…
+    final qd = (d[4] << 8) | d[5];
+    final an = (d[6] << 8) | d[7];
+    var off = 12;
+    for (var i = 0; i < qd; i++) {
+      off = _skipDnsName(d, off);
+      if (off < 0 || off + 4 > d.length) return null;
+      off += 4;
+    }
+    for (var i = 0; i < an; i++) {
+      off = _skipDnsName(d, off);
+      if (off < 0 || off + 10 > d.length) return null;
+      final type = (d[off] << 8) | d[off + 1];
+      final rdlen = (d[off + 8] << 8) | d[off + 9];
+      off += 10;
+      if (off + rdlen > d.length) return null;
+      if (type == 1 && rdlen == 4) {
+        return '${d[off]}.${d[off + 1]}.${d[off + 2]}.${d[off + 3]}';
+      }
+      off += rdlen;
+    }
+    return null;
+  }
+
+  /// Returns the offset after a (possibly compressed) DNS name, or -1.
+  static int _skipDnsName(List<int> d, int off) {
+    while (true) {
+      if (off >= d.length) return -1;
+      final len = d[off];
+      if (len == 0) return off + 1;
+      if ((len & 0xc0) == 0xc0) return off + 2; // compression pointer
+      off += 1 + len;
     }
   }
 

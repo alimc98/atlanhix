@@ -305,15 +305,34 @@ class OutboundBuilders {
       if (amnezia != null && amnezia.s2 != null) 's2': amnezia.s2,
       if (amnezia != null && amnezia.s3 != null) 's3': amnezia.s3,
       if (amnezia != null && amnezia.s4 != null) 's4': amnezia.s4,
-      if (amnezia != null) 'h1': headerValue(amnezia.h1),
-      if (amnezia != null) 'h2': headerValue(amnezia.h2),
-      if (amnezia != null) 'h3': headerValue(amnezia.h3),
-      if (amnezia != null) 'h4': headerValue(amnezia.h4),
+      if (amnezia != null && headerValue(amnezia.h1) != null)
+        'h1': headerValue(amnezia.h1),
+      if (amnezia != null && headerValue(amnezia.h2) != null)
+        'h2': headerValue(amnezia.h2),
+      if (amnezia != null && headerValue(amnezia.h3) != null)
+        'h3': headerValue(amnezia.h3),
+      if (amnezia != null && headerValue(amnezia.h4) != null)
+        'h4': headerValue(amnezia.h4),
       if (amnezia != null && amnezia.i1 != null) 'i1': amnezia.i1,
       if (amnezia != null && amnezia.i2 != null) 'i2': amnezia.i2,
       if (amnezia != null && amnezia.i3 != null) 'i3': amnezia.i3,
       if (amnezia != null && amnezia.i4 != null) 'i4': amnezia.i4,
       if (amnezia != null && amnezia.i5 != null) 'i5': amnezia.i5,
+      // Masquerade sugar (lx wire names id/ip/ib — the SAME option struct
+      // as I1..I5 in v1.14.1-lx.8): decoy domain + protocol + browser.
+      // Builds the I1 masquerade decoy for you; live-proven vs Cloudflare.
+      if (amnezia != null &&
+          amnezia.masqId != null &&
+          amnezia.masqId!.isNotEmpty)
+        'id': amnezia.masqId,
+      if (amnezia != null &&
+          amnezia.masqIp != null &&
+          amnezia.masqIp!.isNotEmpty)
+        'ip': amnezia.masqIp,
+      if (amnezia != null &&
+          amnezia.masqIb != null &&
+          amnezia.masqIb!.isNotEmpty)
+        'ib': amnezia.masqIb,
       if (amnezia != null &&
           amnezia.headerProtectionKey != null &&
           amnezia.headerProtectionKey!.isNotEmpty)

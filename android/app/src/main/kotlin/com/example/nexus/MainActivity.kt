@@ -5,6 +5,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
+import com.example.nexus.vpn.AtlanhixProbeChannel
 import com.example.nexus.vpn.AtlanhixVpnChannel
 import com.example.nexus.vpn.AtlanhixXrayChannel
 import com.example.nexus.vpn.InstalledAppsSource
@@ -30,6 +31,26 @@ class MainActivity : FlutterActivity() {
             } catch (e: Exception) {
                 result.error("xray_channel", e.message, null)
             }
+        }
+        // v0.4.9 §user: transient probe engine (real delay tests with no
+        // active VPN). libbox start is a blocking native call — run it off
+        // the MAIN thread or ANR (same pattern as installedApps above).
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AtlanhixProbeChannel.CHANNEL
+        ).setMethodCallHandler { call, result ->
+            val appContext = applicationContext
+            Thread {
+                try {
+                    val rawArg: Any? = call.arguments()
+                    val arg: JSONObject? =
+                        if (rawArg == null) null else JSONObject(rawArg.toString())
+                    val resp = probeChannelOrNew().handle(call.method, arg)
+                    runOnUiThread { result.success(resp.toString()) }
+                } catch (e: Exception) {
+                    runOnUiThread { result.error("probe_channel", e.message, null) }
+                }
+            }.start()
         }
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -84,6 +105,17 @@ class MainActivity : FlutterActivity() {
     private var xrayChannel: AtlanhixXrayChannel? = null
     private fun xrayChannelOrNew(): AtlanhixXrayChannel =
         xrayChannel ?: AtlanhixXrayChannel(this).also { xrayChannel = it }
+
+    private var probeChannel: AtlanhixProbeChannel? = null
+    private fun probeChannelOrNew(): AtlanhixProbeChannel =
+        probeChannel ?: AtlanhixProbeChannel(this).also { probeChannel = it }
+
+    override fun onDestroy() {
+        // The probe engine is a child of the ACTIVITY-scoped channel object;
+        // without this a rotated/recreated activity leaks a running Box.
+        probeChannel?.handle("probeStop", null)
+        super.onDestroy()
+    }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)

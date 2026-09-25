@@ -134,14 +134,44 @@ class SingBoxConfigGenerator {
       final firstNodeTag = runnableProfiles.isEmpty
           ? null
           : 'node:${runnableProfiles.first.id}';
+      // v0.4.9 §user-fix (warp-last was dead on device): the warp endpoint's
+      // detour binds the warp HANDSHAKE to a dial path. Binding it to
+      // `firstNodeTag` meant the chain ignored the user's selected node —
+      // with a multi-node pool the session exited through the FIRST pool
+      // member regardless of the pick (and a selection change rebuilt the
+      // binding only because the whole config was rebuilt). Bind to the
+      // SELECTED node; fall back to the first member only when the selection
+      // is not in the pool (stale id after a subscription refresh).
+      final selectedInPool =
+          runnableProfiles.any((p) => 'node:${p.id}' == selectedTag);
+      final exitNodeTag = warpAsLastHop
+          ? (selectedInPool ? selectedTag : firstNodeTag)
+          : null;
       final wEp = builders.singBoxWireguardEndpoint(warpProfile,
           tag: warpTag,
-          detourTag: warpAsLastHop ? firstNodeTag : null);
+          detourTag: exitNodeTag);
       if (wEp != null) endpoints.add(wEp);
     }
 
     for (final p in runnableProfiles) {
       final tag = 'node:${p.id}';
+      // v0.4.9 §user-fix ("test all still red on device"): a batch probe
+      // runs with NO :xray child process. A socks stub for a detected-Xray
+      // node pointed at a dead 127.0.0.1:port and the delay test measured
+      // a guaranteed failure — polluting HealthStore with fake deads AND
+      // dominating the selector. The node is simply not buildable HERE:
+      // skip it so the caller reports 'engine-off' (honest) instead of
+      // 'timeout' (a lie). v0.4.9 §connect-fix: ONLY when no live upstream
+      // port is provided — a map entry with a REAL local port (the front
+      // session's :xray child) must still emit the stub, or every
+      // Xray-owned connect died on a native sing-box outbound instead
+      // (regression caught on device: first tap on a PQ/vless node died).
+      final up0 = socksUpstreams[p.id];
+      if (up0 == null &&
+          (p.effectiveCore == CoreKind.xray ||
+              p.transport == Transport.xhttp)) {
+        continue;
+      }
       final o = builders.singBoxOutbound(p, tag: tag,
           // warpFirst: the node's own socket is dialed through the WARP
           // tunnel — app → WARP → node → internet (WARP masks the node
@@ -152,7 +182,13 @@ class SingBoxConfigGenerator {
         tags.add(tag);
         continue;
       }
-      final ep = builders.singBoxWireguardEndpoint(p, tag: tag);
+      final ep = builders.singBoxWireguardEndpoint(p, tag: tag,
+          // v0.4.9 §user-fix (warp-first was a NO-OP for WG nodes): only
+          // TCP/UDP outbounds received the detour — a WireGuard NODE
+          // dialed straight out, so the chain silently degraded to plain.
+          // A WG endpoint dials through another endpoint just like an
+          // outbound does (`detour` on the endpoint = its dial path).
+          detourTag: warpFirst ? warpTag : null);
       if (ep != null) {
         endpoints.add(ep);
         tags.add(tag);
@@ -160,13 +196,24 @@ class SingBoxConfigGenerator {
       }
       final up = socksUpstreams[p.id];
       if (up != null) {
+        // v0.4.9 §user-fix (warp-first crashed Xray nodes): this stub
+        // points at the LOCAL :xray child (127.0.0.1). `detour: warp`
+        // wrapped those LOOPBACK dials in the WARP tunnel — Cloudflare
+        // cannot route 127.0.0.1, so the child never answered and every
+        // warp-first connect with an Xray-core node died. The child dials
+        // the node itself on its own protected/direct path (the v0.4.7
+        // loop-fix), so the stub stays direct; the detour is only kept
+        // for a hypothetical non-local upstream.
+        final local = up.host == '127.0.0.1' ||
+            up.host == 'localhost' ||
+            up.host == '::1';
         outbounds.add({
           'type': 'socks',
           'tag': tag,
           'server': up.host,
           'server_port': up.port,
           'version': '5',
-          if (warpFirst) 'detour': warpTag,
+          if (warpFirst && !local) 'detour': warpTag,
         });
         tags.add(tag);
       }
@@ -202,6 +249,21 @@ class SingBoxConfigGenerator {
       'tag': 'direct',
       'connect_timeout': '5s',
     });
+    // v0.4.9 §user-fix (warp-last rescue member): in the warp-last shape the
+    // `warp` endpoint's dial path rides the SELECTED node — if that node's
+    // outbound is unavailable at runtime, a selector fallback into `warp`
+    // would dead-end (no member left to dial). `warp:direct` is a warp
+    // endpoint dialing straight out (plain WARP session) so the selector
+    // always retains a working last-member. It must be added AFTER the warp
+    // endpoint exists, and it is deliberately NOT the default member.
+    if (warpAsLastHop && endpoints.any((e) => e['tag'] == warpTag)) {
+      final directWarp = builders.singBoxWireguardEndpoint(warpProfile!,
+          tag: 'warp:direct');
+      if (directWarp != null) {
+        endpoints.add(directWarp);
+        members.add('warp:direct');
+      }
+    }
 
     final dnsObj = _compiler.singBoxDns(dns);
     // Ensure the server referenced by default_domain_resolver exists.

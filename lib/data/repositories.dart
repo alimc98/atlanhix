@@ -55,6 +55,9 @@ class WarpRepository {
       awgI4: section['awgI4'] as String?,
       awgI5: section['awgI5'] as String?,
       awgHpk: section['awgHpk'] as String?,
+      awgMasqId: section['awgMasqId'] as String?,
+      awgMasqIp: section['awgMasqIp'] as String?,
+      awgMasqIb: section['awgMasqIb'] as String?,
       awgRandomTrailers: section['awgRandomTrailers'] as bool?,
       awgDisableCookies: section['awgDisableCookies'] as bool?,
       endpointOverride: section['endpointOverride'] as String?,
@@ -102,18 +105,29 @@ class WarpRepository {
       if (a.awgI4 != null) 'awgI4': a.awgI4,
       if (a.awgI5 != null) 'awgI5': a.awgI5,
       if (a.awgHpk != null) 'awgHpk': a.awgHpk,
+      if (a.awgMasqId != null) 'awgMasqId': a.awgMasqId,
+      if (a.awgMasqIp != null) 'awgMasqIp': a.awgMasqIp,
+      if (a.awgMasqIb != null) 'awgMasqIb': a.awgMasqIb,
       if (a.awgRandomTrailers != null) 'awgRandomTrailers': a.awgRandomTrailers,
       if (a.awgDisableCookies != null) 'awgDisableCookies': a.awgDisableCookies,
       if (a.endpointOverride != null) 'endpointOverride': a.endpointOverride,
     });
   }
 
-  /// v0.4.8 §user: patches ONLY the AmneziaWG 3.x obfuscation params on the
+  /// v0.4.8 §user: patches the AmneziaWG 3.x obfuscation params on the
   /// stored account (manual entry from the WARP card sheet) — secrets are
   /// never round-tripped through the UI, so the vault values are preserved.
   /// [hpk] (header-protection key) is a key-like string, so it goes through
   /// the secure vault like every other secret.
+  ///
+  /// v0.4.9: [replaceAwgParams] controls the AWG field semantics. The
+  /// params SHEET passes `true` (its full form is the new truth — clearing
+  /// a field clears it). Endpoint-only callers (scanner/manual endpoint)
+  /// leave it `false`, which KEEPS the stored params — previously those
+  /// calls nulled every AWG field, silently downgrading an AmneziaWG 3.1
+  /// WARP account to plain WireGuard after a scan.
   Future<void> saveWithAwgParams({
+    bool replaceAwgParams = false,
     int? jc,
     int? jmin,
     int? jmax,
@@ -131,6 +145,9 @@ class WarpRepository {
     String? i4,
     String? i5,
     String? hpk,
+    String? masqId,
+    String? masqIp,
+    String? masqIb,
     bool? randomTrailers,
     bool? disableCookies,
     String? endpointOverride,
@@ -150,25 +167,30 @@ class WarpRepository {
       license: a.license,
       clientId: a.clientId,
       registeredAt: a.registeredAt,
-      awgJc: jc,
-      awgJmin: jmin,
-      awgJmax: jmax,
-      awgS1: s1,
-      awgS2: s2,
-      awgS3: s3,
-      awgS4: s4,
-      awgH1: h1,
-      awgH2: h2,
-      awgH3: h3,
-      awgH4: h4,
-      awgI1: i1,
-      awgI2: i2,
-      awgI3: i3,
-      awgI4: i4,
-      awgI5: i5,
-      awgHpk: hpk,
-      awgRandomTrailers: randomTrailers,
-      awgDisableCookies: disableCookies,
+      awgJc: replaceAwgParams ? jc : a.awgJc,
+      awgJmin: replaceAwgParams ? jmin : a.awgJmin,
+      awgJmax: replaceAwgParams ? jmax : a.awgJmax,
+      awgS1: replaceAwgParams ? s1 : a.awgS1,
+      awgS2: replaceAwgParams ? s2 : a.awgS2,
+      awgS3: replaceAwgParams ? s3 : a.awgS3,
+      awgS4: replaceAwgParams ? s4 : a.awgS4,
+      awgH1: replaceAwgParams ? h1 : a.awgH1,
+      awgH2: replaceAwgParams ? h2 : a.awgH2,
+      awgH3: replaceAwgParams ? h3 : a.awgH3,
+      awgH4: replaceAwgParams ? h4 : a.awgH4,
+      awgI1: replaceAwgParams ? i1 : a.awgI1,
+      awgI2: replaceAwgParams ? i2 : a.awgI2,
+      awgI3: replaceAwgParams ? i3 : a.awgI3,
+      awgI4: replaceAwgParams ? i4 : a.awgI4,
+      awgI5: replaceAwgParams ? i5 : a.awgI5,
+      awgHpk: replaceAwgParams ? hpk : a.awgHpk,
+      awgMasqId: replaceAwgParams ? masqId : a.awgMasqId,
+      awgMasqIp: replaceAwgParams ? masqIp : a.awgMasqIp,
+      awgMasqIb: replaceAwgParams ? masqIb : a.awgMasqIb,
+      awgRandomTrailers:
+          replaceAwgParams ? randomTrailers : a.awgRandomTrailers,
+      awgDisableCookies:
+          replaceAwgParams ? disableCookies : a.awgDisableCookies,
       endpointOverride:
           clearEndpointOverride ? null : (endpointOverride ?? a.endpointOverride),
     );

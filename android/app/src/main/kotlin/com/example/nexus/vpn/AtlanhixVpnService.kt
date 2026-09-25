@@ -95,10 +95,19 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
             }
             else -> {
                 // System restart delivery: rebuild the tunnel if we were up.
+                // v0.4.9 §user-fix: null intent + no pendingConfig = the OS
+                // redelivered a sticky restart for a session whose owner is
+                // gone (app closed) — do NOT rebuild; answer STOPPED so the
+                // notification never resurrects on its own.
                 if (state == State.VALIDATING || state == State.CONNECTED) {
                     setState(State.RECONNECTING)
                     shutdownTunnelOnly()
                     startTunnel()
+                } else if (intent == null && AtlanhixVpnService.pendingConfig == null) {
+                    AtlanhixTrace.log("STICKY_RESTART ignored (no owner)")
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return START_NOT_STICKY
                 }
             }
         }
@@ -141,6 +150,11 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
         EngineLogFile.append(AtlanhixRedact.apply(configJson))
         EngineLogFile.append("FINAL_CONFIG_END")
         setState(State.STARTING)
+        // v0.4.9 §user-fix: the handoff is consumed here. Keeping it made a
+        // system START_STICKY redelivery (after the process was killed with
+        // the tunnel down) REBUILD a dead session — resurrecting the
+        // "atlanhix core" notification after the user closed the app.
+        pendingConfig = null
         val include = stringList(config, "includeApps")
         val exclude = stringList(config, "excludeApps")
         val eng = engine ?: LibboxEngine(this, this).also { engine = it }
@@ -419,7 +433,30 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
 
     override fun onDestroy() {
         shutdownTunnelOnly()
+        // v0.4.9 §user-fix ("atlanhix core even after closing the app"):
+        // whatever path destroyed the service, the notification must go —
+        // a sticky foreground notification on a dead tunnel is a lie.
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (_: Exception) {}
         super.onDestroy()
+    }
+
+    // v0.4.9 §user-fix: swiping the app away (onTaskRemoved) must tear the
+    // tunnel AND the notification down. Until now the service (START_STICKY)
+    // survived as an orphaned foreground service with a live pill — the
+    // exact "notification stays even after I close the app" report.
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        AtlanhixTrace.log("TASK_REMOVED — tearing session down")
+        setState(State.STOPPING)
+        shutdownTunnelOnly()
+        setState(State.STOPPED)
+        AtlanhixTrace.log("STOPPED (task removed)")
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (_: Exception) {}
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     // --------------------------------------------------------------- notify

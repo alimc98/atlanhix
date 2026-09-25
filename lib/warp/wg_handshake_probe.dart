@@ -13,10 +13,24 @@ import 'package:cryptography/cryptography.dart';
 /// (Noise_IKpsk2) with the account's own static key and treats a `type 2`
 /// response (or a cookie reply) as liveness + RTT proof.
 ///
-/// Key crypto detail: WireGuard's "HMAC" in the whitepaper is keyed
-/// BLAKE2s-256 (BLAKE2 has native keying) — package:cryptography exposes
-/// exactly that as `Blake2s.calculateMac`. Its `Hmac.blake2s` would be RFC
-/// 2104 HMAC over BLAKE2s, which WG does NOT use; don't "fix" this back.
+/// Key crypto details (verified against BOTH wireguard-go
+/// `CreateMessageInitiation` and Cloudflare's boringtun
+/// `receive_handshake_initialization` — the code that runs WARP's servers):
+///
+/// 1. The KDF is RFC-2104 HMAC over BLAKE2s-256 with block size 64.
+///    boringtun says it outright: "RFC 2401 HMAC+Blake2s, NOT to be
+///    confused with *keyed* Blake2s". Native keyed-BLAKE2s
+///    (`Blake2s.calculateMac`) is a different function and silently
+///    derives different keys — don't switch to it.
+/// 2. After mixing the ephemeral public key into the hash, WireGuard
+///    ALSO mixes it into the chain key (`c = KDF1(c, eph_pub)` — see
+///    wireguard-go `handshake.mixKey(msg.Ephemeral)` and boringtun's
+///    `chaining_key = HMAC(HMAC(c, eph_pub), 0x1)`). Vanilla Noise's
+///    `e` token does not do this; WireGuard does. Missing this step
+///    yields a wrong AEAD key and a SILENT drop at the server.
+/// 3. MAC1 is keyed BLAKE2s with a **16-byte output** (`blake2s.New128`
+///    / `Blake2sMac<16>`), not BLAKE2s-32 truncated to 16: the digest
+///    length lives in BLAKE2's parameter block, so the two differ.
 ///
 /// Packet layout (148 bytes):
 ///   [0]      type = 1
@@ -25,7 +39,8 @@ import 'package:cryptography/cryptography.dart';
 ///   [8..39]  unencrypted ephemeral public key (32)
 ///   [40..87] encrypted_static = AEAD(chain, static_pub, aad=hash) (32+16)
 ///   [88..115] encrypted_timestamp = AEAD(chain, TAI64N, aad=hash) (12+16)
-///   [116..131] MAC1 = keyed-BLAKE2s-16 over bytes[0..116]
+///   [116..131] MAC1 = keyed-BLAKE2s-16 over bytes[0..116] (reserved
+///              bytes zeroed for the MAC — see buildInitiation)
 ///   [132..147] MAC2 = zeros (no cookie yet)
 class WgHandshakeProbe {
   WgHandshakeProbe._();
@@ -35,28 +50,55 @@ class WgHandshakeProbe {
   static const _wgIdentifier = 'WireGuard v1 zx2c4 Jason@zx2c4.com';
 
   static final _blake2s = Blake2s();
+  static final _blake2s16 = Blake2s(hashLengthInBytes: 16);
   static final _aead = Chacha20.poly1305Aead();
   static final _x25519 = X25519();
-
-  /// WG "HMAC" = keyed BLAKE2s-256.
-  static Future<List<int>> _mac(List<int> key, List<int> data) async =>
-      (await _blake2s.calculateMac(data, secretKey: SecretKey(key))).bytes;
 
   /// Plain (unkeyed) BLAKE2s-256.
   static Future<List<int>> _hash(List<int> data) async =>
       (await _blake2s.hash(data)).bytes;
 
-  /// WireGuard KDF with TWO outputs (wireguard-go KDF2):
-  ///   prk = MAC(key, data)
-  ///   t0  = MAC(prk, [0x1])        ← new chain key
-  ///   t1  = MAC(prk, t0 ‖ [0x2])   ← message key
+  /// RFC-2104 HMAC over BLAKE2s-256 with block size **64** (BLAKE2s block).
+  ///
+  /// wireguard-go: `hmac.New(blake2s.New256, key)` — Go pads to the hash's
+  /// BlockSize, which is 64 for BLAKE2s. boringtun: `SimpleHmac<Blake2s256>`,
+  /// also B=64.
+  ///
+  /// package:cryptography's `Hmac(Blake2s())` must NOT be used: its
+  /// `Blake2s.blockLengthInBytes` reports 32 (algorithms.dart:774 — a
+  /// package bug), so it would pad the key to 32 bytes and produce a
+  /// different MAC. Hand-rolled here with the correct 64.
+  static Future<List<int>> _hmac(List<int> key, List<int> data) async {
+    const b = 64;
+    var k = key;
+    if (k.length > b) k = await _hash(k); // RFC 2104: long keys get hashed
+    if (k.length < b) k = [...k, ...List.filled(b - k.length, 0)];
+    final ipad = [for (final x in k) x ^ 0x36];
+    final opad = [for (final x in k) x ^ 0x5c];
+    final inner = await _hash([...ipad, ...data]);
+    return _hash([...opad, ...inner]);
+  }
+
+  /// WireGuard KDF1(key, data) = HMAC(HMAC(key, data), 0x01).
+  static Future<List<int>> _kdf1(List<int> key, List<int> data) async =>
+      _hmac(await _hmac(key, data), const [0x01]);
+
+  /// WireGuard KDF with TWO outputs (wireguard-go `KDF2` / boringtun):
+  ///   prk = HMAC(key, data)
+  ///   t0  = HMAC(prk, [0x1])         ← new chain key
+  ///   t1  = HMAC(prk, t0 ‖ [0x2])    ← message key
   static Future<(List<int>, List<int>)> _kdf2(
       List<int> key, List<int> data) async {
-    final prk = await _mac(key, data);
-    final t0 = await _mac(prk, [0x1]);
-    final t1 = await _mac(prk, [...t0, 0x2]);
+    final prk = await _hmac(key, data);
+    final t0 = await _hmac(prk, const [0x01]);
+    final t1 = await _hmac(prk, [...t0, 0x02]);
     return (t0, t1);
   }
+
+  /// Test hook: KDF2 exposed so `test/wg_handshake_probe_test.dart` can pin
+  /// it with wireguard-go's own `kdf_test.go` vectors.
+  static Future<(List<int>, List<int>)> kdf2(List<int> key, List<int> data) =>
+      _kdf2(key, data);
 
   /// X25519(key, remotePublic).
   static Future<List<int>> _dh(
@@ -72,10 +114,19 @@ class WgHandshakeProbe {
 
   /// Builds the 148-byte Noise-IK initiation packet.
   ///
-  /// [reserved] — Cloudflare WARP carries the 3-byte client_id here on EVERY
-  /// packet (initiation included); zeros make the endpoint drop the packet
-  /// SILENTLY (device evidence: scanner said "no endpoint answered" with a
-  /// crypto-correct handshake that lacked the reserved id).
+  /// [reserved] — the 3-byte WARP `client_id`, carried in bytes[1..3] of
+  /// every packet (initiation included). This matches what real WARP
+  /// clients do: a captured sing-box-lx initiation carries
+  /// reserved=[197,77,221] (= client_id) while its MAC1 is computed over
+  /// the zeroed body.
+  ///
+  /// Both forms are accepted by Cloudflare, but ONLY with mac1 computed
+  /// over the zeroed body (that is handled inside this builder):
+  ///   * reserved = zeros       → type-2 reply (live-tested)
+  ///   * reserved = client_id   → type-2 reply (lx does exactly this)
+  ///   * reserved = client_id + mac1 over the raw body → SILENT drop
+  ///     (this was the original scanner failure mode: the handshake was
+  ///     "crypto-correct" but the MAC covered the reserved bytes).
   static Future<Uint8List> buildInitiation({
     required List<int> initiatorStaticPrivate,
     required List<int> responderStaticPublic,
@@ -99,6 +150,13 @@ class WgHandshakeProbe {
 
     // h = HASH(h ‖ e_pub)
     h = await _hash([...h, ...ephPub.bytes]);
+
+    // c = KDF1(c, e_pub) — WireGuard mixes the ephemeral public key into the
+    // CHAIN KEY as well (wireguard-go: `handshake.mixKey(msg.Ephemeral[:])`
+    // right before mixHash; boringtun: `chaining_key = HMAC(HMAC(c, e_pub),
+    // 0x01)`). Vanilla Noise's `e` token only mixHash-es; WireGuard does
+    // BOTH. Skipping this derives a wrong AEAD key → server drops silently.
+    c = await _kdf1(c, ephPub.bytes);
 
     // Our static keypair (the stored WG private key is the x25519 seed).
     final my = await _x25519.newKeyPairFromSeed(initiatorStaticPrivate);
@@ -145,11 +203,32 @@ class WgHandshakeProbe {
     body.add(boxTs.mac.bytes);
     assert(body.length == 116);
 
-    // MAC1 = keyed-BLAKE2s-16(key = HASH(LABEL_MAC1 || respPub), msg = body)
+    // MAC1 = keyed-BLAKE2s with a **16-byte OUTPUT**
+    // (wireguard-go `blake2s.New128(key)` / boringtun `Blake2sMac<16>`),
+    // key = HASH(LABEL_MAC1 ‖ respPub), msg = body[0..116] **with the three
+    // reserved bytes ZEROED**.
+    //
+    // The reserved-zeroing was proven empirically, twice:
+    //  * local: a real sing-box-lx initiation carrying reserved=[197,77,221]
+    //    mismatches over the raw body but MATCHES over the zeroed body
+    //    (senders MAC the zeroed layout; `reserved` is injected into the
+    //    transmitted bytes separately).
+    //  * live vs CF: reserved + mac1-over-raw-body → silent drop;
+    //    the same packet with mac1-over-zeroed-body → type-2 reply.
+    //
+    // NOT BLAKE2s-32-truncated-to-16: the digest length lives in BLAKE2's
+    // parameter block, so keyed-BLAKE2s-16(key, m) != keyed-BLAKE2s-32(key,
+    // m)[0..16]. The server verifies with the 16-byte form.
     final mac1Key =
         await _hash([..._labelMac1.codeUnits, ...responderStaticPublic]);
+    final mac1Body = Uint8List.fromList(body.toBytes());
+    mac1Body[1] = 0;
+    mac1Body[2] = 0;
+    mac1Body[3] = 0;
     final mac1 =
-        (await _mac(mac1Key, body.toBytes())).sublist(0, 16);
+        (await _blake2s16.calculateMac(mac1Body,
+                secretKey: SecretKey(mac1Key)))
+            .bytes;
 
     final out = BytesBuilder();
     out.add(body.toBytes());

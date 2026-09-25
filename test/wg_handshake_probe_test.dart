@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:nexus/warp/wg_handshake_probe.dart';
@@ -105,8 +106,80 @@ void main() {
     expect(pkt[1], 0xAB);
     expect(pkt[2], 0xCD);
     expect(pkt[3], 0xEF,
-        reason: 'Cloudflare WARP checks client_id on EVERY packet — zeros '
-            'make the endpoint drop the initiation silently');
+        reason: 'WARP client_id rides in bytes 1..3; live-tested vs CF: '
+            'client_id and zeros both get type-2 replies, a GARBAGE '
+            'reserved value is dropped silently (CF validates the value)');
+  });
+
+  test('KDF2 matches wireguard-go kdf_test.go vectors (RFC-2104 HMAC)',
+      () async {
+    // Exact vectors from wireguard-go device/kdf_test.go (3 cases).
+    // key/input are hex in the source; decode them first.
+    const cases = <(String, String, String, String)>[
+      ('746573742d6b6579', '746573742d696e707574',
+          '6f0e5ad38daba1bea8a0d213688736f19763239305e0f58aba697f9ffc41c633',
+          'df1194df20802a4fe594cde27e92991c8cae66c366e8106aaa937a55fa371e8a'),
+      ('776972656775617264', '776972656775617264',
+          '491d43bbfdaa8750aaf535e334ecbfe5129967cd64635101c566d4caefda96e8',
+          '1e71a379baefd8a79aa4662212fcafe19a23e2b609a3db7d6bcba8f560e3d25f'),
+      ('', '',
+          '8387b46bf43eccfcf349552a095d8315c4055beb90208fb1be23b894bc2ed5d0',
+          '58a0e5f6faefccf4807bff1f05fa8a9217945762040bcec2f4b4a62bdfe0e86e'),
+    ];
+    for (final (keyHex, inputHex, t0Hex, t1Hex) in cases) {
+      final key = _unhex(keyHex);
+      final input = _unhex(inputHex);
+      final (t0, t1) = await WgHandshakeProbe.kdf2(key, input);
+      expect(_hex(t0), t0Hex,
+          reason: 'KDF2 t0 for key=$keyHex input=$inputHex must match '
+              'wireguard-go byte-for-byte (RFC-2104 HMAC, block 64 — NOT '
+              'native keyed BLAKE2s)');
+      expect(_hex(t1), t1Hex,
+          reason: 'KDF2 t1 (message key) for key=$keyHex input=$inputHex');
+    }
+  });
+
+  test('MAC1 covers the body with the 3 reserved bytes ZEROED', () async {
+    // Proven twice: a real sing-box-lx initiation (captured + decrypted
+    // locally) matches only over the zeroed body, and live vs Cloudflare
+    // reserved + raw-body mac1 → silent drop while the same packet with
+    // zeroed-body mac1 → type-2 reply.
+    final pkt = await WgHandshakeProbe.buildInitiation(
+      initiatorStaticPrivate: List.filled(32, 7),
+      responderStaticPublic: List.filled(32, 9),
+      reserved: [0xAB, 0xCD, 0xEF],
+      senderIndex: 5,
+    );
+    final body = Uint8List.fromList(pkt.sublist(0, 116));
+    final mac1Key = (await Blake2s()
+            .hash([...'mac1----'.codeUnits, ...List.filled(32, 9)]))
+        .bytes;
+    final emitted = pkt.sublist(116, 132);
+
+    final zeroed = Uint8List.fromList(body);
+    zeroed[1] = 0;
+    zeroed[2] = 0;
+    zeroed[3] = 0;
+    final zeroMac = (await Blake2s(hashLengthInBytes: 16)
+            .calculateMac(zeroed, secretKey: SecretKey(mac1Key)))
+        .bytes;
+    expect(emitted, zeroMac,
+        reason: 'MAC1 = keyed BLAKE2s-16 over the reserved-ZEROED body');
+
+    final rawMac = (await Blake2s(hashLengthInBytes: 16)
+            .calculateMac(body, secretKey: SecretKey(mac1Key)))
+        .bytes;
+    expect(emitted, isNot(equals(rawMac)),
+        reason: 'raw-body mac1 (covering the reserved bytes) is exactly the '
+            'form Cloudflare drops silently — must NOT be what we emit');
+  });
+
+  test('KDF2 t1 (message key) differs from t0 (chain key)', () async {
+    final (t0, t1) =
+        await WgHandshakeProbe.kdf2(List.filled(32, 3), List.filled(32, 4));
+    expect(t0, isNot(equals(t1)));
+    expect(t0.length, 32);
+    expect(t1.length, 32);
   });
 
   test('probe() reports the RTT on a type-2 response', () async {
@@ -134,4 +207,15 @@ void main() {
     responder.close();
     expect(r, isNotNull, reason: 'a type-2 reply proves endpoint liveness');
   }, timeout: const Timeout(Duration(seconds: 15)));
+}
+
+String _hex(List<int> b) =>
+    b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
+
+List<int> _unhex(String s) {
+  final out = <int>[];
+  for (var i = 0; i < s.length; i += 2) {
+    out.add(int.parse(s.substring(i, i + 2), radix: 16));
+  }
+  return out;
 }

@@ -99,6 +99,52 @@ class AndroidVpnController {
     return jsonDecode(raw ?? '{}') as Map<String, dynamic>;
   }
 
+  /// v0.4.9 §device: RECONCILE the Dart phase with the native service state
+  /// at app start. The Dart machine starts at `idle`, but a previous app
+  /// run can leave the native side in CONNECTED (or stop it without telling
+  /// us) — both directions must reconcile or the UI shows a stale truth:
+  /// the device report was the opposite of the classic bug — app said
+  /// CONNECTED while NO engine port listened (the previous process died;
+  /// the fresh one had no way to learn that). Called once at bootstrap.
+  Future<void> reconcileWithNative() async {
+    if (!isAndroid) return;
+    try {
+      final s = await _call('state');
+      final native = (s['state'] as String? ?? 'IDLE').toUpperCase();
+      switch (native) {
+        case 'CONNECTED':
+          // A previous session's service is genuinely still up.
+          if (phase != AndroidVpnPhase.connected) {
+            _set(AndroidVpnPhase.connected,
+                detail: 'reconciled: native service still connected');
+            _startWatcher();
+          }
+        case 'VALIDATING':
+        case 'STARTING':
+        case 'PREPARING':
+        case 'REQUESTING_PERMISSION':
+        case 'RECONNECTING':
+          // Engine mid-flight from a dead process — we cannot trust a
+          // tunnel we never probed; treat as stopped (user reconnects).
+          if (phase != AndroidVpnPhase.stopped &&
+              phase != AndroidVpnPhase.idle) {
+            _set(AndroidVpnPhase.stopped,
+                detail: 'reconciled: native mid-state without an owner');
+          }
+        default: // IDLE, STOPPED, FAILED, REVOKED, STOPPING
+          if (phase == AndroidVpnPhase.connected ||
+              phase == AndroidVpnPhase.validating ||
+              phase == AndroidVpnPhase.starting ||
+              phase == AndroidVpnPhase.reconnecting) {
+            _set(AndroidVpnPhase.stopped,
+                detail: 'reconciled: native reports $native');
+          }
+      }
+    } catch (_) {
+      // Channel unavailable (pre-permission) — nothing to reconcile.
+    }
+  }
+
   /// §4: while the tunnel is up, mirror native lifecycle events (REVOKED,
   /// FAILED) into the Dart state machine. The VPN belongs to the Android
   /// service — the UI must follow reality, never assume it.

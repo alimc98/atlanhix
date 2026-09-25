@@ -37,6 +37,7 @@ class _NodesScreenState extends State<NodesScreen> {
   List<ProxyProfile> _profiles = const [];
   String? _selectedId;
   StreamSubscription<void>? _selectionSub;
+  StreamSubscription<HealthRecord>? _healthSub;
 
   @override
   void initState() {
@@ -44,6 +45,14 @@ class _NodesScreenState extends State<NodesScreen> {
     _profiles = widget.deps.profiles.all;
     widget.deps.profiles.changes.listen((p) {
       if (mounted) setState(() => _profiles = p);
+    });
+    // v0.4.9 §user-fix (ping column never moved): Smart Switch was the ONLY
+    // listener of the scheduler's results — background sweeps and the
+    // active-node monitor recorded into HealthStore but this list never
+    // repainted, so latency stayed stale until a manual re-test. Subscribe
+    // → repaint on every record.
+    _healthSub = widget.deps.scheduler.results.listen((_) {
+      if (mounted) setState(() {});
     });
     // v0.4.1 §5: reflect the VPN session's explicit selection immediately —
     // the tapped node is shown as chosen on the dashboard BEFORE any connect.
@@ -62,6 +71,7 @@ class _NodesScreenState extends State<NodesScreen> {
   @override
   void dispose() {
     _selectionSub?.cancel();
+    _healthSub?.cancel();
     super.dispose();
   }
 
@@ -324,13 +334,18 @@ class _NodesScreenState extends State<NodesScreen> {
     if (runnable.isEmpty) return;
     _sweeping = true;
     if (mounted) setState(() {});
+    // v0.4.9 §user: one mechanism decision per sweep — the live engine when
+    // a VPN is connected, otherwise the transient probe engine boots ONCE
+    // with the whole runnable pool (fresh-app-open "test all" now works).
+    // Chunks still bound concurrency so 100+ nodes stay polite.
     const chunk = 6;
     for (var i = 0; i < runnable.length; i += chunk) {
       final part = runnable.sublist(
           i, i + chunk > runnable.length ? runnable.length : i + chunk);
-      await Future.wait(part.map((p) async {
-        final r = await widget.deps.realDelay.test(p);
-        if (r.errorKind == 'engine-off') return; // nothing real measured
+      final results = await widget.deps.realDelay.testBatch(part);
+      for (final p in part) {
+        final r = results[p.id];
+        if (r == null || r.errorKind == 'engine-off') continue;
         widget.deps.healthStore.record(HealthRecord(
           profileId: p.id,
           at: DateTime.now(),
@@ -338,7 +353,7 @@ class _NodesScreenState extends State<NodesScreen> {
           latencyMs: r.latencyMs,
           errorKind: r.errorKind,
         ));
-      }));
+      }
       if (mounted) setState(() {});
     }
     _sweeping = false;
@@ -450,10 +465,9 @@ class _NodesScreenState extends State<NodesScreen> {
   /// v0.4.1 per-node core picker: Auto (default) / sing-box / AWG / Xray.
   /// Persisted via [ProxyProfile.userPinnedCore] so it survives restarts and
   /// drives CoreDetector.resolve() on every connect. Xray on Android is
-  /// selectable but honest: it explains the platform limit (no exec() of
-  /// downloaded binaries on Android ≥10; no mobile export in Xray) and
-  /// connects will fail fast with CORE_NOT_RUNNABLE_ON_ANDROID rather than
-  /// silently swapping cores.
+  /// honest per the RUNTIME handshake: the exec'd binary ships in the APK
+  /// and the :xray process reports it at boot — selectable when loaded,
+  /// disabled with the reason when not (v0.4.9 §user fix).
   Future<void> _showCorePicker(BuildContext context, ProxyProfile p) async {
     final onAndroid = Platform.isAndroid;
     final xrayWarn = NodeCoreChoice.xrayWarning(p, onAndroid: onAndroid);
@@ -859,10 +873,16 @@ class _NodeTile extends StatelessWidget {
                   SizedBox(
                     width: 64,
                     child: Text(
-                      lat == null ? '—' : '$lat ms',
+                      // v0.4.9 §user: a FAILED real test must be visible —
+                      // '—' read as "never tested" and looked broken.
+                      lat != null
+                          ? '$lat ms'
+                          : (stats == null ? '—' : '×'),
                       textAlign: TextAlign.end,
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: latColor,
+                            color: lat == null && stats != null
+                                ? c.error
+                                : latColor,
                             fontWeight: FontWeight.w600,
                           ),
                     ),
