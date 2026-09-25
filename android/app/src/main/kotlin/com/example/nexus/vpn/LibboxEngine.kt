@@ -184,7 +184,7 @@ object LibboxSetup {
                 it.debug = false
                 it.crashReportSource = "Atlanhix"
                 it.appVersion = "8"
-                it.appMarketingVersion = "0.4.2"
+                it.appMarketingVersion = "0.4.3"
             }
             Libbox.setup(options)
             initialized = true
