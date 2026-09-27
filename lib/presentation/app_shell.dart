@@ -237,32 +237,31 @@ class _AppShellState extends State<AppShell> {
           const SizedBox(height: 16),
           for (var i = 0; i < labels.length; i++) _railItem(i, labels[i], colors),
           const Spacer(),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: ConnectButton(phase: _phase, onToggle: _toggleConnect),
-          ),
+          // v0.5.0 §user: the circular white ConnectButton that sat here is
+          // GONE — the dashboard's power pill is the single connect control
+          // on every platform (same decision as v0.4.7 made for mobile).
         ],
       ),
     );
   }
 
   Widget _brand(ThemeExt colors) {
-    // v0.4.7 §brand (sheet v2): stacked mark + wordmark block, with the
-    // sheet's tagline "CONNECT BEYOND BORDERS" underneath — the full brand
-    // lockup leads the rail exactly like the sheet's left column.
+    // v0.5.0 §user: the NEW brand lockup leads the rail — the ATLANTHIX
+    // wordmark (intro.png, same art the splash shows) over the theme-aware
+    // wide-tracked logotype. The old stacked mark+wordmark block is gone.
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const AtlanhixBrandBlock(height: 88),
-          const SizedBox(height: 8),
           Image.asset(
-            'assets/brand/tagline.png',
-            height: 12,
+            'assets/brand/intro.png',
+            height: 56,
             fit: BoxFit.contain,
             errorBuilder: (_, __, ___) => const SizedBox.shrink(),
           ),
+          const SizedBox(height: 10),
+          const AtlanhixWordmark(height: 11),
         ],
       ),
     );

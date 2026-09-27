@@ -8,7 +8,7 @@ import '../core/net/clean_dns_client.dart';
 /// The version this binary was built from (pubspec `version:`) — the
 /// updater compares the latest GitHub tag against it. Compiled-in constant
 /// avoids a package_info dependency for a single int triple.
-const String kAppVersion = '0.5.0+7';
+const String kAppVersion = '0.5.1+8';
 
 /// v0.4.7 §user — the release update checker.
 ///

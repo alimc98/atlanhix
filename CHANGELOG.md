@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.5.1 — Windows identity, Play Protect round 2, desktop UI sync
+
+### Play Protect, round 2 (user report: still blocking 0.5.0 installs)
+
+- The 0.5.0 builds carried the `com.example.nexus` application id — the
+  classic template marker and a strong negative signal in Play Protect's
+  sideload heuristics — and the "hasn't seen an app from this developer
+  before" banner is ALSO shown for ANY first build from a brand-new
+  signing key. Both fix with exposure/time, but the id is now removed
+  from the equation: the app ships as **`com.atlanhix.app`** (Kotlin
+  source tree moved; service action strings and diag paths follow).
+  Requires a FRESH INSTALL (new app identity, old 0.5.0 will not
+  "upgrade" over it — that is expected).
+- Verified end-to-end: the CI-built APK downloads and installs
+  (signature SHA-256 `23d9c819…` matches the local keystore exactly).
+
+### Windows desktop gets its own identity (user request)
+
+- The executable was the Flutter template name **nexus.exe** — now
+  **atlanhix.exe** (BINARY_NAME + window title + FileDescription/
+  InternalName/OriginalFilename/ProductName version resources).
+- The app icon is now the ATLANTHIX wordmark on the app's dark rounded
+  tile (multi-resolution ICO built from the brand PNG).
+- The rail brand lockup is the NEW branding: intro wordmark + theme-
+  aware logotype (the old stacked monogram block is gone).
+- The circular white ConnectButton that floated at the rail's bottom is
+  REMOVED — the dashboard power pill is the single connect control on
+  every platform, matching mobile (v0.4.7 decision, now desktop too).
+- The Windows zip now lands next to the APKs automatically: a new
+  tag-driven GitHub Actions workflow builds the v7a/v8a/universal APKs
+  (release-keystore injected from repo secrets) AND the Windows x64 zip
+  (with official sing-box/Xray cores bundled) on every `v*` tag.
+
 ## v0.5.0 — Boot 2.7× faster (measured), UI-lag fixes, subscription edit + auto-update, notification sync
 
 ### Release-signed APKs fix Play Protect "app blocked" (user report)
