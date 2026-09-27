@@ -217,10 +217,13 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
         }
       }
     }
-    // v0.4.9 §user: the AWG param bundle — null when no field is set so a
-    // plain WireGuard node stays plain.
+    // v0.4.9 §user: the AWG param bundle built from the FORM (source of
+    // truth — every exposed field renders for WG nodes since the v0.5.0
+    // nesting fix). Fields the form does NOT expose (masquerade sugar,
+    // unknown `extra`) are carried over from the stored profile so an
+    // edit-save can no longer silently drop them.
     final amnezia = _isWgFamily
-        ? (AmneziaParams(
+        ? AmneziaParams(
             jc: _ti(_awgJc),
             jmin: _ti(_awgJmin),
             jmax: _ti(_awgJmax),
@@ -241,7 +244,13 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
             contentPaddingAddition: _t(_awgPadding),
             randomTrailers: _awgRandomTrailers ? true : null,
             disableCookies: _awgDisableCookies ? true : null,
-          ))
+          ).copyWith(
+            // NOT form-exposed → always carried over from the store.
+            masqId: widget.profile?.amnezia?.masqId,
+            masqIp: widget.profile?.amnezia?.masqIp,
+            masqIb: widget.profile?.amnezia?.masqIb,
+            extra: widget.profile?.amnezia?.extra,
+          )
         : null;
     final wgCfg = _isWgFamily
         ? WireGuardConfig(
@@ -456,10 +465,13 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
               _field(context, _flow,
                   'flow (xtls-rprx-vision or mlkem768x25519plus variant)'),
             ],
-          // v0.4.9 §user: the FULL AmneziaWG 3.1 surface for hand-added
-          // WireGuard-family nodes — junk, paddings, header remap (value or
-          // N-M range), decoy packets, header-protection key and the 3.x
-          // content padding / dialect flags.
+          ],
+          // v0.4.9 §user / v0.5.0 §user-fix: the FULL AmneziaWG 3.1 surface
+          // for hand-added WireGuard-family nodes. This block used to sit
+          // INSIDE the `_isTcpFamily` spread (vless/vmess/trojan) — a
+          // WireGuard protocol never satisfies that, so the whole AWG form
+          // silently never rendered on manual add (and an edit-save WIPED
+          // the stored params). Top-level now, gated on _isWgFamily only.
           if (_isWgFamily) ...[
             _label(context,
                 l ? 'وایرگارد (امنیت لایه ۳)' : 'WIREGUARD'),
@@ -550,7 +562,6 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
                   setState(() => _awgDisableCookies = v ?? false),
               title: const Text('DisableCookies'),
             ),
-          ]
           ],
           if (_isHysteria) ...[
             _field(context, _password, 'Password'),

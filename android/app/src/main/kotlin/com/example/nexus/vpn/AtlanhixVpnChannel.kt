@@ -26,6 +26,22 @@ class AtlanhixVpnChannel(private val activity: Activity) {
         "prepare" -> prepare()
         "start" -> start(arg ?: JSONObject())
         "stop" -> stop()
+        // v0.5.0 §user-fix: notification mirrors — the native machine never
+        // reaches CONNECTED on its own (the Dart probe decides), so the
+        // notification previously froze on "Validating tunnel…". Dart now
+        // reports the probe verdicts back; best-effort when no instance.
+        "notifyConnected" -> {
+            AtlanhixVpnService.instance?.notifyConnected(arg?.optString("detail"))
+            JSONObject().put("ok", true)
+        }
+        "notifyDisconnected" -> {
+            AtlanhixVpnService.instance?.notifyDisconnected()
+            JSONObject().put("ok", true)
+        }
+        "notifyDied" -> {
+            AtlanhixVpnService.instance?.notifyDied(arg?.optString("detail"))
+            JSONObject().put("ok", true)
+        }
         // v0.4.9: self-reported engine version. The Dart side arms the
         // AmneziaWG gates only when this is the forked (with_awg) build —
         // stock sing-box strips the AWG fields, so capability must come

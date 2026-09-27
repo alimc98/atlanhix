@@ -28,47 +28,20 @@ String vaultKeyOf(String v) => v.substring(vaultPrefix.length);
 /// loop awaited one EncryptedSharedPreferences IPC per secret per profile
 /// (uuid+password+… × hundreds of subscription nodes) and dominated cold
 /// boot; parallel prefetch collapses that to one round-trip batch.
-Future<List<ProxyProfile>> loadProfiles(
-    JsonStore store, SecureVault vault) async {
+///
+/// v0.5.0 §boot MEASURED (device logcat): 2.8 s of the 3.2 s bootstrap sat
+/// in `profiles.load` — flutter_secure_storage 9.x pays a one-time Keystore
+/// master-key + EncryptedSharedPreferences setup of ~2.5 s on the FIRST
+/// vault call of the process. [loadProfiles] now takes a DEFERRED resolver:
+/// decode runs synchronously from the store and the vault batch read
+/// happens OUTSIDE the boot path (the caller decides when — after the
+/// first paint). Until [resolveSecrets] completes, [ProxyProfile.secrets
+/// are the `@vault:` tokens themselves], which NOTHING renders and the
+/// connect paths never touch before the deferred pass lands — see
+/// [ProfileRepository.resolveSecrets].
+Future<List<ProxyProfile>> loadProfiles(JsonStore store) async {
   final section = store.section(StoreKeys.profiles);
-  // Phase 1 — collect + prefetch all vault keys in parallel.
-  final keys = <String>{};
-  void collect(String? v) {
-    if (isVaultRef(v)) keys.add(vaultKeyOf(v!));
-  }
-
-  for (final entry in section.entries) {
-    final j = (entry.value as Map).cast<String, dynamic>();
-    collect(j['uuid'] as String?);
-    collect(j['password'] as String?);
-    collect(j['hysteriaObfsPassword'] as String?);
-    collect(j['tuicUuid'] as String?);
-    collect(j['tuicToken'] as String?);
-    final rawSecret = (j['raw'] as Map?)?['secret'] as String?;
-    collect(rawSecret);
-    final wg = j['wireguard'] as Map<String, dynamic>?;
-    if (wg != null) {
-      collect(wg['privateKey'] as String?);
-      collect(wg['preSharedKey'] as String?);
-    }
-  }
-  final prefetched = <String, String?>{};
-  if (keys.isNotEmpty) {
-    // Platform vaults override readAll with a native batch read; the
-    // default implementation fans out read() in parallel.
-    prefetched.addAll(await vault.readAll(keys));
-  }
-  // Phase 2 — decode with the prefetched map (no vault IPC in the loop).
-  String? Function(String?) resolverFor(Map<String, String?> pre) {
-    String? resolve(String? v) {
-      if (isVaultRef(v)) return pre[vaultKeyOf(v!)];
-      return v;
-    }
-
-    return resolve;
-  }
-
-  final resolve = resolverFor(prefetched);
+  final resolve = _identityResolver;
   final out = <ProxyProfile>[];
   for (final entry in section.entries) {
     try {
@@ -80,6 +53,90 @@ Future<List<ProxyProfile>> loadProfiles(
     }
   }
   return out;
+}
+
+/// Pass-through used by the fast path above; the deferred pass swaps in
+/// real secret resolution.
+String? _identityResolver(String? v) => v;
+
+/// v0.5.0 §boot: SECOND phase of the split load — batch-resolve every
+/// `@vault:` token on the already-decoded profiles. Runs after the first
+/// paint so the one-time Keystore setup (~2.5 s on the device) never sits
+/// between launch and the UI.
+Future<void> resolveProfileSecrets(
+    List<ProxyProfile> profiles, SecureVault vault) async {
+  final keys = <String>{};
+  void collect(String? v) {
+    if (isVaultRef(v)) keys.add(vaultKeyOf(v!));
+  }
+
+  for (final p in profiles) {
+    collect(p.uuid);
+    collect(p.password);
+    collect(p.hysteriaObfsPassword);
+    collect(p.tuicUuid);
+    collect(p.tuicToken);
+    collect(p.rawConfig);
+    final wg = p.wireguard;
+    if (wg != null) {
+      collect(wg.privateKey);
+      collect(wg.preSharedKey);
+    }
+  }
+  if (keys.isEmpty) return;
+  final prefetched = await vault.readAll(keys);
+  bool changed = false;
+  String? swap(String? v) {
+    if (!isVaultRef(v)) return v;
+    final r = prefetched[vaultKeyOf(v!)];
+    if (r != null) changed = true;
+    return r;
+  }
+
+  for (final p in profiles) {
+    if (p.uuid != null && isVaultRef(p.uuid!)) {
+      p.uuid = swap(p.uuid);
+      changed = true;
+    }
+    if (p.password != null && isVaultRef(p.password!)) {
+      p.password = swap(p.password);
+      changed = true;
+    }
+    if (p.hysteriaObfsPassword != null &&
+        isVaultRef(p.hysteriaObfsPassword!)) {
+      p.hysteriaObfsPassword = swap(p.hysteriaObfsPassword);
+      changed = true;
+    }
+    if (p.tuicUuid != null && isVaultRef(p.tuicUuid!)) {
+      p.tuicUuid = swap(p.tuicUuid);
+      changed = true;
+    }
+    if (p.tuicToken != null && isVaultRef(p.tuicToken!)) {
+      p.tuicToken = swap(p.tuicToken);
+      changed = true;
+    }
+    if (p.rawConfig != null && isVaultRef(p.rawConfig!)) {
+      p.rawConfig = swap(p.rawConfig);
+      changed = true;
+    }
+    final wg = p.wireguard;
+    if (wg != null) {
+      if (wg.privateKey != null && isVaultRef(wg.privateKey!)) {
+        // WireGuardConfig.privateKey is non-nullable: a missing vault entry
+        // resolves to '' (same treatment as the original decode path).
+        wg.privateKey = swap(wg.privateKey) ?? '';
+        changed = true;
+      }
+      if (wg.preSharedKey != null && isVaultRef(wg.preSharedKey!)) {
+        wg.preSharedKey = swap(wg.preSharedKey);
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    Logger.instance.info('boot',
+        'profile secrets resolved post-paint (${keys.length} vault keys)');
+  }
 }
 
 ProxyProfile _profileFromStorable(

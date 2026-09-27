@@ -608,6 +608,18 @@ abstract class AppLocalizations {
   /// **'Subscription URL'**
   String get subscriptionUrl;
 
+  /// No description provided for @editSubscription.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit subscription'**
+  String get editSubscription;
+
+  /// No description provided for @updateIntervalMinutesLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Update interval (minutes)'**
+  String get updateIntervalMinutesLabel;
+
   /// No description provided for @updateNow.
   ///
   /// In en, this message translates to:

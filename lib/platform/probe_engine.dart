@@ -74,6 +74,31 @@ class ProbeEngine {
   Set<String> _loadedIds = {};
   Timer? _idleStop;
 
+  /// v0.5.0 §device-fix (log evidence 2026-09-27 10:22: `initialize
+  /// cache-file: timeout` on every connect): the connect path stops this
+  /// engine, but the Smart Switch sweep it just armed re-entered
+  /// [ensureUp] BEFORE the tunnel finished booting — both libbox instances
+  /// then fought over ONE cache.db in the same process and the TUNNEL
+  /// start died with `ENGINE_START_FAILED` (the probe engine, ironically,
+  /// came UP right after: "probe engine UP :9090 nodes=11" one second
+  /// after the connect FAILED). The connect owns the lock: while a tunnel
+  /// boot is in flight (and until it is CONNECTED or terminally dead),
+  /// every start attempt here answers honestly null — the sweep reports
+  /// engine-off and falls through to the TCP fallback; the NEXT sweep
+  /// boots the engine if it is still wanted.
+  bool _tunnelBootHold = false;
+
+  /// Connect path: [hold] = "a tunnel boot is in flight — no probe engine
+  /// starts"; false releases the hold (tunnel up or dead — a sweep may
+  /// boot the engine again).
+  void setTunnelBootHold(bool hold) {
+    _tunnelBootHold = hold;
+    if (hold) {
+      _idleStop?.cancel();
+      _idleStop = null;
+    }
+  }
+
   /// v0.4.9 §ownership-fix: TRUE only while THIS engine's :xray child is
   /// the one running. [stop()] fires from the app lifecycle (main.dart,
   /// paused/hidden) too — without this flag it would kill the VPN
@@ -101,10 +126,57 @@ class ProbeEngine {
     return ms;
   }
 
+  /// v0.5.0 §perf-fix ("ping takes forever and reads ~900 ms"): the batch
+  /// entry the sweeps MUST use. Old flow: per-node ensureUp → every new node
+  /// id rebuilt the Box (probeStart is a FULL restart — see the channel
+  /// comment), so a 6-node sweep paid ~4 engine restarts × (Go runtime
+  /// reload + API gate + table wait), each sequentially — tens of seconds
+  /// for one sweep, and every in-flight measurement died mid-restart. Now:
+  /// ONE engine up for the WHOLE batch, then all nodes measured in parallel
+  /// against a single config. Returns id → ms (null = no answer in time).
+  Future<Map<String, int?>> delayTestBatch(
+    List<ProxyProfile> nodes,
+    String url,
+    int timeoutMs,
+  ) async {
+    if (!isAndroid || nodes.isEmpty) return const {};
+    final api = await ensureUp(nodes);
+    if (api == null) return const {};
+    final out = await _measureBatch(api, nodes, url, timeoutMs);
+    _armIdleStop();
+    return out;
+  }
+
+  /// Parallel delay tests against ONE up engine. Serial per node would cap
+  /// a sweep at (n × timeout) worst case; concurrent calls fan out to the
+  /// engine's own delay-test handler (sing-box dials them concurrently).
+  Future<Map<String, int?>> _measureBatch(
+    ClashApiClient api,
+    List<ProxyProfile> nodes,
+    String url,
+    int timeoutMs,
+  ) async {
+    final entries = await Future.wait(nodes.map((p) async {
+      final tag = '${SingBoxRuntime.tagPrefix}${p.id}';
+      int? ms;
+      try {
+        ms = await api.delayTest(tag, url, timeoutMs);
+      } catch (_) {
+        ms = null;
+      }
+      return MapEntry(p.id, ms);
+    }));
+    return Map.fromEntries(entries);
+  }
+
   /// Batch entry point used by the sweep: ensures an engine carrying AT
   /// LEAST [nodes] is up — one start for the whole batch, no start per
   /// node, and (§testall-fix) NO restart when a later chunk brings a
   /// different set: the union grows instead.
+  ///
+  /// v0.5.0 §device-fix: a start attempt during a tunnel boot hold answers
+  /// null honestly (an UP engine keeps answering — the hold only blocks
+  /// STARTS, which are exactly what re-fights cache.db).
   Future<ClashApiClient?> ensureUp(List<ProxyProfile> nodes) async {
     if (!isAndroid) return null;
     for (final n in nodes) {
@@ -115,6 +187,12 @@ class ProbeEngine {
     if (api != null) {
       if (wanted.difference(_loadedIds).isEmpty) return api; // superset: reuse
       return _grow(nodes); // union grow — never a restart under the sweep
+    }
+    if (_tunnelBootHold) {
+      // The connect path owns the process right now — a libbox start here
+      // would fight the tunnel over cache.db (device log 2026-09-27). An
+      // honest null lets the sweep report engine-off and move on.
+      return null;
     }
     final inflight = _inFlight;
     if (inflight != null) {
@@ -133,6 +211,7 @@ class ProbeEngine {
   /// Serialized start/grow. When another task is in flight, wait for it and
   /// re-evaluate (it may have grown the engine to cover this batch already).
   Future<ClashApiClient?> _grow(List<ProxyProfile> nodes) async {
+    if (_tunnelBootHold) return null; // re-checked after any in-flight await
     final inflight = _inFlight;
     if (inflight != null) {
       await inflight;

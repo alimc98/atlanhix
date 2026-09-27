@@ -49,22 +49,20 @@ class _AppShellState extends State<AppShell> {
   /// v0.4.1: on Android the VpnSession owns the connect lifecycle.
   static final bool isAndroid = Platform.isAndroid;
 
-  // v0.4.7 §brand: the five tab icons are now the REAL brand-sheet artwork
-  // (white-on-charcoal tiles cropped from the user's redesign): dashboard
-  // bars, nodes cube, routing arrows, logs document, settings gear. Each tab
-  // needs an unselected AND selected variant — the same tile, dimmed vs full
-  // opacity, so the active state still reads without a second asset set.
-  static const _navAssets = [
-    'assets/brand/nav_dashboard.png',
-    'assets/brand/nav_nodes.png',
-    'assets/brand/nav_routing.png',
-    'assets/brand/nav_logs.png',
-    'assets/brand/nav_settings.png',
+  // v0.5.0 §user: the five tab icons are the user's CLEANED brand tiles,
+  // supplied as a DARK set (white-on-charcoal) and a LIGHT set (ink-on-
+  // white). _BrandNavIcon picks the right set from the theme brightness.
+  static const _navTabs = [
+    'nav_dashboard',
+    'nav_nodes',
+    'nav_routing',
+    'nav_logs',
+    'nav_settings',
   ];
 
   /// Brand tile icon for tab [i]; [selected] controls opacity only.
   static Widget _navIcon(int i, {required bool selected}) => _BrandNavIcon(
-        asset: _navAssets[i],
+        name: _navTabs[i],
         selected: selected,
       );
 
@@ -391,16 +389,25 @@ class _AppShellState extends State<AppShell> {
 /// set serves both states and the tile's own charcoal stays visible on
 /// the NavigationBar surface.
 class _BrandNavIcon extends StatelessWidget {
-  const _BrandNavIcon({required this.asset, required this.selected});
+  const _BrandNavIcon({required this.name, required this.selected});
 
-  final String asset;
+  /// Asset base name under assets/brand/ — `_dark.png` / `_light.png` is
+  /// appended per the ambient theme brightness (v0.5.0 §user).
+  final String name;
   final bool selected;
 
   @override
   Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
     return Opacity(
       opacity: selected ? 1.0 : 0.55,
-      child: Image.asset(asset, width: 30, height: 30, fit: BoxFit.contain),
+      child: Image.asset(
+        'assets/brand/${name}_${dark ? 'dark' : 'light'}.png',
+        width: 30,
+        height: 30,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => const SizedBox(width: 30, height: 30),
+      ),
     );
   }
 }

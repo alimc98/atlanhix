@@ -50,8 +50,11 @@ class SubscriptionsScreen extends StatelessWidget {
               : ListView.builder(
                   padding: const EdgeInsets.all(16),
                   itemCount: items.length,
-                  itemBuilder: (context, i) =>
-                      _SubCard(sub: items[i], deps: deps),
+                  itemBuilder: (context, i) => _SubCard(
+                    sub: items[i],
+                    deps: deps,
+                    onEdit: () => _editDialog(context, items[i]),
+                  ),
                 );
         if (embedded) {
           return Column(
@@ -124,13 +127,92 @@ class SubscriptionsScreen extends StatelessWidget {
           .add(url.text.trim(), name: name.text.trim());
     }
   }
+
+  /// v0.5.0 §user: edit an existing subscription — name, URL, auto-update
+  /// toggle and the update interval in minutes (10/20/… as the user
+  /// asked). An unchanged URL just saves; a changed URL resets the
+  /// conditional-fetch cache and triggers an immediate refresh (service).
+  Future<void> _editDialog(BuildContext context, Subscription sub) async {
+    final l = AppLocalizations.of(context)!;
+    final name = TextEditingController(text: sub.name);
+    final url = TextEditingController(text: sub.url);
+    final interval = TextEditingController(
+        text: sub.updateIntervalMinutes.toString());
+    var auto = sub.autoUpdate;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(l.editSubscription),
+          content: SizedBox(
+            width: 460,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: name,
+                  decoration:
+                      InputDecoration(labelText: l.subscriptionName),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: url,
+                  decoration:
+                      InputDecoration(labelText: l.subscriptionUrl),
+                ),
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(l.autoUpdate),
+                  value: auto,
+                  onChanged: (v) => setDialogState(() => auto = v),
+                ),
+                if (auto) ...[
+                  const SizedBox(height: 4),
+                  TextField(
+                    controller: interval,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: l.updateIntervalMinutesLabel,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: Text(l.cancel)),
+            FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: Text(l.save)),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) return;
+    final minutes = int.tryParse(interval.text.trim());
+    await deps.subscriptionService.edit(
+      sub.id,
+      name: name.text,
+      url: url.text,
+      autoUpdate: auto,
+      updateIntervalMinutes: minutes,
+    );
+  }
 }
 
 class _SubCard extends StatelessWidget {
-  const _SubCard({required this.sub, required this.deps});
+  const _SubCard({
+    required this.sub,
+    required this.deps,
+    required this.onEdit,
+  });
 
   final Subscription sub;
   final AppDependencies deps;
+  final VoidCallback onEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -158,6 +240,11 @@ class _SubCard extends StatelessWidget {
                   sub.name.isEmpty ? sub.url : sub.name,
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.edit_outlined, size: 20),
+                tooltip: l.edit,
+                onPressed: onEdit,
               ),
               IconButton(
                 icon: const Icon(Icons.refresh, size: 20),
@@ -199,6 +286,31 @@ class _SubCard extends StatelessWidget {
               _stat(context, l.nodesCount, '${sub.nodeCount}'),
             ],
           ),
+          // v0.5.0 §user: auto-update state — interval and the next due
+          // time, so the new per-subscription minutes field is visible
+          // without opening the editor. Hidden while auto-update is off.
+          if (sub.autoUpdate && sub.nextUpdate != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Row(
+                children: [
+                  Icon(Icons.update, size: 15, color: c.textMuted),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '${l.autoUpdate} · ${l.updateIntervalMinutesLabel}: '
+                      '${sub.updateIntervalMinutes} · '
+                      '${l.nextUpdate}: '
+                      '${_fmtClock(sub.nextUpdate!, DateTime.now())}',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: c.textMuted),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           // v0.4.6 §user-3: which fragment mode actually WORKS for this
           // subscription — real attempt/win counts per rung inside a 30-day
           // freshness window, gathered from the AUTO ladder's real tunnel
@@ -240,6 +352,16 @@ class _SubCard extends StatelessWidget {
         Text(value, style: Theme.of(context).textTheme.bodyMedium),
       ],
     );
+  }
+
+  static String _fmtClock(DateTime t, DateTime now) {
+    final d = t.difference(now);
+    if (d.inMinutes < 1) return 'now';
+    if (d.inMinutes < 60) return 'in ${d.inMinutes}m';
+    if (d.inHours < 24) {
+      return 'in ${d.inHours}h ${d.inMinutes % 60}m';
+    }
+    return 'in ${d.inDays}d';
   }
 
   static String _fmt(int bytes) {

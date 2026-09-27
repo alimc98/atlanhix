@@ -106,28 +106,6 @@ class Subscription {
     return lastUpdated!.add(Duration(minutes: updateIntervalMinutes));
   }
 
-  Map<String, dynamic> toStorable() => {
-        'id': id,
-        'name': name,
-        'url': url,
-        'info': {
-          'upload': info.uploadBytes,
-          'download': info.downloadBytes,
-          'total': info.totalBytes,
-          'expire': info.expireAt?.millisecondsSinceEpoch,
-          'title': info.title,
-        },
-        'lastUpdated': lastUpdated?.toIso8601String(),
-        'nodeCount': nodeCount,
-        'healthyCount': healthyCount,
-        'screenXrayOnly': screenXrayOnly,
-        'screenRisky': screenRisky,
-        'autoUpdate': autoUpdate,
-        'updateIntervalMinutes': updateIntervalMinutes,
-        'lastError': lastError,
-        'etag': etag,
-      };
-
   static Subscription fromJson(Map<String, dynamic> j) {
     final infoRaw = (j['info'] ?? {}) as Map<String, dynamic>;
     final expire = infoRaw['expire'] as int?;
@@ -135,6 +113,10 @@ class Subscription {
       id: j['id'] as String,
       name: j['name'] as String,
       url: j['url'] as String,
+      status: SubscriptionStatus.values.firstWhere(
+        (s) => s.name == j['status'],
+        orElse: () => SubscriptionStatus.neverUpdated,
+      ),
       info: SubscriptionInfo(
         uploadBytes: infoRaw['upload'] as int?,
         downloadBytes: infoRaw['download'] as int?,

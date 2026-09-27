@@ -48,10 +48,20 @@ android {
         // fat build (or target the x86_64 emulator — which additionally
         // requires a hypervisor: AEHD/WHPX) with:
         //   gradlew :app:assembleDebug -Pabi-filters=arm64-v8a,x86_64
-        ndk {
-            val abiOverride = (project.findProperty("abi-filters") as String?)
-                ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
-            abiFilters += abiOverride ?: listOf("arm64-v8a")
+        // v0.5.0 §release: `flutter build apk --split-per-abi` sets its own
+        // splits.abiFilters (armeabi-v7a, arm64-v8a) — a hard ndk.abiFilters
+        // here conflicts ("cannot be present when splits abi filters are
+        // set") and kills the per-ABI release builds. The override property
+        // still wins; the default arm64 pin applies ONLY when no override
+        // AND no split run is in flight (the split run passes
+        // -Psplit-per-abi=true through the flutter tool).
+        val abiOverride = (project.findProperty("abi-filters") as String?)
+            ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
+        val splitPerAbi = project.findProperty("split-per-abi") == "true"
+        if (abiOverride != null) {
+            ndk { abiFilters += abiOverride }
+        } else if (!splitPerAbi) {
+            ndk { abiFilters += listOf("arm64-v8a") }
         }
     }
 

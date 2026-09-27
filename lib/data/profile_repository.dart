@@ -26,13 +26,25 @@ class ProfileRepository {
     return null;
   }
 
+  /// v0.5.0 §boot: the fast phase — decode from the JSON store only, no
+  /// vault touch (Keystore's one-time ~2.5 s init stays off the boot path).
+  /// [resolveSecrets] is the deferred second phase; before it runs the
+  /// profiles carry `@vault:` tokens in place of secrets, which nothing on
+  /// screen renders.
   Future<void> load() async {
     if (_loaded) return;
     _profiles
       ..clear()
-      ..addAll(await loadProfiles(_store, _vault));
+      ..addAll(await loadProfiles(_store));
     _loaded = true;
     _controller.add(all);
+  }
+
+  /// v0.5.0 §boot: resolve every `@vault:` token on the loaded profiles
+  /// (batch vault read). Call AFTER the first paint. Idempotent — resolved
+  /// plaintext values are not vault refs and stay untouched.
+  Future<void> resolveSecrets() async {
+    await resolveProfileSecrets(_profiles, _vault);
   }
 
   Future<void> upsertMany(Iterable<ProxyProfile> profiles) async {

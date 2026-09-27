@@ -19,9 +19,64 @@ class WarpRepository {
   WarpAccount? _account;
   WarpAccount? get account => _account;
 
+  /// v0.5.0 §boot: the store-only fast phase. The two vault reads
+  /// (privateKey/token) previously ran INSIDE bootstrap — they paid the
+  /// one-time Keystore init (~2.5 s measured) and moved it from the
+  /// deferred pass to the launch path. load() now builds the account with
+  /// the raw `@vault:` refs and [resolveSecrets] swaps them post-paint;
+  /// the two consumers (VpnSession._connectProfile, ConnectionController)
+  /// run inside `connect()` which already awaits
+  /// AppDependencies.deferredSecretResolution.
   Future<void> load() async {
     final section = _store.section('warp');
     if (section.isEmpty) return;
+    _account = WarpAccount(
+      deviceId: (section['deviceId'] ?? '') as String,
+      token: (section['tokenRef'] as String?) ?? '',
+      privateKey: (section['privateKeyRef'] as String?) ?? '',
+      peerPublicKey: (section['peerPublicKey'] ?? '') as String,
+      endpointV4: (section['endpointV4'] ?? '') as String,
+      endpointV6: section['endpointV6'] as String?,
+      addressV4: section['addressV4'] as String?,
+      addressV6: section['addressV6'] as String?,
+      license: section['license'] as String?,
+      clientId: section['clientId'] as String?,
+      registeredAt: section['registeredAt'] == null
+          ? null
+          : DateTime.parse(section['registeredAt'] as String),
+      awgJc: section['awgJc'] as int?,
+      awgJmin: section['awgJmin'] as int?,
+      awgJmax: section['awgJmax'] as int?,
+      awgS1: section['awgS1'] as int?,
+      awgS2: section['awgS2'] as int?,
+      awgS3: section['awgS3'] as int?,
+      awgS4: section['awgS4'] as int?,
+      awgH1: section['awgH1'] as String?,
+      awgH2: section['awgH2'] as String?,
+      awgH3: section['awgH3'] as String?,
+      awgH4: section['awgH4'] as String?,
+      awgI1: section['awgI1'] as String?,
+      awgI2: section['awgI2'] as String?,
+      awgI3: section['awgI3'] as String?,
+      awgI4: section['awgI4'] as String?,
+      awgI5: section['awgI5'] as String?,
+      awgHpk: section['awgHpk'] as String?,
+      awgMasqId: section['awgMasqId'] as String?,
+      awgMasqIp: section['awgMasqIp'] as String?,
+      awgMasqIb: section['awgMasqIb'] as String?,
+      awgRandomTrailers: section['awgRandomTrailers'] as bool?,
+      awgDisableCookies: section['awgDisableCookies'] as bool?,
+      endpointOverride: section['endpointOverride'] as String?,
+    );
+  }
+
+  /// v0.5.0 §boot: post-paint swap of the WARP `@vault:` refs for their
+  /// real values (called from AppDependencies' deferred pass). WarpAccount
+  /// fields are final — the account is REBUILT from the store section with
+  /// the resolved values.
+  Future<void> resolveSecrets() async {
+    final section = _store.section('warp');
+    if (section.isEmpty || _account == null) return;
     final priv = await _readSecret(section['privateKeyRef'] as String?);
     final token = await _readSecret(section['tokenRef'] as String?);
     _account = WarpAccount(
@@ -305,6 +360,7 @@ class SubscriptionRepository {
         'id': s.id,
         'name': s.name,
         'url': s.url,
+        'status': s.status.name,
         'info': {
           'upload': s.info.uploadBytes,
           'download': s.info.downloadBytes,
@@ -315,6 +371,10 @@ class SubscriptionRepository {
         'lastUpdated': s.lastUpdated?.toIso8601String(),
         'nodeCount': s.nodeCount,
         'healthyCount': s.healthyCount,
+        // v0.5 BUGFIX: screening counters + status are set by the service but
+        // were never persisted — they silently reset on every app restart.
+        'screenXrayOnly': s.screenXrayOnly,
+        'screenRisky': s.screenRisky,
         'autoUpdate': s.autoUpdate,
         'updateIntervalMinutes': s.updateIntervalMinutes,
         'lastError': s.lastError,

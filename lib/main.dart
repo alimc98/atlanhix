@@ -1,5 +1,6 @@
 ﻿import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/material.dart';
@@ -34,6 +35,15 @@ Future<void> main() async {
     // badges/capability text, so they ride behind unawaited and land while
     // the user is already looking at the UI (hundreds of ms earlier).
     final deps = await AppDependencies.bootstrap();
+    // v0.5.0 §boot: the one-time Keystore init (~2.5 s measured) rides
+    // AFTER the shell paints — a post-first-frame + microtask keeps it off
+    // the intro's last frame while still starting before the user can
+    // reach Connect.
+    unawaited(() async {
+      await WidgetsBinding.instance.endOfFrame;
+      await Future<void>.delayed(Duration.zero);
+      await deps.deferredSecretResolution;
+    }());
     unawaited(() async {
       // v0.4.3: learn the TRUTH about the Xray runtime (exec'd native binary
       // in the :xray process) before badges paint — but never blocking the
@@ -88,9 +98,11 @@ class AtlanhixRoot extends StatelessWidget {
             home: Container(
               color: const Color(0xFF0A0B0E),
               alignment: Alignment.center,
+              // v0.5.0 §user: the user-provided ATLANTHIX wordmark replaces
+              // the previous intro artwork.
               child: Image.asset(
-                'assets/brand/intro.jpg',
-                width: 280,
+                'assets/brand/intro.png',
+                width: 300,
                 fit: BoxFit.contain,
                 errorBuilder: (c, e, s) => const SizedBox(height: 120),
               ),
@@ -114,6 +126,11 @@ class AtlanhixApp extends StatefulWidget {
 
 class _AtlanhixAppState extends State<AtlanhixApp>
     with WidgetsBindingObserver {
+  // v0.5.0 §user-fix ("تم روی OLED می‌زنم، بعد از باز/بسته برگشته روی dark"):
+  // the mode + language used to be in-memory-only State fields — a process
+  // restart silently reset both. They now load FROM the persisted
+  // AppSettings (already on disk before this widget builds) and every edit
+  // SAVES back through the settings repository.
   AtlanhixThemeMode _mode = AtlanhixThemeMode.dark;
   Locale _locale = const Locale('en');
   bool _clipboardAsked = false;
@@ -136,6 +153,43 @@ class _AtlanhixAppState extends State<AtlanhixApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // v0.5.0 §user-fix: seed the persisted appearance. `appSettings` is
+    // loaded in bootstrap BEFORE this widget exists, so this is a plain
+    // in-memory read — no await needed.
+    _applyPersistedAppearance();
+  }
+
+  void _applyPersistedAppearance() {
+    final st = widget.deps.appSettings;
+    setState(() {
+      _mode = NexusThemeMode.values.firstWhere(
+        (m) => m.name == st.theme,
+        orElse: () => AtlanhixThemeMode.dark,
+      );
+      _locale = st.language == 'system'
+          ? _systemLocale()
+          : Locale(st.language);
+    });
+  }
+
+  /// `system` language: follow the OS locale when the app supports it,
+  /// else English (the generated delegates only carry en/fa).
+  Locale _systemLocale() {
+    final sys = PlatformDispatcher.instance.locale.languageCode;
+    return AppLocalizations.supportedLocales
+            .any((l) => l.languageCode == sys)
+        ? Locale(sys)
+        : const Locale('en');
+  }
+
+  /// v0.5.0 §user-fix: persist BOTH appearance fields on every edit.
+  Future<void> _saveAppearance(AtlanhixThemeMode? theme, Locale? locale) async {
+    final st = widget.deps.appSettings;
+    if (theme != null) st.theme = theme.name;
+    if (locale != null) {
+      st.language = locale.languageCode;
+    }
+    await widget.deps.appSettingsRepo.save(st);
   }
 
   @override
@@ -153,6 +207,9 @@ class _AtlanhixAppState extends State<AtlanhixApp>
       // return (deduped by clipboard content inside the presenter).
       WidgetsBinding.instance
           .addPostFrameCallback((_) => _checkClipboardOnResume());
+      // v0.5.0 §battery: back in the foreground → counters at the live 2 s
+      // cadence again.
+      widget.deps.vpnSession.controller.setWatchCadence(foreground: true);
     }
     // v0.4.9 §battery: the transient probe engine exists ONLY for foreground
     // delay tests. Backgrounded with no live VPN it is a hidden Go runtime
@@ -162,11 +219,21 @@ class _AtlanhixAppState extends State<AtlanhixApp>
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
       ProbeEngine.instance.stop();
+      // v0.5.0 §battery: hidden app → drop the native watcher to a 15 s
+      // cadence (counters nobody watches don't justify a 2 s CPU wake).
+      widget.deps.vpnSession.controller.setWatchCadence(foreground: false);
     }
   }
 
-  void setTheme(AtlanhixThemeMode m) => setState(() => _mode = m);
-  void setLocale(Locale l) => setState(() => _locale = l);
+  void setTheme(AtlanhixThemeMode m) {
+    setState(() => _mode = m);
+    unawaited(_saveAppearance(m, null));
+  }
+
+  void setLocale(Locale l) {
+    setState(() => _locale = l);
+    unawaited(_saveAppearance(null, l));
+  }
 
   void _refreshRouting() => setState(() {});
 

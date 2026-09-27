@@ -52,6 +52,30 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
         appContext = applicationContext
         super.onCreate()
         createChannel()
+        instance = this
+    }
+
+    // ------------------------------------------------------- Dart mirrors
+    // v0.5.0 §user-fix (notification out of sync with the REAL VPN state):
+    // the native machine has NO CONNECTED transition of its own — Dart flips
+    // to CONNECTED only after a REAL probe through the tunnel (§5), so the
+    // notification used to sit on "Validating tunnel…" forever. The service
+    // runs in the MAIN process (no android:process), so the static channel
+    // hand-off below reaches this instance directly.
+
+    /** Dart confirmed the tunnel with a real probe → show Connected. */
+    fun notifyConnected(detail: String? = null) {
+        setState(State.CONNECTED, detail ?: stateDetail)
+    }
+
+    /** Dart-initiated stop → show Stopped (shutdown() removes it after). */
+    fun notifyDisconnected() {
+        if (state != State.STOPPED) setState(State.STOPPED)
+    }
+
+    /** Session died without an owner (REVOKED path etc.) → honest FAILED. */
+    fun notifyDied(detail: String? = null) {
+        setState(State.FAILED, detail ?: "session ended unexpectedly")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -432,6 +456,7 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
     }
 
     override fun onDestroy() {
+        if (instance === this) instance = null
         shutdownTunnelOnly()
         // v0.4.9 §user-fix ("atlanhix core even after closing the app"):
         // whatever path destroyed the service, the notification must go —
@@ -527,6 +552,10 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
         @JvmStatic lateinit var appContext: android.content.Context
         const val ACTION_START = "com.example.nexus.vpn.START"
         const val ACTION_STOP = "com.example.nexus.vpn.STOP"
+
+        // v0.5.0 §user-fix: live instance for the Dart→native notification
+        // mirrors (notifyConnected/…). Same process as the channel handler.
+        @Volatile var instance: AtlanhixVpnService? = null
 
         // Static mirror — the platform channel answers from the UI process
         // without binding the service first. Config is stashed by the

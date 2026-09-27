@@ -240,13 +240,25 @@ class WgHandshakeProbe {
 
   /// Probes one endpoint: sends [packet] and waits for a `type 2` response
   /// or cookie reply within [timeout]. Returns the RTT, or null when silent.
+  ///
+  /// v0.5.0 §user (WarpServer-range scanner): [onSend] fires the instant the
+  /// initiation leaves the socket — the scanner cancels its budget timer on
+  /// the FIRST answer instead of waiting out the full per-candidate timeout
+  /// sequentially. Pass your own [socket] when sweeping many endpoints; the
+  /// caller owns (and must close) it. [socket] is required when [onSend] is
+  /// given (a fresh per-call socket would never receive the caller's reply).
   static Future<Duration?> probe(
     String host,
     int port,
     Uint8List packet, {
     Duration timeout = const Duration(milliseconds: 900),
     RawDatagramSocket? socket,
+    void Function()? onSend,
   }) async {
+    assert(
+        socket != null || onSend == null,
+        'probe(onSend) needs an explicit socket — '
+        'a per-call socket never receives the caller\'s reply');
     final own = socket == null;
     final RawDatagramSocket sock;
     try {
@@ -268,6 +280,7 @@ class WgHandshakeProbe {
         }
       });
       sock.send(packet, InternetAddress(host), port);
+      onSend?.call();
       final timer = Timer(timeout, () {
         if (!c.isCompleted) c.completeError(TimeoutException('no wg reply'));
       });

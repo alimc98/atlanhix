@@ -40,26 +40,46 @@ class _WarpChainCardState extends State<WarpChainCard> {
   String? _scanWinner; // host:port with the best handshake latency
   List<(String, Duration)> _scanResults = const [];
   final _scanCtl = TextEditingController();
+  // v0.5.0 §user: cooperative cancel flag for the full-/24 sweep.
+  bool _scanCancelled = false;
 
   AppSettings get _s => widget.deps.appSettings;
   bool get _fa => Localizations.localeOf(context).languageCode == 'fa';
 
-  /// WarpServer-style endpoint sweep — with a REAL WireGuard handshake.
+  /// WarpServer-range endpoint sweep — with a REAL WireGuard handshake.
   /// The old scanner sent a fake initiation whose MAC every honest endpoint
   /// (Cloudflare included) silently drops, so it always said "no endpoint
-  /// answered". Now we build a genuine Noise-IK initiation from the
-  /// account's own static key and treat only a `type 2` response or a
-  /// cookie reply as liveness+RTT proof. Candidates: the classic
-  /// 162.159.192/193/195 + 188.114.96/97 spread over the ports WARP listens
-  /// on — 162.159.192.1 / 162.159.195.1 / 188.114.96.1 / 188.114.97.1 are
-  /// live-verified against real Cloudflare (v0.4.9 sweep; 162.159.193.10
-  /// consistently silent, kept for completeness).
+  /// answered"; the fixed probe builds a genuine Noise-IK initiation from
+  /// the account's own static key and treats only a `type 2` response or a
+  /// cookie reply as liveness+RTT proof.
+  ///
+  /// v0.5.0 §user — the IP RANGE is now the FULL WARP class-C networks
+  /// (warp-yxip style): every host of 162.159.192.0/24, 162.159.193.0/24,
+  /// 162.159.195.0/24 and 188.114.96.0/24, 1024 IPs total, over the ports
+  /// WARP is known to answer on (2408 = WireGuard default; 500/1701/4500/
+  /// 8443/3138 = the well-known CF alternatives). 6,144 candidates run
+  /// [scanConcurrency]-wide against one shared socket; each probe is
+  /// budgeted for [scanTimeout] and the whole sweep for 30 s, so a dead
+  /// network yields in half a minute instead of hanging for an hour like
+  /// the old 10-host serial loop would at this size.
   static const _scanPorts = [2408, 500, 1701, 4500, 8443, 3138];
-  static const _scanHosts = [
-    '162.159.192.1', '162.159.192.5', '162.159.192.35', '162.159.192.62',
-    '162.159.193.10', '162.159.193.40', '162.159.195.1', '188.114.96.1',
-    '188.114.97.1', '188.114.97.170',
+
+  /// First three octets of the full WARP /24 class-C networks.
+  static const _scanNetworks = [
+    '162.159.192',
+    '162.159.193',
+    '162.159.195',
+    '188.114.96',
   ];
+
+  /// Concurrent handshake probes per sweep wave.
+  static const int scanConcurrency = 8;
+
+  /// Per-candidate handshake budget.
+  static const Duration scanTimeout = Duration(milliseconds: 900);
+
+  /// Whole-sweep deadline (6,144 candidates must never hang the UI).
+  static const Duration _sweepBudget = Duration(seconds: 30);
 
   Future<void> _scanEndpoints() async {
     if (_scanning) return;
@@ -75,13 +95,20 @@ class _WarpChainCardState extends State<WarpChainCard> {
       _scanning = true;
       _scanProgress = 0;
       _scanWinner = null;
+      _scanResults = const [];
     });
-    final candidates = <(String, int)>{
-      for (final h in _scanHosts) for (final p in _scanPorts) (h, p),
-    }.toList();
     final results = <(String, Duration)>[];
     Duration best = const Duration(days: 1);
     var done = 0;
+    _scanCancelled = false; // v0.5.0 §user: reset for this run
+    final pkt = await WgHandshakeProbe.buildInitiation(
+      initiatorStaticPrivate: acct.privateKeyBytes,
+      responderStaticPublic: acct.serverKeyBytes,
+      // The 3-byte client_id rides in the reserved field — CF validates
+      // its VALUE (garbage → silent drop) — while MAC1 covers the
+      // reserved-ZEROED body. Live-proven both ways.
+      reserved: acct.reservedBytes,
+    );
     RawDatagramSocket? sock;
     try {
       sock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
@@ -89,36 +116,54 @@ class _WarpChainCardState extends State<WarpChainCard> {
       if (mounted) setState(() => _scanning = false);
       return;
     }
-    for (final (h, p) in candidates) {
+    // One shared packet for the whole sweep: the initiation derives from
+    // the account's keys (and a fresh TAI64N timestamp) — nothing is
+    // endpoint-specific. Rebuilding per candidate only burns CPU.
+    final candidates = [
+      for (final net in _scanNetworks)
+        for (var o = 1; o <= 254; o++)
+          for (final p in _scanPorts) (host: '$net.$o', port: p),
+    ];
+    final deadline = DateTime.now().add(_sweepBudget);
+    Future<void> run(({String host, int port}) c) async {
+      if (_scanCancelled) return;
       try {
-        final pkt = await WgHandshakeProbe.buildInitiation(
-          initiatorStaticPrivate: acct.privateKeyBytes,
-          responderStaticPublic: acct.serverKeyBytes,
-          // The 3-byte client_id rides in the reserved field — CF
-          // validates its VALUE (garbage → silent drop) — while MAC1
-          // covers the reserved-ZEROED body. Live-proven both ways.
-          reserved: acct.reservedBytes,
-        );
-        final rtt = await WgHandshakeProbe.probe(h, p, pkt,
-            timeout: const Duration(milliseconds: 900), socket: sock);
+        final rtt = await WgHandshakeProbe.probe(c.host, c.port, pkt,
+            timeout: scanTimeout, socket: sock);
         if (rtt != null) {
-          results.add(('$h:$p', rtt));
+          results.add(('${c.host}:${c.port}', rtt));
           if (rtt < best) {
             best = rtt;
-            _scanWinner = '$h:$p';
+            _scanWinner = '${c.host}:${c.port}';
           }
         }
       } catch (_) {/* skip candidate */}
       done++;
       if (mounted) setState(() => _scanProgress = done / candidates.length);
     }
-    sock.close();
+    var next = 0;
+    Future<void> worker() async {
+      while (!_scanCancelled && DateTime.now().isBefore(deadline)) {
+        if (next >= candidates.length) return;
+        final c = candidates[next++];
+        await run(c);
+      }
+    }
+    try {
+      await Future.wait(
+          List.generate(scanConcurrency, (_) => worker()));
+    } finally {
+      _scanCancelled = true; // stop stragglers
+      sock.close();
+    }
     results.sort((a, b) => a.$2.compareTo(b.$2));
     _scanResults = results;
     if (!mounted) return;
+    final total = candidates.length;
     if (_scanWinner != null) {
       await widget.deps.warpRepo.saveWithAwgParams(
           endpointOverride: _scanWinner);
+      if (!mounted) return;
     }
     setState(() => _scanning = false);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -127,8 +172,8 @@ class _WarpChainCardState extends State<WarpChainCard> {
                 ? 'هیچ endpoint جواب نداد — اینترنت/فایروال را چک کن (یا دستی وارد کن)'
                 : 'no endpoint answered — check network/firewall (or enter one manually)')
             : (_fa
-                ? 'بهترین endpoint: $_scanWinner (${best.inMilliseconds}ms) — ذخیره شد'
-                : 'best endpoint: $_scanWinner (${best.inMilliseconds}ms) — saved'))));
+                ? 'بهترین endpoint از $total کاندید: $_scanWinner (${best.inMilliseconds}ms) — ذخیره شد'
+                : 'best endpoint of $total candidates: $_scanWinner (${best.inMilliseconds}ms) — saved'))));
   }
 
   /// v0.4.9 §user: manual host:port entry — the scanner is best-effort; the
@@ -531,7 +576,22 @@ class _WarpChainCardState extends State<WarpChainCard> {
                   if (_scanning)
                     Padding(
                       padding: const EdgeInsets.only(top: 6),
-                      child: LinearProgressIndicator(value: _scanProgress),
+                      child: Column(children: [
+                        LinearProgressIndicator(value: _scanProgress),
+                        // v0.5.0 §user: full-/24 sweep = thousands of
+                        // candidates — give the user a way OUT.
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton(
+                            onPressed: () => _scanCancelled = true,
+                            child: Text(_fa ? 'لغو اسکن' : 'cancel scan',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(color: c.textSecondary)),
+                          ),
+                        ),
+                      ]),
                     ),
                   const SizedBox(height: 6),
                   Row(children: [

@@ -11,6 +11,7 @@ import '../domain/entities/health.dart';
 import '../domain/entities/proxy_profile.dart';
 import '../core/configgen/xray_config_generator.dart';
 import '../core/runtime/core_manager.dart';
+import '../core/runtime/clash_api_client.dart';
 import '../core/runtime/singbox_runtime.dart';
 import '../core/engine_availability.dart';
 import '../platform/xray_bridge.dart';
@@ -59,27 +60,125 @@ class VpnSession {
     scheduler: deps.scheduler,
     health: deps.healthStore,
     interval: Duration(seconds: deps.appSettings.smartSwitchIntervalSeconds),
+    // v0.5.0 §perf-fix: the WHOLE candidate pool in ONE call. The old
+    // per-node urlProbe re-entered the transient probe engine per candidate
+    // — every new node id REBUILT the Box (a full libbox restart) and all
+    // parallel measurements died mid-sweep, so the ladder starved ("the
+    // switch never switches") and pings took forever. One boot + parallel
+    // delay tests now feeds the ladder real numbers in seconds.
+    urlBatchProbe: (batch) async {
+      final url = deps.appSettings.effectiveDelayTestUrl;
+      // 1) LIVE engine (VPN up): measure through the running config —
+      //    tags of nodes not in the running pool answer honestly below.
+      final live = await liveEngineApi();
+      if (live != null) {
+        return _delayBatchVia(live, batch, url,
+            missing: ProbeResult(
+                ok: false, latencyMs: null,
+                errorKind: 'engine-off',
+                detail: 'not in live config'));
+      }
+      // 2) Transient probe engine (no VPN): one boot for the whole pool.
+      final ms = await ProbeEngine.instance
+          .delayTestBatch(batch, url, 5000);
+      if (ms.isEmpty) {
+        return {
+          for (final p in batch)
+            p.id: ProbeResult(
+                ok: false, latencyMs: null,
+                errorKind: 'engine-off',
+                detail: 'probe engine unavailable'),
+        };
+      }
+      return {
+        for (final p in batch)
+          p.id: ms[p.id] == null
+              ? ProbeResult(
+                  ok: false, latencyMs: null, errorKind: 'timeout')
+              : ProbeResult(ok: true, latencyMs: ms[p.id]),
+      };
+    },
     // v0.4.8 §user: the ladder ranks by REAL in-tunnel URL tests through
-    // each candidate's outbound (engine delay test on its node tag) — the
-    // TCP ping only proves the node IP answers, which crowned nodes whose
-    // tunnel could not actually fetch anything. When no engine API is
-    // available (disconnected) the probe returns null and the switcher
-    // falls back to the scheduler's TCP tests.
+    // each candidate's outbound — the TCP ping only proves the node IP
+    // answers, which crowned nodes whose tunnel could not actually fetch
+    // anything. When no engine API is available (disconnected) the probe
+    // returns null and the switcher falls back to the scheduler's TCP
+    // tests.
+    // v0.5.0 §user: the switch tolerance is a real field (Settings →
+    // Smart Switch tolerance, ms) — kept in sync on every (re)arm below.
+    marginMs: deps.appSettings.smartSwitchMarginMs,
     urlProbe: (p) async {
-      final api = deps.cores.front.api;
-      if (api == null) return null;
-      final url = deps.appSettings.warpProbeUrl.isEmpty
-          ? 'https://www.gstatic.com/generate_204'
-          : deps.appSettings.warpProbeUrl;
-      final ms = await api.delayTest(
-          '${SingBoxRuntime.tagPrefix}${p.id}', url, 5000);
+      // v0.5.0 §user-fix ("smart switch never pings"): the probe used to
+      // read `deps.cores.front.api` ONLY — on Android libbox runs INSIDE
+      // the VPN process and that getter is ALWAYS null, so every periodic
+      // sweep measured NOTHING and the ladder starved (the only real
+      // numbers came from the manual "test all" button). Route through
+      // the SAME RealDelayTester the node list uses: live engine when a
+      // VPN is up, else the transient probe engine (consent-free, its
+      // own ports) — with an honest per-node result either way.
+      final url = deps.appSettings.effectiveDelayTestUrl;
+      // 1) Live front engine (desktop child process — on Android this is
+      //    null and we fall through to the probe engine).
+      final live = await liveEngineApi();
+      if (live != null) {
+        final ms = await live.delayTest(
+            '${SingBoxRuntime.tagPrefix}${p.id}', url, 5000);
+        return ProbeResult(ok: ms != null, latencyMs: ms,
+            errorKind: ms == null ? 'timeout' : null);
+      }
+      // 2) Transient probe engine (Android libbox, ports 7891/9090). A
+      //    null answer = engine down/unstartable → TCP fallback below.
+      final ms = await ProbeEngine.instance.delayTest(p, url, 5000);
       return ProbeResult(ok: ms != null, latencyMs: ms,
-          errorKind: ms == null ? 'timeout' : null);
+          errorKind: ms == null ? 'engine-off' : null);
     },
   );
 
   /// Local SOCKS port of the running :xray upstream (0 = not running).
   int _xrayUpstreamPort = 0;
+
+  /// v0.5.0 §user-fix: a WORKING Clash-API client for the live engine, or
+  /// null. On Android libbox runs INSIDE the VPN service process and
+  /// `front.api` is never constructed — only this probe-and-cache path
+  /// (same as the node list's engineDelayTest) ever reaches the listener on
+  /// :9097. Everything that needs the live table (ladder probes, selector
+  /// migration, the WARP watchdog) must go through THIS, not through the
+  /// always-null getter — the old migrate path fell through to a FULL
+  /// reconnect on every switch because of it.
+  Future<ClashApiClient?> liveEngineApi() => deps.liveEngineApi();
+
+  /// Delay-tests [batch] through [api] in parallel. A tag missing from the
+  /// RUNNING config gets [missing] verbatim (engine-off → honest
+  /// fall-through), never a fake 5-second timeout.
+  static Future<Map<String, ProbeResult>> _delayBatchVia(
+    ClashApiClient api,
+    List<ProxyProfile> batch,
+    String url, {
+    required ProbeResult missing,
+  }) async {
+    final out = <String, ProbeResult>{};
+    await Future.wait(batch.map((p) async {
+      final tag = '${SingBoxRuntime.tagPrefix}${p.id}';
+      // The tag exists in the config? (cheap /proxies read, cached table on
+      // the engine side of the wire is still one HTTP round trip — but one
+      // per node in parallel is fine.)
+      final tags = await api.proxyTags();
+      if (tags == null || !tags.contains(tag)) {
+        out[p.id] = missing;
+        return;
+      }
+      int? ms;
+      try {
+        ms = await api.delayTest(tag, url, 5000);
+      } catch (_) {
+        ms = null;
+      }
+      out[p.id] = ms == null
+          ? ProbeResult(ok: false, latencyMs: null, errorKind: 'timeout')
+          : ProbeResult(ok: true, latencyMs: ms);
+    }));
+    return out;
+  }
 
   /// v0.4.7 §user: profile ids whose engine resolution is already logged
   /// this session (keeps the trace readable on repeated connects).
@@ -136,6 +235,115 @@ class VpnSession {
       StreamController<void>.broadcast();
   Stream<void> get selectionChanged => _selectionEvents.stream;
 
+  // ---------------------------------------------------------------------
+  // v0.5.0 §user-fix ("میرم تلگرام، برمی‌گردم — انگار برنامه تازه باز شده"):
+  // Android kills the app's process in the background while the NATIVE VPN
+  // service keeps the tunnel up. The fresh Dart process starts with
+  // selectedNode = null and the default switch flag, so the UI showed
+  // "tap to connect" over a LIVE tunnel. The selection + switch choice are
+  // now PERSISTED in the store (section `sessionState`) and restored during
+  // bootstrap, before the native reconcile — the first paint shows the
+  // truth.
+  // ---------------------------------------------------------------------
+
+  static const _sessionSection = 'sessionState';
+
+  /// The user's LAST EXPLICIT Smart-Switch choice (card tap), kept across
+  /// disconnects. Separated from the live [smartSwitch] flag on purpose: a
+  /// disconnect clears the LIVE runtime state (selection + ladder) but must
+  /// NOT forget whether the user wanted auto or manual — the next connect
+  /// re-arms exactly what they left enabled.
+  bool smartSwitchPreferred = true;
+
+  /// Persists the picked node id + both switch flags (live + preferred).
+  /// Fire-and-forget: the store coalesces writes (400 ms debounce).
+  void persistState() {
+    try {
+      unawaited(deps.store.putSection(_sessionSection, {
+        'selectedNodeId': selectedNode?.id,
+        'smartSwitch': smartSwitch,
+        'smartSwitchPreferred': smartSwitchPreferred,
+      }));
+    } catch (_) {/* persistence must never break the connect path */}
+  }
+
+  /// Restores the persisted selection + switch choice. Called once from
+  /// bootstrap, BEFORE the native reconcile, so the first paint already
+  /// carries the user's node.
+  void restorePersistedState() {
+    try {
+      final s = deps.store.section(_sessionSection);
+      smartSwitch = (s['smartSwitch'] as bool?) ?? smartSwitch;
+      smartSwitchPreferred =
+          (s['smartSwitchPreferred'] as bool?) ?? smartSwitch;
+      final id = s['selectedNodeId'] as String?;
+      if (id != null && selectedNode == null) {
+        selectedNode = deps.profiles.byId(id);
+      }
+    } catch (_) {
+      // A corrupt section is not worth a broken boot — defaults apply.
+    }
+  }
+
+  /// v0.5.0 §user — CLEAN disconnect state: after a real disconnect the
+  /// runtime state must not leak stale runtime facts into the next session.
+  /// * the Smart Switch ladder is already stopped;
+  /// * the scheduler's active-node monitor stops polling the old node;
+  /// * the WARP watchdog is cancelled (via the terminal-phase sync);
+  /// * the SELECTION is cleared — the next connect either auto-picks or
+  ///   re-uses the node the user taps then, never a half-remembered one;
+  /// * the user's EXPLICIT switch preference survives (see
+  ///   [smartSwitchPreferred]) and the live flag re-converges to it, so the
+  ///   next connect re-arms exactly what they left enabled.
+  void _clearDisconnectedState() {
+    _smart.stop();
+    try {
+      deps.scheduler.setActive(null);
+    } catch (_) {}
+    selectedNode = null;
+    smartSwitch = smartSwitchPreferred;
+    _bootedHost = null;
+    lastLatencyMs = null;
+    _selectionEvents.add(null);
+    persistState();
+    Logger.instance.info('vpn-session',
+        '[ATX-DART] SESSION_CLEARED selection dropped, switch re-armed per '
+        'preference (${smartSwitchPreferred ? 'auto' : 'manual'})');
+  }
+
+  /// v0.5.0 §user-fix: after the native reconcile re-adopted a still-running
+  /// tunnel from a dead process, a fresh Dart side has NO runtime services
+  /// armed: no WARP watchdog, no Smart Switch ladder, no active-node
+  /// scheduler entry. This re-arms all three (idempotent) — the tunnel the
+  /// user came back to behaves exactly like one they just connected.
+  void resumeRuntimeServices() {
+    if (!controller.isConnected) return;
+    final node = selectedNode;
+    if (node != null) {
+      try {
+        deps.scheduler.setActive(node.id);
+      } catch (_) {}
+    }
+    _armWarpWatchdog();
+    if (smartSwitch) {
+      // v0.5.0 §boot-perf ("اپ دوباره دير بوت ميشه"): arming the ladder
+      // used to fire its FIRST sweep synchronously inside the resume — the
+      // probe engine boot (a second libbox + possibly a 6-socket :xray
+      // child) raced the shell's first paints and the platform channels on
+      // a cold process. The periodic cadence still re-tests; the first
+      // sweep simply waits out the boot traffic. When the switch is OFF,
+      // nothing ladders — no probe boot at all.
+      Future<void>.delayed(const Duration(seconds: 12), () {
+        if (smartSwitch && controller.isConnected) {
+          _armSmart(currentId: selectedNode?.id);
+        }
+      });
+    }
+    _selectionEvents.add(null);
+    Logger.instance.info('vpn-session',
+        '[ATX-DART] RUNTIME_RESUMED services re-armed for the re-adopted tunnel');
+  }
+
   /// Explicitly selects a node for the next connect — called by the UI the
   /// moment the user taps a node card, BEFORE any connect attempt, so the
   /// dashboard reflects the tapped node immediately.
@@ -149,6 +357,7 @@ class VpnSession {
         '[ATX-DART UI] NODE_SELECTED ${p.name} proto=${p.protocol.name} '
         'transport=${p.transport.name} core=${p.effectiveCore.name}');
     _selectionEvents.add(null);
+    persistState();
   }
 
   /// v0.4.7 §user: re-arms the Smart Switch (Nodes-tab card / Settings).
@@ -157,11 +366,37 @@ class VpnSession {
   /// stream migrates it.
   void enableSmartSwitch() {
     smartSwitch = true;
-    _smart
-      ..interval = Duration(seconds: deps.appSettings.smartSwitchIntervalSeconds)
-      ..start(SmartSwitch.candidatesOf(deps.profiles.all),
-          currentId: selectedNode?.id);
+    smartSwitchPreferred = true;
+    _armSmart(currentId: selectedNode?.id);
     _selectionEvents.add(null);
+    persistState();
+  }
+
+  /// v0.5.0 §user — ONE arming path for the ladder (connect auto-pick AND
+  /// the Nodes-tab card): refresh cadence + tolerance, ENSURE the change
+  /// subscription exists, then start. The old card path never subscribed —
+  /// `_smartSub` was only created on the connect() auto-pick path, so
+  /// enabling the switch from the card fired recommendations into the void
+  /// and the tunnel never migrated (device report: "the auto switch does
+  /// not switch"). Subscribing BEFORE start() also closes the race where a
+  /// first-sweep recommendation arrived before the listener did.
+  void _armSmart({String? currentId}) {
+    final st = deps.appSettings;
+    _smart
+      ..interval = Duration(seconds: st.smartSwitchIntervalSeconds)
+      ..marginMs = st.smartSwitchMarginMs;
+    _smartSub ??= _smart.changes.listen(_migrateForSmartSwitch);
+    _smart.start(SmartSwitch.candidatesOf(deps.profiles.all),
+        currentId: currentId);
+  }
+
+  /// v0.5.0 §user: live-applies cadence/tolerance edits to a RUNNING ladder
+  /// WITHOUT turning it on (Settings → Smart Switch interval/tolerance
+  /// fields). A no-op while the switch is off — the next [enableSmartSwitch]
+  /// or auto-pick connect picks the new values up through [_armSmart].
+  void syncSmartTuning() {
+    if (!smartSwitch) return;
+    _armSmart(currentId: selectedNode?.id ?? _smart.best?.id);
   }
 
   /// v0.4.8 §user: turns the Smart Switch OFF — the user's tap on the
@@ -170,8 +405,10 @@ class VpnSession {
   /// that was ON could never be turned OFF from the card (device report).
   void disableSmartSwitch() {
     smartSwitch = false;
+    smartSwitchPreferred = false;
     _smart.stop();
     _selectionEvents.add(null);
+    persistState();
     Logger.instance.info('smart-switch',
         '[ATX-DART] SMART_SWITCH disabled by user — manual selection');
   }
@@ -268,6 +505,17 @@ class VpnSession {
     final trace = '[ATX-DART ${DateTime.now().millisecondsSinceEpoch % 10000}]';
     Logger.instance.info('vpn-session', '$trace CONNECT_REQUEST');
     lastError = null;
+    // v0.5.0 §boot: secrets resolve POST-PAINT now. A connect fired before
+    // the deferred pass finished would build a config from `@vault:` token
+    // strings — gate here: normally a no-op (resolution finished during the
+    // intro), worst case the connect waits out the remaining Keystore work
+    // it would have paid inline before this change.
+    try {
+      await deps.deferredSecretResolution;
+    } catch (_) {
+      // Resolution failure must not wedge the connect; the config builder
+      // reports the unusable node on its own.
+    }
 
     // ── 1. EXPLICIT SELECTION FIRST: the tapped node IS the request. ──
     final explicit = node ?? _liveStoredSelection(trace);
@@ -275,6 +523,7 @@ class VpnSession {
       // Remember the pick even when it cannot run: the dashboard must show
       // the node the user chose, not a node the picker preferred.
       selectedNode = explicit;
+      persistState();
       final why = AndroidNodeSupport.androidExclusionReason(explicit);
       if (why != null) {
         lastError = 'NODE_NOT_RUNNABLE_ON_ANDROID';
@@ -298,17 +547,12 @@ class VpnSession {
       return false;
     }
     selectedNode = best;
+    persistState();
     Logger.instance.info('vpn-session',
         '$trace NODE_SELECTED source=auto node=${best.name} proto=${best.protocol.name} transport=${best.transport.name} core=${best.effectiveCore.name}');
     // v0.4.7 §user: smart mode is the DEFAULT — with no explicit pick the
     // ladder starts here and keeps re-testing; tunnel migrates on change.
-    if (smartSwitch) {
-      _smart
-        ..interval = Duration(seconds: deps.appSettings.smartSwitchIntervalSeconds)
-        ..start(SmartSwitch.candidatesOf(deps.profiles.all),
-            currentId: best.id);
-      _smartSub ??= _smart.changes.listen(_migrateForSmartSwitch);
-    }
+    if (smartSwitch) _armSmart(currentId: best.id);
     return _connectProfile(best, trace);
   }
 
@@ -330,17 +574,23 @@ class VpnSession {
     if (controller.phase != AndroidVpnPhase.connected) {
       // Not connected — just remember the recommendation for the next connect.
       selectedNode = next;
+      persistState();
       _selectionEvents.add(null);
       return;
     }
     Logger.instance.info('smart-switch',
         '[ATX-DART] MIGRATE → ${next.name} (tunnel stays up during switch)');
     selectedNode = next;
+    persistState();
     _selectionEvents.add(null);
 
     // 1) Fast path: Clash-API selector swap (sub-second, zero traffic
     //    interruption on the TUN interface itself).
-    final api = deps.cores.front.api;
+    //    v0.5.0 §user-fix: deps.cores.front.api is ALWAYS null on Android
+    //    (libbox lives in the service process) — the old read here made the
+    //    fast path dead code and every switch a full disconnect/reconnect.
+    //    The probe-and-cache client reaches the real :9097 listener.
+    final api = await liveEngineApi();
     if (api != null) {
       final ok = await api.select(
           SingBoxRuntime.selectorTag, '${SingBoxRuntime.tagPrefix}${next.id}');
@@ -390,6 +640,23 @@ class VpnSession {
     try {
       await ProbeEngine.instance.stop();
     } catch (_) {}
+    // v0.5.0 §device-fix (log evidence 2026-09-27 10:22: the connect above
+    // STILL died with cache-file: timeout): stopping the engine was not
+    // enough — the Smart Switch sweep armed a moment later re-entered
+    // ensureUp and BOOTED the probe engine WHILE the tunnel was starting
+    // ("probe engine UP :9090 nodes=11" one second after the connect
+    // FAILED). The connect now owns a start veto: no probe-engine boot is
+    // allowed from here until the tunnel verdict (CONNECTED or dead).
+    ProbeEngine.instance.setTunnelBootHold(true);
+    try {
+      final ok = await _connectProfileInner(profile, trace);
+      return ok;
+    } finally {
+      ProbeEngine.instance.setTunnelBootHold(false);
+    }
+  }
+
+  Future<bool> _connectProfileInner(ProxyProfile profile, String trace) async {
     // ── ENGINE RESOLUTION (v0.4.7 §user device fix) ──
     // Imported/persisted profiles carry core=unknown (only the desktop
     // ConnectionController ran the detector, on its in-memory copy that is
@@ -582,6 +849,10 @@ class VpnSession {
 
   /// §3 — clean disconnect; permission state is preserved by Android, so a
   /// subsequent connect skips the consent dialog (§37.12).
+  /// v0.5.0 §user: after the tunnel is down the runtime state is CLEARED
+  /// (selection dropped, monitor/watchdog stopped, switch re-armed per the
+  /// user's preference) — no half-remembered state survives into the next
+  /// session.
   Future<void> disconnect() async {
     _smart.stop();
     await controller.stop();
@@ -589,6 +860,7 @@ class VpnSession {
       _xrayUpstreamPort = 0;
       await XrayBridge.instance.stop();
     }
+    _clearDisconnectedState();
   }
 
   /// Attempts full validation of a config by running the engine binary if
@@ -994,9 +1266,7 @@ class VpnSession {
     final st = deps.appSettings;
     if (st.warpChainMode != WarpChainMode.off) return; // chain already chosen
     if (st.warpAutoOfferThreshold <= 0) return; // detector disabled
-    final url = st.warpProbeUrl.isEmpty
-        ? 'https://www.gstatic.com/generate_204'
-        : st.warpProbeUrl;
+    final url = st.effectiveWarpProbeUrl;
     final period = Duration(
         seconds: st.smartSwitchIntervalSeconds > 0
             ? st.smartSwitchIntervalSeconds
@@ -1013,7 +1283,7 @@ class VpnSession {
       _warpFails = 0;
       return;
     }
-    final api = deps.cores.front.api;
+    final api = await liveEngineApi();
     if (api == null) return;
     final ms = await api.delayTest(
         '${SingBoxRuntime.tagPrefix}${node.id}', url, 5000);
@@ -1042,7 +1312,7 @@ class VpnSession {
   /// warpFirst, swaps the selector to the pre-built twin, verifies with a
   /// real URL probe and restores the plain selection when the rescue fails.
   Future<void> _enableWarpFirstFor(ProxyProfile node) async {
-    final api = deps.cores.front.api;
+    final api = await liveEngineApi();
     final rescueTag = 'node:${node.id}:warpfirst';
     if (api == null) return;
     Logger.instance.info('warp-offer',
@@ -1057,9 +1327,7 @@ class VpnSession {
       await connect(node: node);
       return;
     }
-    final url = deps.appSettings.warpProbeUrl.isEmpty
-        ? 'https://www.gstatic.com/generate_204'
-        : deps.appSettings.warpProbeUrl;
+    final url = deps.appSettings.effectiveWarpProbeUrl;
     final ms = await api.delayTest(
         SingBoxRuntime.selectorTag, url, 8000);
     if (ms != null) {

@@ -377,11 +377,84 @@ class SettingsScreen extends StatelessWidget {
                   final n = int.tryParse(v.trim());
                   if (n != null && n >= 0 && n <= 3600) {
                     _save(s..smartSwitchIntervalSeconds = n);
-                    deps.vpnSession.enableSmartSwitch();
+                    // v0.5.0 §user: live-apply cadence/tolerance to a running
+                    // ladder without force-enabling it (the old call here
+                    // silently re-armed a switch the user had turned off).
+                    deps.vpnSession.syncSmartTuning();
                   } else {
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                         content: Text('Interval must be 0–3600 seconds')));
                   }
+                },
+              ),
+            ),
+          ),
+          // v0.5.0 §user: Smart Switch tolerance — a challenger node must
+          // beat the active node by this many ms before the tunnel migrates
+          // (0 = any strictly-better node wins; a dead node always loses).
+          ListTile(
+            dense: true,
+            title: const Text('Smart Switch tolerance'),
+            subtitle: Text(s.smartSwitchMarginMs <= 0
+                ? '0 ms — switch on any strictly-better node'
+                : '${s.smartSwitchMarginMs} ms — challenger must beat it by this much'),
+            trailing: SizedBox(
+              width: 90,
+              child: TextFormField(
+                key: ValueKey('ssm-${s.smartSwitchMarginMs}'),
+                initialValue: s.smartSwitchMarginMs.toString(),
+                keyboardType: TextInputType.number,
+                onFieldSubmitted: (v) {
+                  final n = int.tryParse(v.trim());
+                  if (n != null && n >= 0 && n <= 5000) {
+                    _save(s..smartSwitchMarginMs = n);
+                    deps.vpnSession.syncSmartTuning();
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Tolerance must be 0–5000 ms')));
+                  }
+                },
+              ),
+            ),
+          ),
+          // v0.5.0 §user: THE delay-test URL — one editable field feeding
+          // EVERY latency path (node-list sweep, Smart Switch ladder, WARP
+          // watchdog, scheduler TCP fallback). An `http://` URL skips the
+  	      // TLS handshake and reads v2rayNG-like numbers (~100 ms) where the
+          // https default reads ~900 ms on the same node.
+          ListTile(
+            dense: true,
+            title: const Text('Delay test URL'),
+            subtitle: Text(
+                s.delayTestUrl.trim().isEmpty
+                    ? 'Default: gstatic generate_204 (https)'
+                    : s.delayTestUrl.trim()),
+            isThreeLine: s.delayTestUrl.trim().length > 40,
+            trailing: SizedBox(
+              width: 190,
+              child: TextFormField(
+                key: ValueKey('dtu-${s.delayTestUrl}'),
+                initialValue: s.delayTestUrl,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(hintText: 'http://…/generate_204'),
+                onFieldSubmitted: (v) {
+                  final url = v.trim();
+                  final okUrl = url.isEmpty ||
+                      (Uri.tryParse(url)?.hasScheme ?? false) &&
+                          (url.startsWith('http://') ||
+                              url.startsWith('https://'));
+                  if (!okUrl) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text(
+                            'Enter an http:// or https:// URL (empty = default)')));
+                    return;
+                  }
+                  _save(s..delayTestUrl = url);
+                  // Live-apply to every consumer (same contract as the
+                  // scheduler's constructor seed above).
+                  deps.realDelay.probeUrl = s.effectiveDelayTestUrl;
+                  deps.scheduler.testUrl = s.effectiveDelayTestUrl;
+                  deps.vpnSession.syncSmartTuning();
                 },
               ),
             ),

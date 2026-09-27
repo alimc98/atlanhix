@@ -266,6 +266,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get subscriptionUrl => 'Subscription URL';
 
   @override
+  String get editSubscription => 'Edit subscription';
+
+  @override
+  String get updateIntervalMinutesLabel => 'Update interval (minutes)';
+
+  @override
   String get updateNow => 'Update now';
 
   @override

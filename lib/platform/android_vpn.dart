@@ -92,6 +92,33 @@ class AndroidVpnController {
     _stateController.add(p);
     Logger.instance.info('android-vpn',
         'phase=${p.name}${detail != null ? ' ($detail)' : ''}${errorCode != null ? ' [$errorCode]' : ''}');
+    _mirrorToNotification(p, detail);
+  }
+
+  /// v0.5.0 §user-fix ("notification not synced with the real VPN state"):
+  /// the native state machine NEVER reaches CONNECTED on its own — Dart
+  /// flips after a REAL probe through the tunnel (§5) — so the foreground
+  /// notification used to freeze on "Validating tunnel…" for a session that
+  /// was fully up, and only self-corrected on revoke/stop. Mirror the
+  /// Dart-owned phases back so the pill always matches what the app shows.
+  /// Best-effort and fire-and-forget: desktop and unit tests have no
+  /// channel; a missing handler must never break the state machine.
+  void _mirrorToNotification(AndroidVpnPhase p, String? detail) {
+    if (!isAndroid) return;
+    const map = {
+      AndroidVpnPhase.connected: 'notifyConnected',
+      AndroidVpnPhase.stopped: 'notifyDisconnected',
+      AndroidVpnPhase.revoked: 'notifyDied',
+    };
+    final method = map[p];
+    if (method == null) return;
+    const channel = MethodChannel('dev.atlanhix/vpn');
+    unawaited(
+      channel
+          .invokeMethod<String>(
+              method, detail == null ? null : jsonEncode({'detail': detail}))
+          .then<void>((_) {}, onError: (_) {}),
+    );
   }
 
   Future<Map<String, dynamic>> _call(String method, [Object? arg]) async {
@@ -178,6 +205,18 @@ class AndroidVpnController {
   }
 
   Timer? _watcher;
+
+  /// v0.5.0 §battery: background throttle. The connected watcher exists to
+  /// refresh the dashboard's counters and catch native REVOKED/FAILED —
+  /// both matter 20× less while the app is hidden, yet the 2 s cadence kept
+  /// waking the CPU all night. main.dart flips the cadence on app
+  /// lifecycle; a live watcher restarts with the new interval, a stopped
+  /// one simply picks it up on the next connect.
+  void setWatchCadence({required bool foreground}) {
+    watcherInterval =
+        foreground ? const Duration(seconds: 2) : const Duration(seconds: 15);
+    if (_watcher != null) _startWatcher();
+  }
 
   /// Asks Android for the VPN permission (v0.4.1 §2/§3).
   ///

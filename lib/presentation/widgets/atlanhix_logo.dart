@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 
 /// v0.4.7 brand-sheet assets (user-supplied full redesign):
 /// `assets/brand/logo.png`      — stacked mark + ATLANHTHIX wordmark block
-/// `assets/brand/logotype.png`  — wide-tracked ATLANHTHIX wordmark strip
+/// `assets/brand/logotype_{dark,light}.png` — wordmark strip per theme
 /// `assets/brand/appicon.png`   — rounded-square app icon (moon + mark)
-/// `assets/brand/nav_*.png`     — five tab icons (dashboard/nodes/routing/
-///                                logs/settings), white-on-charcoal tiles
+/// `assets/brand/nav_*_dark.png` / `nav_*_light.png` — five tab icons
+/// (dashboard/nodes/routing/logs/settings) as the user's cleaned tiles:
+/// dark set = white glyph on charcoal tile, light set = ink glyph
+/// (tinted to the light theme's textPrimary) on transparent ground.
 /// `assets/brand/btn_*.png`     — CONNECT / DISCONNECT pill buttons
 ///
 /// The v0.4.3 line-type monogram widgets below stay: they are the only
@@ -31,7 +33,9 @@ class AtlanhixBrandBlock extends StatelessWidget {
   }
 }
 
-/// The wide-tracked ATLANHTHIX wordmark strip from the redesign sheet.
+/// The wide-tracked ATLANHTHIX wordmark strip. v0.5.0 §user: supplied as a
+/// DARK variant (near-black glyphs for the light theme) and a LIGHT variant
+/// (white glyphs for dark/OLED themes); picked from the ambient brightness.
 class AtlanhixWordmark extends StatelessWidget {
   const AtlanhixWordmark({super.key, this.height = 16});
 
@@ -39,10 +43,12 @@ class AtlanhixWordmark extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
     return Image.asset(
-      'assets/brand/logotype.png',
+      'assets/brand/logotype_${dark ? 'light' : 'dark'}.png',
       height: height,
       fit: BoxFit.contain,
+      errorBuilder: (_, __, ___) => const SizedBox.shrink(),
     );
   }
 }

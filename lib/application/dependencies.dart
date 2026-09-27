@@ -34,8 +34,18 @@ import '../warp/warp_registrar.dart';
 class AppDependencies {
   AppDependencies._();
 
+  // v0.5.0 §boot: per-stage stopwatch. Cold-boot complaints need MEASURED
+  // stage weights, not guesses — every stage logs its ms under the 'boot'
+  // tag (visible via logcat `grep ATX-DART \[boot\]`).
+  static final Stopwatch _bootSw = Stopwatch()..start();
+  static void _mark(String stage) {
+    Logger.instance
+        .info('boot', '$stage: ${_bootSw.elapsedMilliseconds} ms');
+  }
+
   static Future<AppDependencies> bootstrap() async {
     final deps = AppDependencies._();
+    _bootSw.reset();
 
     // v0.4 (§10/§22): storage must live inside the app sandbox on mobile
     // (secure per-app storage); desktop keeps APPDATA/HOME resolution.
@@ -57,6 +67,7 @@ class AppDependencies {
     // a test fallback. Fixes: profile credentials lost after app restart.
     deps.vault = createPlatformVault();
     await deps.store.load();
+    _mark('store.load');
 
     deps.profiles = ProfileRepository(deps.store, deps.vault);
     deps.subscriptions = SubscriptionRepository(deps.store);
@@ -67,12 +78,20 @@ class AppDependencies {
     deps.appSettingsRepo = AppSettingsRepository(deps.store);
     deps.routingSettingsRepo = RoutingSettingsRepository(deps.store);
 
-    await deps.profiles.load();
-    await deps.subscriptions.load();
-    await deps.chains.load();
-    await deps.routingRep.load();
-    await deps.appSettingsRepo.load();
-    await deps.routingSettingsRepo.load();
+    // v0.5.0 §boot: the six section loads are INDEPENDENT JsonStore reads
+    // that previously ran sequentially; a parallel join shortens the tail.
+    // NOTE: profiles.load() here is the FAST phase (store decode only, no
+    // vault touch) — the deferred secret resolution rides
+    // [deferredSecretResolution] which main.dart runs after the first paint.
+    await Future.wait(<Future<void>>[
+      deps.profiles.load(),
+      deps.subscriptions.load(),
+      deps.chains.load(),
+      deps.routingRep.load(),
+      deps.appSettingsRepo.load(),
+      deps.routingSettingsRepo.load(),
+    ]);
+    _mark('repos.load');
     deps.appSettings = deps.appSettingsRepo.current;
     deps.routingSettings = deps.routingSettingsRepo.current;
     deps.configBridge = RuntimeConfigBridge(
@@ -102,6 +121,8 @@ class AppDependencies {
       // never told which profiles exist (jobs for unknown ids no-op) — so
       // every enqueue silently evaporated and no latency ever moved. Wire
       // both here, and keep the set fresh across add/remove/refresh.
+      // v0.5.0 §user: the TCP-fallback probe rides the shared settings URL.
+      ..testUrl = deps.appSettings.effectiveDelayTestUrl
       ..updateProfiles(deps.profiles.all)
       ..start();
     deps.profiles.changes.listen(deps.scheduler.updateProfiles);
@@ -109,8 +130,13 @@ class AppDependencies {
     // background sweep measure the END-TO-END URL delay through each node's
     // live outbound (engine delay test), never a bare TCP ping. Wired to the
     // front engine's Clash API; engine-off → honest null result.
+    // v0.5.0 §user: the probe URL is the SHARED settings field now — the
+    // node-list sweep, the Smart Switch ladder, the WARP watchdog and the
+    // scheduler's TCP fallback all read the same value. An `http://` URL
+    // (v2rayNG's default shape) skips the TLS handshake and reads ~100 ms
+    // where the https default read ~900 ms.
     deps.realDelay = RealDelayTester(tester: deps.tester)
-      ..probeUrl = 'https://www.gstatic.com/generate_204'
+      ..probeUrl = deps.appSettings.effectiveDelayTestUrl
       ..engineDelayTest = (p) async {
         // v0.4.9 §device: on Android the engine runs INSIDE the VPN service
         // (libbox) — SingBoxRuntime._api is never constructed because there
@@ -148,43 +174,25 @@ class AppDependencies {
       // a consent-free libbox with the candidate nodes (proxy-only config)
       // so "test all nodes" works right after a fresh app open. The engine
       // stops itself after an idle gap — zero battery cost while idle.
+      // v0.5.0 §perf-fix: the whole batch through ONE engine boot with
+      // PARALLEL delay tests — the old serial per-node loop paid
+      // (n × worst-case 5 s) per sweep chunk and, worse, a per-node
+      // ensureUp rebuilt the Box for every new node id. One boot, then the
+      // engine's own delay handler fans the measurements out concurrently.
       ..transientBatchTest = (batch) async {
-        // v0.4.9 §testall-fix: the sweep calls this per chunk of 6. The old
-        // flow restarted the probe Box whenever the chunk's set differed
-        // from the loaded one — every in-flight delay test died mid-sweep
-        // (two "probe engine UP" lines one second apart in the device log)
-        // and the WHOLE list painted ×. The engine now GROWS its union
-        // (no restart when up), and this loop re-checks the table per node:
-        // a node absent from the running config (dropped Xray node after a
-        // failed child boot, or a grown-in tag that has not landed yet) is
-        // answered honestly ('engine-off') instead of a fake 5 s timeout.
-        final api = await ProbeEngine.instance.ensureUp(batch);
-        if (api == null) return const {};
-        final out = <String, ProbeResult>{};
-        for (final p in batch) {
-          final tag = '${SingBoxRuntime.tagPrefix}${p.id}';
-          final tags = await api.proxyTags();
-          if (tags == null || !tags.contains(tag)) {
-            out[p.id] = ProbeResult(
-                ok: false,
-                latencyMs: null,
-                errorKind: 'engine-off',
-                detail: 'not in probe config');
-            continue;
-          }
-          final ms = await api.delayTest(
-              tag,
-              deps.realDelay.probeUrl,
-              5000);
-          out[p.id] = ms == null
-              ? ProbeResult(
-                  ok: false,
-                  latencyMs: null,
-                  errorKind: 'timeout',
-                  detail: 'probe engine: no answer within 5s')
-              : ProbeResult(ok: true, latencyMs: ms);
-        }
-        return out;
+        final ms = await ProbeEngine.instance
+            .delayTestBatch(batch, deps.realDelay.probeUrl, 5000);
+        if (ms.isEmpty) return const {};
+        return {
+          for (final p in batch)
+            p.id: ms[p.id] == null
+                ? ProbeResult(
+                    ok: false,
+                    latencyMs: null,
+                    errorKind: 'timeout',
+                    detail: 'probe engine: no answer within 5s')
+                : ProbeResult(ok: true, latencyMs: ms[p.id]),
+        };
       };
     deps.detector = CoreDetector();
     deps.importer = MultiFormatImporter();
@@ -194,6 +202,7 @@ class AppDependencies {
     // threw LateInitializationError and killed bootstrap (white screen).
     deps.warpRepo = WarpRepository(deps.store, deps.vault);
     await deps.warpRepo.load();
+    _mark('warpRepo.load');
     deps.warpService = WarpService(registrar: WarpRegistrar(http: HttpWarpApi()));
 
     deps.connection = ConnectionController(
@@ -227,6 +236,12 @@ class AppDependencies {
     // controller; Connect on Android routes through it, never the
     // desktop core path.
     deps.vpnSession = VpnSession(deps: deps);
+    // v0.5.0 §user-fix ("میرم تلگرام، برمی‌گردم — انگار برنامه تازه باز شده"):
+    // Android killed the app process in the background; the NATIVE VPN
+    // service kept the tunnel. Restore the persisted selection + switch
+    // choice SYNCHRONOUSLY here (store is already loaded) so the FIRST
+    // paint shows the user's node — not "tap to connect" over a live tunnel.
+    deps.vpnSession.restorePersistedState();
     // v0.4.9 §boot-speed ("سرعت بوت شدن برنامه کند است"): reconcile runs
     // WITHOUT blocking bootstrap. The native state read races the
     // platform-channel handshake and this await sat between repository
@@ -234,7 +249,24 @@ class AppDependencies {
     // vpnSession.uiPhase on every build anyway. A stale CONNECTED pill
     // self-corrects a frame later; a blank shell for 300+ ms every open
     // was the worse trade.
-    unawaited(deps.vpnSession.controller.reconcileWithNative().catchError((_) {}));
+    // v0.5.0 §user-fix: when the reconcile re-adopts a CONNECTED tunnel,
+    // the runtime services (scheduler active node, WARP watchdog, Smart
+    // Switch ladder) are re-armed too — a fresh process previously came
+    // back to a live tunnel with a dead dashboard and no background logic.
+    unawaited(deps.vpnSession.controller.reconcileWithNative().then((_) {
+      deps.vpnSession.resumeRuntimeServices();
+    }).catchError((_) {}));
+
+    // v0.5.0 §user: subscription AUTO-UPDATE pump — `dueNow()` existed since
+    // v0.4 but nothing ever called it. Kick the pump once right away (a
+    // process killed for a day refreshes overdue subs on the next open,
+    // AFTER the UI paints) and keep it ticking every 60 s.
+    // v0.5.0 §boot-speed: run AFTER the first await boundary so the kick
+    // (a network fetch per due sub) never contends with bootstrap's own
+    // awaited I/O on the UI isolate.
+    Future<void>.delayed(Duration.zero, () {
+      deps.subscriptionService.startAutoUpdatePump();
+    });
 
     // v0.4.6 WIRING: seed the TLS-Fragment pill into both engines at boot.
     // Runtime re-pushes happen per connect (VpnSession._connectProfile on
@@ -261,10 +293,53 @@ class AppDependencies {
         await deps.routingRep.upsert(p);
       }
     }
+    _mark('bootstrap.total');
     if (kDebugMode) {
       // ignore: avoid_print
       print('Atlanhix bootstrap complete: ${deps.profiles.all.length} profiles');
     }
+    return deps;
+  }
+
+  /// v0.5.0 §boot: the DEFERRED half of the profile load — the one-time
+  /// Keystore/EncryptedSharedPreferences init (~2.5 s measured on the
+  /// device) happens in HERE, off the launch path. main.dart fires it as
+  /// an unawaited task right after the shell's first frame; the connect
+  /// paths and the subscription updater all await it through the gate
+  /// below, so a user who taps Connect within the first seconds simply
+  /// waits for the resolution to finish first (measured milliseconds —
+  /// the Keystore init already started and is not restarted).
+  Future<void>? _secretsResolved;
+
+  Future<void> get deferredSecretResolution =>
+      _secretsResolved ??= _resolveSecretsNow();
+
+  Future<void> _resolveSecretsNow() async {
+    final sw = Stopwatch()..start();
+    // Profile secrets + WARP secrets: BOTH pay the one-time Keystore init
+    // (one process-wide cost, shared by these two calls).
+    await Future.wait(<Future<void>>[
+      profiles.resolveSecrets(),
+      warpRepo.resolveSecrets(),
+    ]);
+    Logger.instance
+        .info('boot', 'deferred secrets: ${sw.elapsedMilliseconds} ms');
+  }
+
+  /// v0.5.0 §test: a MINIMAL composition for widget tests — a temp-dir
+  /// JsonStore + in-memory vault + profile repository, nothing else. The
+  /// node editor only touches [profiles]; bootstrapping engines/daemons in
+  /// a test would spawn processes and sockets for nothing.
+  static Future<AppDependencies> bootstrapForTest() async {
+    final deps = AppDependencies._();
+    final dir = await Directory.systemTemp.createTemp('nexus_editor_test');
+    deps.store = JsonStore(
+        directory: Directory('${dir.path}${Platform.pathSeparator}data'),
+        schemaVersion: 1);
+    deps.vault = InMemoryVault();
+    await deps.store.load();
+    deps.profiles = ProfileRepository(deps.store, deps.vault);
+    await deps.profiles.load();
     return deps;
   }
 
@@ -324,5 +399,13 @@ class AppDependencies {
     }
     return null;
   }
+
+  /// v0.5.0 §user-fix: PUBLIC instance wrapper over the probe-and-cache
+  /// client — the ONE shared access point to the live engine's Clash API
+  /// (:9097 on Android, where `front.api` is always null). VpnSession's
+  /// ladder probes AND its migration fast path both route through this now;
+  /// before, the migrate path read the always-null getter and every smart
+  /// switch degraded to a full disconnect/reconnect cycle.
+  Future<ClashApiClient?> liveEngineApi() => _probeAndBuildClashApi(this);
 }
 

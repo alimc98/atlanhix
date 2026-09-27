@@ -10,7 +10,7 @@ import '../../domain/entities/proxy_profile.dart';
 import '../../localization/generated/app_localizations.dart';
 import '../../theme/theme.dart';
 import '../widgets/galaxy_background.dart';
-import '../widgets/speed_graph.dart';
+import '../widgets/traffic_graph.dart';
 
 /// Main dashboard (§30): answers in 5 seconds — connected? which node?
 /// healthy? how fast? what core?
@@ -39,12 +39,17 @@ class _DashboardScreenState extends State<DashboardScreen>
   final _up = List<double>.of(List<double>.filled(60, 0));
   int? _lastUp; // for speed delta
   int? _lastDown;
+  // v0.5.0 §user: TOTAL USAGE — cumulative bytes since the tunnel came up
+  // (real engine counter deltas folded on every 1 Hz tick).
+  int _sessionDownBytes = 0;
+  int _sessionUpBytes = 0;
   Timer? _clock;
   // v0.4.1 §5: Android selection is authoritative and can change OUTSIDE the
   // state machine (tap while disconnected emits no VPN phase), so the
   // dashboard also listens to explicit selection events and re-reads
   // selectedNode — the tapped node shows immediately, BEFORE any connect.
   StreamSubscription? _selectionSub;
+  StreamSubscription? _counterSub;
   StreamSubscription<HealthRecord>? _healthSub;
 
   bool get _onAndroid => widget.deps.vpnSession.controller.isAndroid;
@@ -86,6 +91,8 @@ class _DashboardScreenState extends State<DashboardScreen>
           }
           _lastUp = null;
           _lastDown = null;
+          _sessionDownBytes = 0;
+          _sessionUpBytes = 0;
         }
       });
     });
@@ -110,6 +117,14 @@ class _DashboardScreenState extends State<DashboardScreen>
         });
       });
     }
+    // v0.5.0 §user-fix: the controller's counters are refreshed by the
+    // native watcher — fold them the moment they land (not on our next
+    // 1 s tick). On desktop the trafficStream already covers this; on
+    // Android this keeps the graph glued to the native 2 s cadence.
+    if (widget.deps.vpnSession.controller.isAndroid) {
+      _counterSub =
+          widget.deps.vpnSession.states.listen((_) => _foldAndroidCounters());
+    }
     _trafficSub = widget.deps.connection.trafficStream.listen((t) {
       if (!mounted) return;
       setState(() {
@@ -121,6 +136,8 @@ class _DashboardScreenState extends State<DashboardScreen>
             : (t.downBytes - _lastDown!).clamp(0, 1 << 30);
         _lastUp = t.upBytes;
         _lastDown = t.downBytes;
+        _sessionUpBytes += upSpeed;
+        _sessionDownBytes += downSpeed;
         _down..removeAt(0)..add(downSpeed.toDouble());
         _up..removeAt(0)..add(upSpeed.toDouble());
       });
@@ -128,35 +145,65 @@ class _DashboardScreenState extends State<DashboardScreen>
     // v0.4.9 §user-fix (latency chip never updated): the scheduler's
     // records reached HealthStore but nothing here listened — the health
     // figures only changed after an unrelated repaint.
-    _healthSub = widget.deps.scheduler.results.listen((_) {
-      if (mounted) setState(() {});
+    // v0.5.0 §user-fix ("پینگ توی داشبورد تکون نمی‌خوره"): the Android
+    // chip followed ONLY the connect-time probe. The scheduler's 30 s
+    // active-node monitor feeds the same store — mirror fresh records for
+    // the SELECTED node into the chip so the number breathes.
+    _healthSub = widget.deps.scheduler.results.listen((rec) {
+      if (!mounted) return;
+      final activeId = _onAndroid
+          ? widget.deps.vpnSession.selectedNode?.id
+          : _active?.id;
+      if (rec.profileId == activeId && rec.ok && rec.latencyMs != null) {
+        _latencyMs = rec.latencyMs;
+      }
+      // v0.5.0 §battery/lag: rebuild ONLY when this record belongs to the
+      // active node's chip — a 40-node sweep previously repainted the whole
+      // dashboard once per record for numbers it never displays.
+      if (rec.profileId == activeId) setState(() {});
     });
     _clock = Timer.periodic(const Duration(seconds: 1), (_) {
       // v0.4.9 §battery: hidden app → no ticks, no redraws, no wakeups.
       if (!_appVisible || !mounted) return;
+      _foldAndroidCounters();
       if (_phase == ConnectionPhase.connected) {
-        // v0.4.4 §user-2: on Android there is no Clash-API polling — the
-        // engine's REAL counters ride the vpn controller (native state
-        // poll). Fold them into the same speed graph the desktop uses.
-        if (_onAndroid) {
-          final c = widget.deps.vpnSession.controller;
-          final upSpeed =
-              _lastUp == null ? 0.0 : (c.upBytes - _lastUp!).clamp(0, 1 << 30).toDouble();
-          final downSpeed = _lastDown == null
-              ? 0.0
-              : (c.downBytes - _lastDown!).clamp(0, 1 << 30).toDouble();
-          _lastUp = c.upBytes;
-          _lastDown = c.downBytes;
-          _down
-            ..removeAt(0)
-            ..add(downSpeed);
-          _up
-            ..removeAt(0)
-            ..add(upSpeed);
-        }
         setState(() {}); // session clock + metrics
       }
     });
+  }
+
+  /// v0.5.0 §user-fix ("وقتی برمی‌گردم گراف/پینگ تکون نمی‌خورن"): the
+  /// Android engine counters live on the vpn controller, refreshed by the
+  /// NATIVE watcher every 2 s — but the dashboard only folded them inside
+  /// its own 1 s tick, which (a) waits up to a whole second after a resume
+  /// and (b) — before the resume fix — folded the WHOLE background gap as
+  /// one giant delta. Fold-on-listen: whenever the controller publishes
+  /// fresher counters (watcher tick or reconcile), the numbers land on the
+  /// graph immediately.
+  void _foldAndroidCounters() {
+    if (!_onAndroid) return;
+    final c = widget.deps.vpnSession.controller;
+    if (_lastUp == null || _lastDown == null) {
+      // First sample after (re)attach — seed without a fake spike.
+      _lastUp = c.upBytes;
+      _lastDown = c.downBytes;
+      return;
+    }
+    if (c.upBytes == _lastUp && c.downBytes == _lastDown) return; // not newer
+    final upSpeed =
+        (c.upBytes - _lastUp!).clamp(0, 1 << 30).toDouble();
+    final downSpeed =
+        (c.downBytes - _lastDown!).clamp(0, 1 << 30).toDouble();
+    _lastUp = c.upBytes;
+    _lastDown = c.downBytes;
+    _sessionUpBytes += upSpeed.toInt();
+    _sessionDownBytes += downSpeed.toInt();
+    _down
+      ..removeAt(0)
+      ..add(downSpeed);
+    _up
+      ..removeAt(0)
+      ..add(upSpeed);
   }
 
   @override
@@ -168,6 +215,16 @@ class _DashboardScreenState extends State<DashboardScreen>
       _lastUp = null;
       _lastDown = null;
     }
+    // v0.5.0 §user-fix: on resume, seed from the CURRENT counters (the
+    // native watcher may have kept polling while we were hidden — folding
+    // the whole gap at once would draw a huge fake spike) and repaint NOW
+    // instead of waiting for the next 1 s tick.
+    if (_appVisible && mounted) {
+      _lastUp = null;
+      _lastDown = null;
+      _foldAndroidCounters();
+      setState(() {});
+    }
   }
 
   @override
@@ -177,12 +234,17 @@ class _DashboardScreenState extends State<DashboardScreen>
     _trafficSub?.cancel();
     _vpnSub?.cancel();
     _selectionSub?.cancel();
+    _counterSub?.cancel();
     _healthSub?.cancel();
     _clock?.cancel();
     super.dispose();
   }
 
-  static String _fmtSpeed(num bps) {
+  static String _fmtSpeed(num bps) => fmtSpeed(bps);
+
+  /// Public static: the [_TotalTrafficPill] formats with the SAME
+  /// units/scale as the stat tiles (one truth for speed numbers).
+  static String fmtSpeed(num bps) {
     if (bps > 1 << 20) return '${(bps / (1 << 20)).toStringAsFixed(1)} MB/s';
     if (bps > 1 << 10) return '${(bps / (1 << 10)).toStringAsFixed(0)} KB/s';
     return '$bps B/s';
@@ -269,18 +331,17 @@ class _DashboardScreenState extends State<DashboardScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // ── HERO: galaxy backdrop + phase word + active-node card ──
+              // ── HERO (v0.5.0 §user — the mockup): the traffic graph now
+              // LIVES ON the moon artwork (same Stack), compact 320 px so
+              // the power pill stays above the fold; a TOTAL TRAFFIC pill
+              // sits top-left and the phase word + node card stay pinned.
               SizedBox(
-                height: 380,
+                height: 320,
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    // v0.4.9 §user (EXPERIMENTAL): the painted galaxy scene
-                    // (Claude's Compose proposal, ported 1:1) rides UNDER the
-                    // moon artwork — if the asset is present the artwork
-                    // covers it exactly as before; on devices/variants
-                    // without the asset the painted scene shows instead.
-                    // Same fade-out mask keeps the phase word readable.
+                    // Moon artwork (unchanged fall-through to the painted
+                    // galaxy when the asset is missing).
                     ShaderMask(
                       shaderCallback: (r) => const LinearGradient(
                         begin: Alignment.topCenter,
@@ -297,12 +358,52 @@ class _DashboardScreenState extends State<DashboardScreen>
                         'assets/brand/moon_hero.png',
                         fit: BoxFit.cover,
                         alignment: Alignment.topCenter,
-                        // Painted galaxy beneath: the artwork error-falls
-                        // THROUGH to the scene instead of an empty box.
+                        // v0.5.0 §lag: the artwork is 1536×1024 but the hero
+                        // paints at ~900×320 logical (~3× on a phone). Decode
+                        // at the DEVICE pixel size — a full-res decode costs
+                        // ~6 MB + GPU upload on every app start and every
+                        // memory-pressure reload, for pixels that are
+                        // downscaled away.
+                        cacheWidth: 1200,
                         errorBuilder: (_, __, ___) => const GalaxyBackground(),
                       ),
                     ),
-                    // Foreground: phase word + node card pinned to the bottom.
+                    // ── TOTAL TRAFFIC pill (mockup top-left): cumulative
+                    // session usage over the icon, current down+up speed
+                    // under it. Glass pill, rides the artwork.
+                    Positioned(
+                      top: 10,
+                      left: 4,
+                      child: _TotalTrafficPill(
+                          downBps: _down.last, upBps: _up.last),
+                    ),
+                    // ── THE TRAFFIC GRAPH floats over the LOWER HALF of
+                    // the moon (mockup: waves sit on the artwork, bottom
+                    // anchored, transparent field — no own card). The
+                    // painter's glass field is disabled via the transparent
+                    // knob to let the moon show through.
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 86,
+                      // v0.5.0 §battery-fix: the tab switch UNMOUNTS the
+                      // dashboard, but the hero still animates whenever any
+                      // ancestor keeps it alive (wide layouts). TickerMode
+                      // kills the 60 fps wave phase while the graph is
+                      // offscreen regardless of parentage.
+                      child: TickerMode(
+                        enabled: _phase == ConnectionPhase.connected ||
+                            _phase == ConnectionPhase.validating,
+                        child: TrafficGraph(
+                          downSamples: _down,
+                          upSamples: _up,
+                          height: 132,
+                          transparentField: true,
+                        ),
+                      ),
+                    ),
+                    // Foreground: phase word + node card pinned to the
+                    // bottom (unchanged, below the graph strip).
                     Column(
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
@@ -319,12 +420,10 @@ class _DashboardScreenState extends State<DashboardScreen>
                                 fontWeight: FontWeight.w600,
                               ),
                         ),
-                        const SizedBox(height: 10),
-                        // ACTIVE NODE CARD (mockup center panel): hairline
-                        // rounded row — node name left, latency right.
+                        const SizedBox(height: 8),
                         Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 14),
+                              horizontal: 16, vertical: 12),
                           decoration: BoxDecoration(
                             color: c.surface.withValues(alpha: 0.86),
                             borderRadius: BorderRadius.circular(14),
@@ -367,7 +466,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                           ),
                         ),
                         if (coreInfo.isNotEmpty) ...[
-                          const SizedBox(height: 6),
+                          const SizedBox(height: 5),
                           Text(
                             activeCoreLabel != null
                                 ? '$coreInfo · $activeCoreLabel'
@@ -409,8 +508,10 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ],
                 ),
               ],
-              const SizedBox(height: 18),
-              // ── STATS ROW (mockup: GB/s · ms · uptime tiles) ──
+              const SizedBox(height: 14),
+              // ── STATS ROW (mockup: Download · Upload · Latency) + the
+              // session USAGE tile the mockup's "Total usage" asked for —
+              // cumulative bytes since the tunnel came up.
               Row(
                 children: [
                   Expanded(
@@ -419,14 +520,14 @@ class _DashboardScreenState extends State<DashboardScreen>
                         value: _fmtSpeed(_down.last),
                         icon: Icons.south_rounded),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: _HeroStat(
                         label: l.uploadSpeed,
                         value: _fmtSpeed(_up.last),
                         icon: Icons.north_rounded),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: _HeroStat(
                         label: l.latency,
@@ -435,11 +536,13 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(NexusSpacing.radiusCard),
-                child: SpeedGraph(downSamples: _down, upSamples: _up),
-              ),
+              const SizedBox(height: 10),
+              // v0.5.0 §user — TOTAL USAGE: cumulative up+down since the
+              // connect (real engine counters, Phase 24). The old graph's
+              // 216 px pushed the power pill below the fold; the graph now
+              // lives ON the hero artwork instead.
+              _UsageCard(
+                  downBytes: _sessionDownBytes, upBytes: _sessionUpBytes),
               const SizedBox(height: 18),
               // ── NARROW POWER PILL (mockup bottom bar) — full width,
               // hairline ring + power glyph + LIVE localized label. ──
@@ -706,6 +809,116 @@ class _HeroStat extends StatelessWidget {
                   fontWeight: FontWeight.w600,
                 ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// v0.5.0 §user — TOTAL TRAFFIC pill (the mockup's top-left glass chip):
+/// the zigzag glyph + "TOTAL TRAFFIC" over the CURRENT down+up speed, and
+/// the cumulative session usage as the small line under it. Rides the
+/// hero artwork (Positioned, transparent glass).
+class _TotalTrafficPill extends StatelessWidget {
+  const _TotalTrafficPill({required this.downBps, required this.upBps});
+
+  final double downBps;
+  final double upBps;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: c.surface.withValues(alpha: 0.62),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: c.border.withValues(alpha: 0.7)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.show_chart, size: 18, color: c.textPrimary),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('TOTAL TRAFFIC',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: c.textSecondary,
+                        letterSpacing: 1.2,
+                        fontSize: 9,
+                      )),
+              Text(
+                '${_DashboardScreenState.fmtSpeed(downBps)} ↓  '
+                '${_DashboardScreenState.fmtSpeed(upBps)} ↑',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: c.textPrimary,
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// v0.5.0 §user — TOTAL USAGE card: the mockup's "Total usage". Cumulative
+/// up+down bytes since the tunnel came up (real counter deltas), a compact
+/// full-width strip under the stats row.
+class _UsageCard extends StatelessWidget {
+  const _UsageCard({required this.downBytes, required this.upBytes});
+
+  final int downBytes;
+  final int upBytes;
+
+  static String _fmtBytes(int b) {
+    if (b >= 1 << 30) return '${(b / (1 << 30)).toStringAsFixed(2)} GB';
+    if (b >= 1 << 20) return '${(b / (1 << 20)).toStringAsFixed(1)} MB';
+    if (b >= 1 << 10) return '${(b / (1 << 10)).toStringAsFixed(0)} KB';
+    return '$b B';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    final fa = Localizations.localeOf(context).languageCode == 'fa';
+    final total = downBytes + upBytes;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: c.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: c.border),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.data_usage_rounded, size: 16, color: c.textMuted),
+          const SizedBox(width: 8),
+          Text(fa ? 'مصرف کل' : 'Total usage',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: c.textSecondary,
+                    letterSpacing: 0.4,
+                  )),
+          const Spacer(),
+          Text(_fmtBytes(downBytes),
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: c.textSecondary, fontWeight: FontWeight.w600)),
+          const SizedBox(width: 8),
+          Icon(Icons.south_rounded, size: 12, color: c.textMuted),
+          const SizedBox(width: 12),
+          Text(_fmtBytes(upBytes),
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: c.textSecondary, fontWeight: FontWeight.w600)),
+          const SizedBox(width: 8),
+          Icon(Icons.north_rounded, size: 12, color: c.textMuted),
+          const SizedBox(width: 12),
+          Text(_fmtBytes(total),
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: c.textPrimary,
+                  fontWeight: FontWeight.w700)),
         ],
       ),
     );

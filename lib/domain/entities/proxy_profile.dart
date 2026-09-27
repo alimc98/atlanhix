@@ -383,6 +383,65 @@ class AmneziaParams {
       disableCookies == true ||
       extra.isNotEmpty;
 
+  /// v0.5.0 §user-fix (node editor wiped AWG params): non-null arguments
+  /// REPLACE the stored value; null arguments KEEP it. The editor passes
+  /// every form field — a field the user left empty still carries the
+  /// parsed-null of the SEEDED controller, so merge semantics must be
+  /// "null = keep" to round-trip untouched obfuscation params.
+  AmneziaParams copyWith({
+    int? jc,
+    int? jmin,
+    int? jmax,
+    int? s1,
+    int? s2,
+    int? s3,
+    int? s4,
+    String? h1,
+    String? h2,
+    String? h3,
+    String? h4,
+    String? i1,
+    String? i2,
+    String? i3,
+    String? i4,
+    String? i5,
+    String? masqId,
+    String? masqIp,
+    String? masqIb,
+    String? headerProtectionKey,
+    String? contentPaddingAddition,
+    bool? randomTrailers,
+    bool? disableCookies,
+    Map<String, String>? extra,
+  }) =>
+      AmneziaParams(
+        jc: jc ?? this.jc,
+        jmin: jmin ?? this.jmin,
+        jmax: jmax ?? this.jmax,
+        s1: s1 ?? this.s1,
+        s2: s2 ?? this.s2,
+        s3: s3 ?? this.s3,
+        s4: s4 ?? this.s4,
+        h1: h1 ?? this.h1,
+        h2: h2 ?? this.h2,
+        h3: h3 ?? this.h3,
+        h4: h4 ?? this.h4,
+        i1: i1 ?? this.i1,
+        i2: i2 ?? this.i2,
+        i3: i3 ?? this.i3,
+        i4: i4 ?? this.i4,
+        i5: i5 ?? this.i5,
+        masqId: masqId ?? this.masqId,
+        masqIp: masqIp ?? this.masqIp,
+        masqIb: masqIb ?? this.masqIb,
+        headerProtectionKey: headerProtectionKey ?? this.headerProtectionKey,
+        contentPaddingAddition:
+            contentPaddingAddition ?? this.contentPaddingAddition,
+        randomTrailers: randomTrailers ?? this.randomTrailers,
+        disableCookies: disableCookies ?? this.disableCookies,
+        extra: extra ?? this.extra,
+      );
+
   Map<String, String> toConfLines() => {
         if (jc != null) 'Jc': '$jc',
         if (jmin != null) 'Jmin': '$jmin',

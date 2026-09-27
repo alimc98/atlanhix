@@ -8,7 +8,6 @@ import 'subscription_routing.dart';
 import '../domain/entities/proxy_profile.dart';
 import '../domain/entities/subscription.dart';
 import '../domain/errors/app_error.dart';
-import '../protocols/common/uri_utils.dart';
 import '../protocols/importer.dart';
 import '../data/profile_repository.dart';
 import '../data/repositories.dart';
@@ -212,12 +211,102 @@ class SubscriptionService {
     return sub;
   }
 
+  /// v0.5.0 §user: edit a subscription's name, URL, auto-update toggle and
+  /// interval (minutes). A CHANGED URL invalidates the conditional-fetch
+  /// cache (etag) and the recorded error, then immediately refreshes: the
+  /// user swapped the source and expects the new content now.
+  Future<void> edit(
+    String id, {
+    String? name,
+    String? url,
+    bool? autoUpdate,
+    int? updateIntervalMinutes,
+  }) async {
+    Subscription? sub;
+    for (final s in subscriptions.all) {
+      if (s.id == id) {
+        sub = s;
+        break;
+      }
+    }
+    if (sub == null) return;
+    final trimmedUrl = url?.trim();
+    final urlChanged =
+        trimmedUrl != null && trimmedUrl.isNotEmpty && trimmedUrl != sub.url;
+    if (name != null && name.trim().isNotEmpty) sub.name = name.trim();
+    if (autoUpdate != null) sub.autoUpdate = autoUpdate;
+    if (updateIntervalMinutes != null && updateIntervalMinutes > 0) {
+      sub.updateIntervalMinutes = updateIntervalMinutes;
+    }
+    if (urlChanged) {
+      sub
+        ..url = trimmedUrl
+        ..etag = null
+        ..lastError = null
+        ..status = SubscriptionStatus.neverUpdated;
+    }
+    await subscriptions.upsert(sub);
+    if (urlChanged || sub.lastUpdated == null) {
+      unawaited(update(sub));
+    }
+  }
+
   /// Due subscriptions for background refresh (§60).
   List<Subscription> dueNow() {
     final now = DateTime.now();
     return subscriptions.all
         .where((s) => s.autoUpdate && (s.nextUpdate == null || now.isAfter(s.nextUpdate!)))
         .toList();
+  }
+
+  Timer? _autoUpdateTimer;
+  bool _pumping = false;
+  final _lastAttempt = <String, DateTime>{};
+
+  /// v0.5.0 §user: subscription auto-update pump. `dueNow()` existed since
+  /// v0.4 but NOTHING ever called it — auto-update was dead wiring. The
+  /// pump ticks every 60 s in the FOREGROUND and refreshes each due
+  /// subscription serially. Deliberately no background scheduler (no
+  /// battery-hungry work_manager): a killed process catches up on the next
+  /// open because its overdue `nextUpdate` fires on the first tick.
+  void startAutoUpdatePump() {
+    _autoUpdateTimer?.cancel();
+    _autoUpdateTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      unawaited(_pumpDue());
+    });
+  }
+
+  void stopAutoUpdatePump() {
+    _autoUpdateTimer?.cancel();
+    _autoUpdateTimer = null;
+  }
+
+  Future<void> _pumpDue() async {
+    if (_pumping) return;
+    _pumping = true;
+    try {
+      final now = DateTime.now();
+      for (final sub in dueNow()) {
+        // A never-successful subscription retries on a 5-minute floor so a
+        // dead URL cannot hammer the radio every minute; successful updates
+        // are gated by nextUpdate alone.
+        final last = _lastAttempt[sub.id];
+        if (sub.lastUpdated == null &&
+            last != null &&
+            now.difference(last) < const Duration(minutes: 5)) {
+          continue;
+        }
+        _lastAttempt[sub.id] = now;
+        await update(sub);
+      }
+    } finally {
+      _pumping = false;
+    }
+  }
+
+  void dispose() {
+    stopAutoUpdatePump();
+    _progress.close();
   }
 }
 

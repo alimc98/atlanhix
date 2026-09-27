@@ -65,6 +65,13 @@ class AppSettings {
     // URL the filter-detector probes through the tunnel. Empty = the
     // shared scheduler default (gstatic generate_204).
     this.warpProbeUrl = '',
+    // v0.5.0 §user: THE delay-test URL — a user-editable field (Settings →
+    // Delay test URL) feeding EVERY latency path: the node-list sweep, the
+    // Smart Switch ladder, the WARP watchdog and the scheduler's TCP
+    // fallback. Empty = gstatic generate_204. An `http://` URL (v2rayNG's
+    // default shape) measures TCP+HTTP only — no TLS handshake — and
+    // answers ~100 ms where the https default showed ~900 ms.
+    this.delayTestUrl = '',
     // ---- Diagnostics (§7 Diagnostics) ----
     this.trafficStats = true,
     this.connectionLogs = true,
@@ -73,6 +80,9 @@ class AppSettings {
     // How often the Smart Switch re-tests the candidate pool (seconds).
     // 0 disables the periodic re-test (single test at connect time).
     this.smartSwitchIntervalSeconds = 120,
+    // v0.5.0 §user: switch tolerance (ms) — how much better a challenger
+    // node must be before the tunnel migrates (0 = any strictly-better).
+    this.smartSwitchMarginMs = 60,
     // ---- v0.4.9 §user-fix: clipboard dedup (persisted offer memory) ----
     this.clipboardOfferedHashes = const [],
   });
@@ -144,6 +154,21 @@ class AppSettings {
   /// v0.4.8 §user: the detector's URL. Empty → scheduler default.
   String warpProbeUrl;
 
+  /// v0.5.0 §user: the SHARED delay-test URL (Settings → Delay test URL).
+  /// Empty → the gstatic generate_204 default.
+  String delayTestUrl;
+
+  /// The probe URL every latency path uses — never empty.
+  static const String defaultDelayTestUrl =
+      'https://www.gstatic.com/generate_204';
+  String get effectiveDelayTestUrl =>
+      delayTestUrl.trim().isEmpty ? defaultDelayTestUrl : delayTestUrl.trim();
+
+  /// Back-compat view for the WARP watchdog: an explicit warpProbeUrl wins,
+  /// otherwise the shared delay-test URL (which its UI field now edits).
+  String get effectiveWarpProbeUrl =>
+      warpProbeUrl.trim().isNotEmpty ? warpProbeUrl.trim() : effectiveDelayTestUrl;
+
   // Diagnostics
   bool trafficStats;
   bool connectionLogs;
@@ -161,6 +186,12 @@ class AppSettings {
   /// re-runs its candidate sweep on this cadence and migrates the tunnel
   /// when a materially better node appears. 0 = test only at connect time.
   int smartSwitchIntervalSeconds;
+
+  /// v0.5.0 §user — Smart Switch tolerance (ms): a challenger node must
+  /// beat the active node's latency by at least this much before the
+  /// tunnel migrates (jitter guard; 0 = any strictly-better node wins).
+  /// A dead active node is always abandoned regardless of this value.
+  int smartSwitchMarginMs;
 
   /// Effective MTU for the TUN handoff (§24). AUTO resolves to 8500 —
   /// sing-box's own default TUN MTU on mobile (safe for all carriers).
@@ -197,10 +228,12 @@ class AppSettings {
         'warpChainMode': warpChainMode.name,
         'warpAutoOfferThreshold': warpAutoOfferThreshold,
         'warpProbeUrl': warpProbeUrl,
+        'delayTestUrl': delayTestUrl,
         'trafficStats': trafficStats,
         'connectionLogs': connectionLogs,
         'debugLogging': debugLogging,
         'smartSwitchIntervalSeconds': smartSwitchIntervalSeconds,
+        'smartSwitchMarginMs': smartSwitchMarginMs,
         'clipboardOfferedHashes': clipboardOfferedHashes,
       };
 
@@ -249,11 +282,13 @@ class AppSettings {
         warpAutoOfferThreshold:
             j['warpAutoOfferThreshold'] as int? ?? 5,
         warpProbeUrl: j['warpProbeUrl'] as String? ?? '',
+        delayTestUrl: j['delayTestUrl'] as String? ?? '',
         trafficStats: j['trafficStats'] as bool? ?? true,
         connectionLogs: j['connectionLogs'] as bool? ?? true,
         debugLogging: j['debugLogging'] as bool? ?? false,
         smartSwitchIntervalSeconds:
             j['smartSwitchIntervalSeconds'] as int? ?? 120,
+        smartSwitchMarginMs: j['smartSwitchMarginMs'] as int? ?? 60,
         clipboardOfferedHashes:
             (j['clipboardOfferedHashes'] as List?)?.cast<String>() ?? const [],
       );

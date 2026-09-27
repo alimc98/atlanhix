@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' show sqrt;
 
 import 'package:flutter/material.dart';
 import '../../application/dependencies.dart';
@@ -38,6 +39,7 @@ class _NodesScreenState extends State<NodesScreen> {
   String? _selectedId;
   StreamSubscription<void>? _selectionSub;
   StreamSubscription<HealthRecord>? _healthSub;
+  bool _healthCoalesce = false;
 
   @override
   void initState() {
@@ -51,8 +53,17 @@ class _NodesScreenState extends State<NodesScreen> {
     // active-node monitor recorded into HealthStore but this list never
     // repainted, so latency stayed stale until a manual re-test. Subscribe
     // → repaint on every record.
+    // v0.5.0 §lag: coalesce the repaints. A 40-node batch sweep fires 40
+    // records within a second — each one rebuilt+resorted the whole list.
+    // One frame-boundary repaint per burst is visually identical.
+    _healthCoalesce = false;
     _healthSub = widget.deps.scheduler.results.listen((_) {
-      if (mounted) setState(() {});
+      if (!mounted || _healthCoalesce) return;
+      _healthCoalesce = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _healthCoalesce = false;
+        if (mounted) setState(() {});
+      });
     });
     // v0.4.1 §5: reflect the VPN session's explicit selection immediately —
     // the tapped node is shown as chosen on the dashboard BEFORE any connect.
@@ -264,7 +275,7 @@ class _NodesScreenState extends State<NodesScreen> {
                   itemBuilder: (context, i) {
                     final p = nodes[i];
                     final s = widget.deps.healthStore.statsOf(p.id);
-                    return _NodeTile(
+                    return NodeTile(
                       profile: p,
                       stats: s,
                       selected: _selectedId == p.id,
@@ -334,27 +345,24 @@ class _NodesScreenState extends State<NodesScreen> {
     if (runnable.isEmpty) return;
     _sweeping = true;
     if (mounted) setState(() {});
-    // v0.4.9 §user: one mechanism decision per sweep — the live engine when
-    // a VPN is connected, otherwise the transient probe engine boots ONCE
-    // with the whole runnable pool (fresh-app-open "test all" now works).
-    // Chunks still bound concurrency so 100+ nodes stay polite.
-    const chunk = 6;
-    for (var i = 0; i < runnable.length; i += chunk) {
-      final part = runnable.sublist(
-          i, i + chunk > runnable.length ? runnable.length : i + chunk);
-      final results = await widget.deps.realDelay.testBatch(part);
-      for (final p in part) {
-        final r = results[p.id];
-        if (r == null || r.errorKind == 'engine-off') continue;
-        widget.deps.healthStore.record(HealthRecord(
-          profileId: p.id,
-          at: DateTime.now(),
-          ok: r.ok,
-          latencyMs: r.latencyMs,
-          errorKind: r.errorKind,
-        ));
-      }
-      if (mounted) setState(() {});
+    // v0.5.0 §perf-fix: the WHOLE runnable pool in ONE testBatch call. The
+    // old chunk-of-6 loop re-entered the transient probe engine per chunk:
+    // every chunk with a new node id REBUILT the Box (probeStart is a full
+    // restart) and killed the in-flight measurements — sweeps took forever
+    // and read suspicious numbers. One boot + parallel delay tests now;
+    // 100+ nodes stay polite through the engine's own concurrency.
+    final results = await widget.deps.realDelay.testBatch(runnable);
+    final now = DateTime.now();
+    for (final p in runnable) {
+      final r = results[p.id];
+      if (r == null || r.errorKind == 'engine-off') continue;
+      widget.deps.healthStore.record(HealthRecord(
+        profileId: p.id,
+        at: now,
+        ok: r.ok,
+        latencyMs: r.latencyMs,
+        errorKind: r.errorKind,
+      ));
     }
     _sweeping = false;
     if (mounted) setState(() {});
@@ -668,8 +676,9 @@ class _EmptyNodes extends StatelessWidget {
   }
 }
 
-class _NodeTile extends StatelessWidget {
-  const _NodeTile({
+class NodeTile extends StatelessWidget {
+  const NodeTile({
+    super.key,
     required this.profile,
     required this.stats,
     required this.onConnect,
@@ -752,6 +761,14 @@ class _NodeTile extends StatelessWidget {
             ? NodeCoreChoice.labelFor(profile, onAndroid: false)
             : profile.effectiveCore.name);
     final tileOpacity = runnable ? 1.0 : 0.55;
+
+    // v0.5.0 §user-3: jitter + success rate under the latency — the same
+    // composite inputs the Smart Switch ladder ranks on (latency on top,
+    // stability beneath). Formatters live in [nodeMetricSubline] for tests.
+    final statsSubLine = nodeMetricSubline(
+      jitterMs: stats?.jitterMs,
+      successRate: stats?.successRate,
+    );
 
     return Opacity(
       opacity: tileOpacity,
@@ -870,21 +887,43 @@ class _NodeTile extends StatelessWidget {
                       ),
                     ),
                   ),
+                  // v0.5.0 §user-3: the metric column grew two lines —
+                  // latency (top) + jitter · success rate (bottom). The
+                  // Smart Switch now ranks on this same composite, so the
+                  // list shows every input the ladder sees.
                   SizedBox(
-                    width: 64,
-                    child: Text(
-                      // v0.4.9 §user: a FAILED real test must be visible —
-                      // '—' read as "never tested" and looked broken.
-                      lat != null
-                          ? '$lat ms'
-                          : (stats == null ? '—' : '×'),
-                      textAlign: TextAlign.end,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: lat == null && stats != null
-                                ? c.error
-                                : latColor,
-                            fontWeight: FontWeight.w600,
-                          ),
+                    width: 104,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          // v0.4.9 §user: a FAILED real test must be visible —
+                          // '—' read as "never tested" and looked broken.
+                          lat != null
+                              ? '$lat ms'
+                              : (stats == null ? '—' : '×'),
+                          textAlign: TextAlign.end,
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: lat == null && stats != null
+                                        ? c.error
+                                        : latColor,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                        ),
+                        const SizedBox(height: 1),
+                        Text(
+                          statsSubLine,
+                          maxLines: 1,
+                          overflow: TextOverflow.clip,
+                          textAlign: TextAlign.end,
+                          style: Theme.of(context)
+                              .textTheme
+                              .labelSmall
+                              ?.copyWith(color: c.textMuted),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(width: 14),
@@ -916,6 +955,28 @@ class _NodeTile extends StatelessWidget {
       ),
     );
   }
+}
+
+/// v0.5.0 §user-3 — the node row's stability subline: `±σ ms · 95% up`.
+///
+/// [jitterMs] is the VARIANCE (ms²) HealthStore computes over the last ≤5
+/// samples — the tile shows its SQUARE ROOT (stdDev, ms) because that is
+/// the number a human compares against the latency above it ("±40 ms" is
+/// readable, "±1600" is not). Fewer than 2 samples → no jitter yet →
+/// jitter is omitted rather than faked as `±0`.
+/// [successRate] is the share of OK probes in the recent 20-sample window.
+/// Null stats (never tested) → an empty subline; the latency cell above
+/// already renders `—`/`×` for that story.
+String nodeMetricSubline({int? jitterMs, double? successRate}) {
+  final parts = <String>[];
+  if (jitterMs != null) {
+    final stdDev = sqrt(jitterMs);
+    parts.add('±${stdDev >= 10 ? stdDev.round() : stdDev.toStringAsFixed(1)} ms');
+  }
+  if (successRate != null) {
+    parts.add('${(successRate.clamp(0, 1) * 100).round()}% up');
+  }
+  return parts.join(' · ');
 }
 
 /// v0.4.7 §brand (sheet v2) — ghost icon action: 38dp round hit target,

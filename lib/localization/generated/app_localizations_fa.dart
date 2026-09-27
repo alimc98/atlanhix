@@ -266,6 +266,12 @@ class AppLocalizationsFa extends AppLocalizations {
   String get subscriptionUrl => 'نشانی اشتراک';
 
   @override
+  String get editSubscription => 'ویرایش اشتراک';
+
+  @override
+  String get updateIntervalMinutesLabel => 'فاصله به‌روزرسانی (دقیقه)';
+
+  @override
   String get updateNow => 'به‌روزرسانی';
 
   @override
