@@ -2,6 +2,27 @@
 
 ## v0.5.0 — Boot 2.7× faster (measured), UI-lag fixes, subscription edit + auto-update, notification sync
 
+### Release-signed APKs fix Play Protect "app blocked" (user report)
+
+- The release builds were signed with the ANDROID DEBUG KEY — Google
+  Play Protect flags sideloaded debug-signed packages
+  ("app blocked / to protect your device"). A dedicated upload keystore
+  (`android/app/atlanhix-release.jks`, 25-year validity) signs every
+  release build now; credentials ride `android/key.properties`
+  (gitignored — CI/fresh clones fall back to the debug key so builds
+  still complete).
+- Because the signing key changed, upgrading OVER an old install
+  requires uninstall first (Android rejects signature mismatches).
+- A **universal APK** (both arm64-v8a + armeabi-v7a in one file,
+  versionCode 7) ships next to the per-ABI splits (v7a=1007, v8a=2007).
+
+### UI fixes (user reports)
+
+- The appbar wordmark read ~50% too large on the phone — halved.
+- Settings → About showed a hardcoded 'Atlanhix 0.4.1' regardless of
+  the installed release — now derived from the same compiled-in
+  constant the update checker uses (`Atlanhix 0.5.0 (build 7)`).
+
 ### Cold boot cut from ~3.2 s to ~1.2 s — MEASURED, not guessed (user report: "برنامه خيلي دير بوت ميشه")
 
 - A per-stage stopwatch now logs every bootstrap phase under the `boot`

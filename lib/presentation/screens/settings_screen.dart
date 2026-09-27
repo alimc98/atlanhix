@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../application/dependencies.dart';
+import '../../application/update_checker.dart' show kAppVersion;
 import '../../diagnostics/diagnostics_service.dart';
 import '../../localization/generated/app_localizations.dart';
 import '../../settings/app_settings.dart';
@@ -525,7 +526,10 @@ class SettingsScreen extends StatelessWidget {
           ),
         ]),
         _section(context, l.about, [
-          const Text('Atlanhix 0.4.1'),
+          // v0.5.0 §user-fix: the version was a hardcoded '0.4.1' string that
+          // never moved with releases. Read the ONE compiled-in constant the
+          // update checker uses (same source of truth as pubspec).
+          Text(_versionLabel()),
           const SizedBox(height: 4),
           Text(
             'Flutter ${const String.fromEnvironment("FLUTTER_VERSION", defaultValue: "3.47")} · '
@@ -568,6 +572,16 @@ class SettingsScreen extends StatelessWidget {
     deps.cores.fragmentManualPackets = s.fragmentManualPackets;
     deps.cores.fragmentManualLength = s.fragmentManualLength;
     deps.cores.fragmentManualInterval = s.fragmentManualInterval;
+  }
+
+  /// v0.5.0 §user-fix: single source of truth for the displayed version —
+  /// the compiled-in constant shared with the update checker (0.5.0+7 →
+  /// "Atlanhix 0.5.0 (build 7)").
+  static String _versionLabel() {
+    final parts = kAppVersion.split('+');
+    return parts.length == 2
+        ? 'Atlanhix ${parts.first} (build ${parts.last})'
+        : 'Atlanhix $kAppVersion';
   }
 
   Widget _section(BuildContext context, String title, List<Widget> children) {

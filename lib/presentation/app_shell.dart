@@ -152,7 +152,9 @@ class _AppShellState extends State<AppShell> {
               // wordmark leads the header, page name follows.
               title: Row(
                 children: [
-                  const AtlanhixWordmark(height: 15),
+                  // v0.5.0 §user: the appbar wordmark read ~50% too large on
+                  // the phone — halved (15 → 10).
+                  const AtlanhixWordmark(height: 10),
                   const SizedBox(width: 12),
                   Flexible(
                     child: Text(

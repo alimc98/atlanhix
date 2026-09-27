@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -65,11 +67,37 @@ android {
         }
     }
 
+    // v0.5.0 §user-fix (Play Protect "app blocked"): the release APKs were
+    // signed with the ANDROID DEBUG KEY — an obvious dev-build signature
+    // that Google Play Protect flags on sideload. A dedicated upload key
+    // (android/app/atlanhix-release.jks, generated 2026-09-27, 25-year
+    // validity) signs every release build now. Credentials ride
+    // android/key.properties (gitignored); when the file is absent (CI/
+    // fresh clones) the build falls back to the debug key so it still
+    // completes.
+    val keystoreProps = Properties()
+    val keystorePropsFile = rootProject.file("key.properties")
+    val hasReleaseKeystore = keystorePropsFile.exists()
+    if (hasReleaseKeystore) {
+        keystorePropsFile.inputStream().use { keystoreProps.load(it) }
+    }
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("atlanhix") {
+                keyAlias = keystoreProps["keyAlias"] as String
+                keyPassword = keystoreProps["keyPassword"] as String
+                storeFile = file(keystoreProps["storeFile"] as String)
+                storePassword = keystoreProps["storePassword"] as String
+            }
+        }
+    }
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("atlanhix")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
