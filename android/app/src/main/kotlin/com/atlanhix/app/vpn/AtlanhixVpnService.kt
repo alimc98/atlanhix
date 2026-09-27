@@ -1,4 +1,4 @@
-﻿package com.example.nexus.vpn
+﻿package com.atlanhix.app.vpn
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -11,7 +11,7 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import io.nekohasekai.libbox.TunOptions
 import org.json.JSONObject
-import com.example.nexus.R
+import com.atlanhix.app.R
 import java.io.File
 import java.net.InetAddress
 
@@ -550,8 +550,8 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
         const val CHANNEL_ID = "atlanhix_vpn"
         const val NOTIFY_ID = 0x4154 // 'AT'
         @JvmStatic lateinit var appContext: android.content.Context
-        const val ACTION_START = "com.example.nexus.vpn.START"
-        const val ACTION_STOP = "com.example.nexus.vpn.STOP"
+        const val ACTION_START = "com.atlanhix.app.vpn.START"
+        const val ACTION_STOP = "com.atlanhix.app.vpn.STOP"
 
         // v0.5.0 §user-fix: live instance for the Dart→native notification
         // mirrors (notifyConnected/…). Same process as the channel handler.

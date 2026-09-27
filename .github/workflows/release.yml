@@ -1,0 +1,141 @@
+name: Release builds
+
+# v0.5.0 §release: tag-driven release automation. Pushing a `v*` tag builds
+# the Android splits (v7a/v8a), the universal APK and the Windows zip, then
+# attaches everything to the GitHub Release for that tag.
+#
+# Android signing: the release keystore + key.properties are injected from
+# repository SECRETS (ANDROID_KEYSTORE_BASE64 = the .jks file, base64;
+# ANDROID_KEYSTORE_PASSWORD / ANDROID_KEYSTORE_ALIAS as plain strings).
+# Without the secrets the build falls back to the debug key (the gradle
+# config already supports that) — artifacts still attach, they just carry
+# the dev signature.
+#
+# Windows: no code-signing cert is wired yet, so SmartScreen may warn on
+# first run ("More info → Run anyway") — noted in the release body.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    name: Android APKs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter (version pinned to the dev toolchain)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.4'
+          cache: true
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Restore release keystore from secrets
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEYSTORE_ALIAS }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > android/app/atlanhix-release.jks
+            cat > android/key.properties <<EOF
+          storePassword=$KS_PASS
+          keyPassword=$KS_PASS
+          keyAlias=$KS_ALIAS
+          storeFile=atlanhix-release.jks
+          EOF
+            echo "keystore restored from secrets"
+          else
+            echo "no ANDROID_KEYSTORE_BASE64 secret — debug-signed fallback"
+          fi
+
+      - name: Build split APKs (v7a + v8a)
+        run: flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64
+
+      - name: Build universal APK
+        run: flutter build apk --release --target-platform android-arm,android-arm64
+
+      - name: Rename artifacts
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk      "dist/atlanhix-v$VER-arm64-v8a.apk"
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk   "dist/atlanhix-v$VER-armeabi-v7a.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk               "dist/atlanhix-v$VER-universal.apk"
+          ls -la dist
+
+      - name: Attach to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
+          fail_on_unmatched_files: true
+
+  windows:
+    name: Windows zip
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter (version pinned to the dev toolchain)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.4'
+          cache: true
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Download core engines (official releases)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path cores/windows-x64 | Out-Null
+          Invoke-WebRequest -Uri 'https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box-1.14.0-windows-amd64.zip' -OutFile sb.zip
+          Expand-Archive sb.zip -DestinationPath sb -Force
+          $sbDir = Get-ChildItem sb -Directory | Select-Object -First 1
+          Copy-Item "$($sbDir.FullName)/sing-box.exe" cores/windows-x64/sing-box.exe
+          Invoke-WebRequest -Uri 'https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-windows-64.zip' -OutFile xr.zip
+          Expand-Archive xr.zip -DestinationPath xr -Force
+          $xrDir = Get-ChildItem xr -Directory | Select-Object -First 1
+          Copy-Item "$($xrDir.FullName)/xray.exe" cores/windows-x64/xray.exe
+          Get-ChildItem cores/windows-x64
+
+      - name: Stage + zip
+        shell: pwsh
+        run: |
+          $ver = "${env:GITHUB_REF_NAME}" -replace '^v',''
+          $stage = "stage/Atlanhix-v$ver"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item build/windows/x64/runner/Release/* $stage -Recurse -Force
+          # engines ride INSIDE the bundle so a zip-only install just works
+          # (BinaryManager searches ./cores relative to the working dir)
+          Copy-Item cores $stage -Recurse -Force
+          Compress-Archive -Path $stage -DestinationPath "Atlanhix-v$ver-windows-x64.zip" -Force
+          Get-Item "Atlanhix-v$ver-windows-x64.zip" | Select-Object Name, Length
+
+      - name: Attach to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Atlanhix-*-windows-x64.zip
+          fail_on_unmatched_files: true

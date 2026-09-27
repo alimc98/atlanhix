@@ -1,4 +1,4 @@
-package com.example.nexus.vpn
+package com.atlanhix.app.vpn
 
 /**
  * The native VPN engine contract behind the TUN interface.

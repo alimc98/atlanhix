@@ -99,11 +99,25 @@ class AppDependencies {
       routing: deps.routingSettings,
     );
 
-    deps.binaryManager = BinaryManager(
-      // TODO(v0.3): read from Settings â†’ Cores (user override dir).
-      appDir: Directory(
+    // v0.5.0 §release: resolve cores NEXT TO THE EXE first (the shipped
+    // zip layout) and fall back to the CWD layout (dev runs from the repo
+    // root). Directory.current alone broke the bundled zip when the user
+    // launched the exe from another working directory (terminal/shortcut).
+    Directory resolveCoresDir() {
+      final exe = Platform.resolvedExecutable;
+      final exeDir = File(exe).parent.path;
+      final bundled = Directory(
+          '$exeDir${Platform.pathSeparator}cores'
+          '${Platform.pathSeparator}${BinaryManager.platformDirName()}');
+      if (bundled.existsSync()) return bundled;
+      return Directory(
           '${Directory.current.path}${Platform.pathSeparator}cores'
-          '${Platform.pathSeparator}${BinaryManager.platformDirName()}'),
+          '${Platform.pathSeparator}${BinaryManager.platformDirName()}');
+    }
+
+    deps.binaryManager = BinaryManager(
+      // TODO(v0.3): read from Settings → Cores (user override dir).
+      appDir: resolveCoresDir(),
     );
     deps.cores = CoreManager(
       binaryManager: deps.binaryManager,

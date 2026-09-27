@@ -14,7 +14,7 @@ dependencies {
 }
 
 android {
-    namespace = "com.example.nexus"
+    namespace = "com.atlanhix.app"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -33,7 +33,11 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.nexus"
+        // v0.5.0 §user-fix (Play Protect): "com.example.*" is the classic
+        // template/test package id and a strong negative signal in Play
+        // Protect's sideload heuristics. The app now ships as com.atlanhix.app
+        // (fresh install required — Android treats it as a different app).
+        applicationId = "com.atlanhix.app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

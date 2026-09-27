@@ -1,4 +1,4 @@
-package com.example.nexus.vpn
+package com.atlanhix.app.vpn
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -209,8 +209,8 @@ class XrayCoreService : Service() {
     companion object {
         private const val CHANNEL_ID = "atlanhix_xray_fg"
         private const val NOTIFY_ID = 4102
-        const val ACTION_START = "com.example.nexus.xray.START"
-        const val ACTION_STOP = "com.example.nexus.xray.STOP"
+        const val ACTION_START = "com.atlanhix.app.xray.START"
+        const val ACTION_STOP = "com.atlanhix.app.xray.STOP"
         const val EXTRA_CONFIG = "config"
         const val EXTRA_SOCKS_PORT = "socksPort"
         const val STATE_FILE = "xray-runtime.state"

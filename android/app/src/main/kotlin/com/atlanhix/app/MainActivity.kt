@@ -1,14 +1,14 @@
-package com.example.nexus
+package com.atlanhix.app
 
 import android.content.Intent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
-import com.example.nexus.vpn.AtlanhixProbeChannel
-import com.example.nexus.vpn.AtlanhixVpnChannel
-import com.example.nexus.vpn.AtlanhixXrayChannel
-import com.example.nexus.vpn.InstalledAppsSource
+import com.atlanhix.app.vpn.AtlanhixProbeChannel
+import com.atlanhix.app.vpn.AtlanhixVpnChannel
+import com.atlanhix.app.vpn.AtlanhixXrayChannel
+import com.atlanhix.app.vpn.InstalledAppsSource
 
 class MainActivity : FlutterActivity() {
 

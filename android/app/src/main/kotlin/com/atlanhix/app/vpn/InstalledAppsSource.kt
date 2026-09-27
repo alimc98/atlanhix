@@ -1,4 +1,4 @@
-package com.example.nexus.vpn
+package com.atlanhix.app.vpn
 
 import android.content.Intent
 import android.content.pm.ApplicationInfo

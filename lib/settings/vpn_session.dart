@@ -1071,7 +1071,7 @@ class VpnSession {
       cfg['log'] = {
         'level': 'info',
         'timestamp': true,
-        'output': '/sdcard/Android/data/com.example.nexus/files/singbox.log',
+        'output': '/sdcard/Android/data/com.atlanhix.app/files/singbox.log',
       };
       _logConfigSummary(cfg, trace);
       return jsonEncode(cfg);
