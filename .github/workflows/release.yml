@@ -113,12 +113,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path cores/windows-x64 | Out-Null
           Invoke-WebRequest -Uri 'https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box-1.14.0-windows-amd64.zip' -OutFile sb.zip
           Expand-Archive sb.zip -DestinationPath sb -Force
-          $sbDir = Get-ChildItem sb -Directory | Select-Object -First 1
-          Copy-Item "$($sbDir.FullName)/sing-box.exe" cores/windows-x64/sing-box.exe
+          # archive layouts differ (sing-box nests a version dir, Xray puts
+          # the exe at the ROOT) — search recursively instead of guessing.
+          $sbExe = Get-ChildItem sb -Recurse -Filter sing-box.exe | Select-Object -First 1
+          Copy-Item $sbExe.FullName cores/windows-x64/sing-box.exe
           Invoke-WebRequest -Uri 'https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-windows-64.zip' -OutFile xr.zip
           Expand-Archive xr.zip -DestinationPath xr -Force
-          $xrDir = Get-ChildItem xr -Directory | Select-Object -First 1
-          Copy-Item "$($xrDir.FullName)/xray.exe" cores/windows-x64/xray.exe
+          $xrExe = Get-ChildItem xr -Recurse -Filter xray.exe | Select-Object -First 1
+          Copy-Item $xrExe.FullName cores/windows-x64/xray.exe
           Get-ChildItem cores/windows-x64
 
       - name: Stage + zip
