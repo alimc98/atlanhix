@@ -1,0 +1,45 @@
+Atlanhix v0.5.1 — Signing & integrity information
+=================================================
+(for Google Play Protect verification / appeal:
+ https://support.google.com/googleplay/android-developer/contact/protectappeals)
+
+Release signing certificate (applies to ALL APK files below)
+------------------------------------------------------------
+Subject (DN):      CN=Atlanhix, OU=Atlanhix, O=Atlanhix, L=Tehran, C=IR
+Signature scheme:  APK Signature Scheme v2 + v3 (Android App Slicing compatible)
+Certificate SHA-256:
+  23:D9:C8:19:16:6A:F1:31:62:07:BC:95:ED:5F:1F:48:5A:C9:22:A5:A8:56:A5:7B:7E:AE:F7:F3:20:02:DD:6D
+Certificate SHA-1:
+  5D:B1:27:AE:C1:A3:11:AA:24:DE:F7:AD:23:9B:A6:EC:AD:24:7C:F5
+Key algorithm:     RSA 2048-bit, self-signed upload key
+Validity:          2026-09-27 → 2051-09-21 (25 years)
+Keystore:          android/app/atlanhix-release.jks (not published)
+
+Artifact SHA-256 file hashes (downloaded from
+https://github.com/alimc98/atlanhix/releases/tag/v0.5.1)
+------------------------------------------------------------
+atlanhix-v0.5.1-arm64-v8a.apk     (modern 64-bit phones)
+  5a963abe4b39c0d5d44a7a9ab265190eac7d0a1547cdef34690026e8dee0f98a
+
+atlanhix-v0.5.1-armeabi-v7a.apk   (older 32-bit phones)
+  e1bedff3e2cacf06e56cdff046b8f15e1785a61c9c8a162487cfd69a1e0a1711
+
+atlanhix-v0.5.1-universal.apk     (both ABIs in one file)
+  5744f45f652ee70d02cf95475159a07cd8c9fca274db3df884d69de078950bc3
+
+Atlanhix-v0.5.1-windows-x64.zip   (Windows build, unsigned installer-free zip)
+  471ab9237a978c4c490d9c6554275584eb6091d1f0d2b10f1c9981ba8824a133
+
+Package identity
+------------------------------------------------------------
+Application ID:    com.atlanhix.app
+versionName:       0.5.1  (versionCode: v7a=1008, v8a=2008, universal=8)
+Developer contact: via https://github.com/alimc98/atlanhix
+
+What the app does
+------------------------------------------------------------
+Atlanhix is an open-source VPN/proxy client (Flutter + sing-box/Xray
+engines). It creates a Android VPN tunnel (android.net.VpnService) to
+route the device's traffic through proxy servers the user configures
+from their own subscription links. No data collection, no analytics,
+no ads. Full source: https://github.com/alimc98/atlanhix
