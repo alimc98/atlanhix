@@ -1,0 +1,7 @@
+# Machine-specific Gradle overrides — copy to android/gradle.properties.local
+# (gitignored) and adjust per machine. The committed gradle.properties must
+# stay CI-safe: no absolute local paths, no org.gradle.java.home.
+#
+# This machine: Kotlin 2.2's analysis loop hangs on the Studio JBR (JDK 25),
+# so the Gradle daemon is pinned to the local Temurin 17.
+org.gradle.java.home=C\:/Users/Hosna/dev-tools/jdk-17
