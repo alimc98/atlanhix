@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.5.2 — smart-switch pro pack + live ladder readout + Windows cores-path fix
+
+### Smart switch, the professional shape (user dial-in)
+
+- **Percent margin (default 30%)**: a challenger node must beat the
+  incumbent's REAL measured delay by ≥N% (plus the legacy ms floor)
+  before the tunnel migrates — jitter-driven ping-pong is dead. All
+  three dials live in Settings and apply to a running ladder.
+- **Active-node recheck every 30 s**: one URL test of the server in use;
+  a dead incumbent is abandoned within one cycle.
+- **Others-rescan every 10 min**: a full REAL-delay batch over the rest
+  of the pool through the live engine.
+- **Pre-connect ladder**: with the switch ON and no explicit pick, the
+  first connect measures the WHOLE runnable pool (one transient engine
+  boot, ≤9 s) and lands on the fastest healthy node.
+
+### First-connect reliability (Android)
+
+- The transient probe engine and the VPN engine share one libbox working
+  dir; they now take turns via a probe idle-latch (stopLocked
+  handshake) + a settled stop, and the tunnel probe retries 3× inside
+  the same startup budget — the "first tap fails, second works" report
+  is fixed at the source.
+
+### Live dashboard
+
+- **GEO ROUTE globe**: home/exit IP geolocation, map→sphere morph, the
+  Iran→Romania great-circle arc, and the globe as the app backdrop.
+- **Live ladder readout**: while the pre-connect ladder counts through
+  the pool, the hero word AND the GEO ROUTE chip show per-node progress
+  ("testing 5/11 · 180 ms") — real landed measurements, not a spinner.
+- Per-node up/down usage, per-subscription node filters, clipboard
+  import, live monitor (battery/temp/CPU/RAM), MTU optimizer, animated
+  tab slide + expressive nav pill.
+
+### Windows cores path fix ("فراخوانی هسته‌ها مسیر اشتباه بود")
+
+- `resolveCoresDir` probed exactly ONE layout (`<exe>\cores\windows-x64`)
+  and fell back to a CWD dir that exists nowhere near the exe — any
+  other placement (engines next to the exe, `cores\` without the
+  platform nesting, `bin\`) read as `binaryMissing`. Every common layout
+  is now probed for a dir that actually CONTAINS engines, the manager
+  accepts a runtime override, and every miss logs the full candidate
+  list for one-glance diagnosis.
+
 ## v0.5.1 — Windows identity, Play Protect round 2, desktop UI sync
 
 ### Play Protect, round 2 (user report: still blocking 0.5.0 installs)
