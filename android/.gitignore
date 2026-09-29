@@ -7,6 +7,17 @@ gradle-wrapper.jar
 GeneratedPluginRegistrant.java
 .cxx/
 
+# Machine-specific Gradle overrides (org.gradle.java.home etc.) — the
+# committed gradle.properties must stay CI-safe. Pattern documented in
+# gradle.properties.local.example; the REAL JVM pin lives in
+# ~/.gradle/gradle.properties.
+/gradle.properties.local
+
+# Ad-hoc build/install capture files from debug sessions.
+/build_*.txt
+/inst*.txt
+/install_out.txt
+
 # Remember to never publicly share your keystore.
 # See https://flutter.dev/to/reference-keystore
 key.properties

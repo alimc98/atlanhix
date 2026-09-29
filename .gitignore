@@ -10,5 +10,24 @@ windows/flutter/ephemeral/
 linux/flutter/ephemeral/
 *.log
 
+# v0.5.2 §repo-hygiene — ad-hoc capture files from build/install/debug
+# sessions never belong in the repo (they were littering git status as
+# untracked: build_apk_log.txt, build_log_atx*.txt, inst*.txt,
+# install_out.txt, atx_ui_dump.txt). Catch ALL of them by pattern so the
+# next debug session stays clean.
+/android/build_*.txt
+/android/inst*.txt
+/android/install_out.txt
+/atx_*_dump.txt
+/atx_*.log
+
+# One-off secret/ops scripts live outside the repo — the token must never
+# be near a tracked file (set_secrets.js was the last offender; it reads
+# GH_TOKEN from the env, so a future copy belongs in a private location).
+/set_secrets.js
+
+# APK split scratch dir used during manual install debugging.
+/chunks/
+
 # Engine binaries are user/builder-provided (see BUILD.md) — never committed.
 cores/
