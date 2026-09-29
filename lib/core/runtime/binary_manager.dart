@@ -5,7 +5,13 @@ import 'dart:io';
 import '../logger.dart';
 
 /// Which engine binary is being managed.
-enum CoreBinaryKind { singbox, xray, amneziaWg, masterDnsVpn }
+enum CoreBinaryKind {
+  singbox,
+  xray,
+  mihomo, // v0.5.3: mihomo (Clash.Meta) — the standalone third engine
+  amneziaWg,
+  masterDnsVpn,
+}
 
 /// Lifecycle-independent info about one engine binary on this machine.
 class CoreBinaryInfo {
@@ -66,6 +72,10 @@ class BinaryManager {
     return switch (kind) {
       CoreBinaryKind.singbox => 'sing-box$exe',
       CoreBinaryKind.xray => 'xray$exe',
+      // Upstream releases ship `mihomo-windows-amd64-v1.19.x.zip` with the
+      // binary named `mihomo-…`; the CI/shipped layout normalizes it to
+      // mihomo.exe — `clash-meta` stays a legacy alias.
+      CoreBinaryKind.mihomo => 'mihomo$exe',
       CoreBinaryKind.amneziaWg => Platform.isWindows
           ? 'amneziawg$exe'
           : 'amneziawg-go',
@@ -80,6 +90,9 @@ class BinaryManager {
 
   /// Alternative file names accepted per engine (first hit wins).
   static List<String> binaryAliases(CoreBinaryKind kind) => switch (kind) {
+        CoreBinaryKind.mihomo => Platform.isWindows
+            ? ['clash-meta.exe', 'mihomo-windows-amd64.exe']
+            : ['clash-meta'],
         CoreBinaryKind.masterDnsVpn => Platform.isWindows
             ? ['mdvpn-client.exe']
             : ['mdvpn-client'],
@@ -90,6 +103,7 @@ class BinaryManager {
   static List<String> versionArgs(CoreBinaryKind kind) => switch (kind) {
         CoreBinaryKind.singbox => const ['version'],
         CoreBinaryKind.xray => const ['version'],
+        CoreBinaryKind.mihomo => const ['-v'],
         CoreBinaryKind.amneziaWg => const ['--version'],
         CoreBinaryKind.masterDnsVpn => const ['-version'],
       };
@@ -183,6 +197,12 @@ class BinaryManager {
         RegExp(r'version\s+(\d+\.\d+(?:\.\d+)?)').firstMatch(out),
       CoreBinaryKind.xray =>
         RegExp(r'Xray\s+(\d+\.\d+(?:\.\d+)?)').firstMatch(out),
+      // mihomo -v prints "Mihomo Meta v1.19.13 windows amd64 …" — accept
+      // both Mihomo/Clash.Meta banners via the generic dotted match below.
+      CoreBinaryKind.mihomo =>
+        RegExp(r'[Mm]ihomo\s+(?:Meta\s+)?v?(\d+\.\d+(?:\.\d+)?)')
+                .firstMatch(out) ??
+            RegExp(r'(\d+\.\d+(?:\.\d+)?)').firstMatch(out),
       // MasterDnsVPN prints "MasterDnsVPN Client Version: v2026.06.13..."
       // and may use date-based versions — accept dotted + date-based tags.
       CoreBinaryKind.masterDnsVpn => RegExp(

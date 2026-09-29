@@ -337,7 +337,7 @@ enum DnsModeUi { auto, system, remote, custom }
 enum IpV6Mode { on, off, auto }
 
 /// §7 Core — engine preference. `auto` defers to CoreDetector.
-enum CorePreference { auto, singbox, xray }
+enum CorePreference { auto, singbox, xray, mihomo }
 
 /// v0.4.6 §user — fragmentation intensity for the TLS-Fragment pill.
 /// Each fixed value maps 1:1 to a [FragmentPresets] profile:

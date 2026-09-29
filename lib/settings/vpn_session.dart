@@ -9,11 +9,13 @@ import '../core/net/bootstrap_dns.dart';
 import '../core/health/latency_tester.dart';
 import '../domain/entities/health.dart';
 import '../domain/entities/proxy_profile.dart';
+import '../core/configgen/mihomo_config_generator.dart';
 import '../core/configgen/xray_config_generator.dart';
 import '../core/runtime/core_manager.dart';
 import '../core/runtime/clash_api_client.dart';
 import '../core/runtime/singbox_runtime.dart';
 import '../core/engine_availability.dart';
+import '../platform/mihomo_bridge.dart';
 import '../platform/xray_bridge.dart';
 import '../warp/warp_registrar.dart';
 import 'app_settings.dart';
@@ -157,6 +159,10 @@ class VpnSession {
   /// Local SOCKS port of the running :xray upstream (0 = not running).
   int _xrayUpstreamPort = 0;
 
+  /// v0.5.3 §mihomo — local mixed port of a RUNNING :mihomo child (0 = not
+  /// running). The front config stubs this for mihomo-owned nodes.
+  int _mihomoUpstreamPort = 0;
+
   /// v0.5.0 §user-fix: a WORKING Clash-API client for the live engine, or
   /// null. On Android libbox runs INSIDE the VPN service process and
   /// `front.api` is never constructed — only this probe-and-cache path
@@ -213,6 +219,39 @@ class VpnSession {
   int? lastLatencyMs;
 
   /// Generate the node's Xray config and boot the :xray process with it.
+  /// v0.5.3 §mihomo — start the :mihomo child for a mihomo-owned node.
+  /// The config comes from [MihomoConfigGenerator] (full engine ownership);
+  /// the mixed inbound listens on 2081 and the FRONT config stubs it as the
+  /// node's dial-out — the same daemon topology as :xray.
+  Future<bool> _startMihomoUpstream(ProxyProfile profile, String trace) async {
+    try {
+      final cfg = MihomoConfigGenerator.ports(mixedPort: 2081, apiPort: 9099)
+          .build(
+        profiles: [profile],
+        selectedId: profile.id,
+        routing: deps.configBridge.routingProfile(),
+        dns: deps.configBridge.dnsSettings(),
+      );
+      final ok = await MihomoBridge.instance
+          .start(jsonEncode(cfg), 2081);
+      if (!ok) {
+        lastError = 'MIHOMO_START_FAILED';
+        Logger.instance.error('vpn-session',
+            '$trace FAILED stage=MIHOMO_UPSTREAM node=${profile.name} reason=:mihomo process refused start');
+        return false;
+      }
+      _mihomoUpstreamPort = 2081;
+      Logger.instance.info('vpn-session',
+          '$trace MIHOMO_UPSTREAM node=${profile.name} mixed=2081');
+      return true;
+    } catch (e) {
+      lastError = 'MIHOMO_START_FAILED';
+      Logger.instance.error('vpn-session',
+          '$trace FAILED stage=MIHOMO_UPSTREAM exception=${e.runtimeType} msg=${Logger.redact(e.toString())}');
+      return false;
+    }
+  }
+
   Future<bool> _startXrayUpstream(ProxyProfile profile, String trace) async {
     try {
       // NEVER a fixed 2080: the front sing-box's mixed inbound prefers that
@@ -752,7 +791,15 @@ class VpnSession {
     // the actual object we are about to connect with — so
     // androidExclusionReason / isEligible / the upstream gate / the front
     // builder all see the SAME engine for this connect.
-    final resolvedCore = deps.detector.resolve(profile).core;
+    // v0.5.3 §mihomo: the engine preference reaches the Android resolution
+    // too — `mihomo` steers mihomo-runnable nodes to the standalone engine
+    // (child-process shape, gated on its boot-time binary probe).
+    final resolvedCore = deps.detector
+        .resolve(
+          profile,
+          preference: deps.appSettings.corePreference,
+        )
+        .core;
     // Only write when different — the connect paths may run repeatedly on
     // the same profile object, and a second resolution would otherwise
     // skip the log line (effectiveCore is already xray after run 1).
@@ -810,7 +857,13 @@ class VpnSession {
     // DETECTED Xray core (not just the xhttp/mKCP transports) reaches the
     // upstream path — before this, PQ-encryption CDN nodes fell through to
     // the native sing-box outbound and every handshake died with EOF.
-    if (CoreManager.needsXrayUpstream(profile)) {
+    // v0.5.3 §mihomo: a mihomo-owned node starts the :mihomo child FIRST
+    // (before the front config is generated — the config stubs its mixed
+    // port). No Xray runtime needed; the mihomo gate is its own probe.
+    if (profile.effectiveCore == CoreKind.mihomo) {
+      final ok = await _startMihomoUpstream(profile, trace);
+      if (!ok) return false;
+    } else if (CoreManager.needsXrayUpstream(profile)) {
       // v0.4.9 §user-fix ("first tap after open fails"): the runtime probe
       // rides an unawaited warmup — racing it here answered a false
       // XRAY_RUNTIME_UNAVAILABLE for a node that CAN run. Wait briefly for
@@ -975,6 +1028,11 @@ class VpnSession {
       _xrayUpstreamPort = 0;
       await XrayBridge.instance.stop();
     }
+    // v0.5.3 §mihomo: the child dies with the session.
+    if (_mihomoUpstreamPort > 0) {
+      _mihomoUpstreamPort = 0;
+      await MihomoBridge.instance.stop();
+    }
     _clearDisconnectedState();
   }
 
@@ -1074,6 +1132,25 @@ class VpnSession {
               '$trace WARP chain mode ${st.warpChainMode.name} but no registered account — plain topology');
         }
       }
+      // v0.5.3 §mihomo — STANDALONE ENGINE BRANCH: a mihomo-owned node NEVER
+      // reaches the sing-box front config. The mihomo child process owns the
+      // dial-out end-to-end; the front tunnel (libbox TUN) routes ALL traffic
+      // into mihomo's mixed inbound via the SAME socksUpstream mechanism the
+      // :xray child uses — one dialer, no double wrap. The generated config
+      // below is what `mihomo -d -f` consumes when the runtime starts.
+      if (profile.effectiveCore == CoreKind.mihomo) {
+        final cfg = MihomoConfigGenerator.ports(mixedPort: 2081, apiPort: 9099)
+            .build(
+          profiles: [profile],
+          selectedId: profile.id,
+          routing: routing,
+          dns: dns,
+        );
+        Logger.instance.info('vpn-session',
+            '$trace MIHOMO_CONFIG generated node=${profile.name} transport=${profile.transport.name}');
+        _logMihomoSummary(cfg, trace);
+        return jsonEncode(cfg);
+      }
       // Upstream Xray (xhttp/mKCP nodes AND detected-Xray cores — e.g. the
       // post-quantum `mlkem…` VLESS encryption, which no sing-box outbound
       // can express): expose the node as a local SOCKS stub inside the front
@@ -1086,6 +1163,15 @@ class VpnSession {
       if (_xrayUpstreamPort > 0 && CoreManager.needsXrayUpstream(profile)) {
         upstreams[profile.id] =
             (host: '127.0.0.1', port: _xrayUpstreamPort);
+      }
+      // v0.5.3 §mihomo: the front dial-out goes to the mihomo child's mixed
+      // inbound (2081) for mihomo-owned nodes — same stub mechanism, so the
+      // tunnel stays sing-box TUN → socks → :mihomo → node.
+      var mihomoStubPort = 0;
+      if (_mihomoUpstreamPort > 0 &&
+          profile.effectiveCore == CoreKind.mihomo) {
+        mihomoStubPort = _mihomoUpstreamPort;
+        upstreams[profile.id] = (host: '127.0.0.1', port: mihomoStubPort);
       }
       // v0.4.8 §user (Smart Switch): the front engine carries the WHOLE
       // runnable pool, not just the active node — selector hot-swap then
@@ -1196,6 +1282,24 @@ class VpnSession {
       Logger.instance.debug('vpn-session',
           '$trace stack=${Logger.redact(st.toString().split('\n').take(4).join(' | '))}');
       return null;
+    }
+  }
+
+  /// Redacted structural summary of a generated MIHOMO config (proxy
+  /// names + group shapes only — never endpoints or credentials).
+  void _logMihomoSummary(Map<String, dynamic> cfg, String trace) {
+    try {
+      final proxies = ((cfg['proxies'] as List?) ?? const [])
+          .map((e) => (e as Map)['name'])
+          .join(',');
+      final groups = ((cfg['proxy-groups'] as List?) ?? const [])
+          .map((e) => (e as Map)['name'])
+          .join(',');
+      final rules = (cfg['rules'] as List?)?.length ?? 0;
+      Logger.instance.info('vpn-session',
+          '$trace MIHOMO_SUMMARY proxies=[$proxies] groups=[$groups] rules=$rules');
+    } catch (_) {
+      // best-effort; never blocks the connect path
     }
   }
 

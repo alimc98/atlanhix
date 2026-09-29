@@ -58,6 +58,24 @@ class SettingsScreen extends StatelessWidget {
             value: s.autoConnect,
             onChanged: (v) => _save(s..autoConnect = v),
           ),
+          // v0.5.3 §mihomo — ENGINE PREFERENCE: which core owns a connect.
+          // auto = capability matrix (unchanged); mihomo = the standalone
+          // Clash.Meta engine (full xhttp/XMUX); xray = the :xray child.
+          ListTile(
+            title: const Text('Engine'),
+            subtitle: Text(_engineLabel(s.corePreference)),
+          ),
+          Wrap(
+            spacing: 8,
+            children: [
+              for (final p in CorePreference.values)
+                ChoiceChip(
+                  label: Text(_engineLabel(p)),
+                  selected: s.corePreference == p,
+                  onSelected: (_) => _save(s..corePreference = p),
+                ),
+            ],
+          ),
           SwitchListTile(
             title: const Text('Start on boot'),
             subtitle: const Text('Launch Atlanhix after device boot'),
@@ -606,6 +624,15 @@ class SettingsScreen extends StatelessWidget {
       ],
     );
   }
+
+  /// v0.5.3 §mihomo — engine-choice chip labels (kept terse; the subtitle
+  /// of the Engine tile carries the full explanation).
+  String _engineLabel(CorePreference p) => switch (p) {
+        CorePreference.auto => 'Auto',
+        CorePreference.singbox => 'sing-box',
+        CorePreference.xray => 'Xray',
+        CorePreference.mihomo => 'mihomo (xhttp)',
+      };
 
   String _modeLabel() {
     // OPT-IN: show Off until the user explicitly enables routing.

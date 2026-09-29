@@ -59,6 +59,12 @@ class NodeCoreChoice {
         return XrayCoreState.instance.runtimeLoaded
             ? 'Xray'
             : 'Xray · desktop only';
+      case CoreKind.mihomo:
+        // v0.5.3: libmihomo.so ships in the APK exactly like the Xray
+        // binary; the boot probe flips MihomoCoreState.
+        return MihomoCoreState.instance.runtimeLoaded
+            ? 'mihomo'
+            : 'mihomo · engine missing';
       case CoreKind.amneziaWg:
         return 'AmneziaWG';
       case CoreKind.masterDnsVpn:

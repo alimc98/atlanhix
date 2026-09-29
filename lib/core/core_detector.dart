@@ -1,4 +1,5 @@
 import '../domain/entities/proxy_profile.dart';
+import '../settings/app_settings.dart' show CorePreference;
 
 /// Which core a configuration should run on + why.
 class CoreDecision {
@@ -139,7 +140,14 @@ class CoreDetector {
   }
 
   /// Applies (and stores) user override when present.
-  CoreDecision resolve(ProxyProfile p) {
+  ///
+  /// v0.5.3 §mihomo: the APP-LEVEL engine preference (Settings → Engine,
+  /// [CorePreference]) participates in the resolution: `mihomo` steers the
+  /// mihomo-runnable nodes (vless/vmess/trojan/ss + any transport mihomo
+  /// speaks — xhttp/XMUX included) to the standalone engine; `xray` keeps
+  /// the pre-0.5.3 behavior; `auto` stays the capability-matrix decision.
+  /// The per-node pin (userPinnedCore) still wins over BOTH.
+  CoreDecision resolve(ProxyProfile p, {CorePreference preference = CorePreference.auto}) {
     final decision = detect(p);
     if (p.userPinnedCore != null && p.userPinnedCore != CoreKind.unknown) {
       return CoreDecision(
@@ -148,6 +156,31 @@ class CoreDetector {
         reasons: [...decision.reasons, 'User pinned this engine'],
       );
     }
+    if (preference == CorePreference.mihomo && _mihomoRunnable(p)) {
+      return CoreDecision(
+        core: CoreKind.mihomo,
+        confidence: 0.95,
+        reasons: [
+          ...decision.reasons,
+          'Engine preference: mihomo (full xhttp/XMUX support)',
+        ],
+      );
+    }
     return decision;
   }
+
+  /// Protocols the mihomo engine executes (v0.5.3): the classic four plus
+  /// anytls/shadowtls; everything else (wireguard/mhvpn/ssh…) stays on the
+  /// stock paths. Transport is NOT a restriction — xhttp/XMUX is exactly
+  /// why this engine was added.
+  static bool _mihomoRunnable(ProxyProfile p) => switch (p.protocol) {
+        ProxyProtocol.vless ||
+        ProxyProtocol.vmess ||
+        ProxyProtocol.trojan ||
+        ProxyProtocol.shadowsocks ||
+        ProxyProtocol.anytls ||
+        ProxyProtocol.shadowtls =>
+          true,
+        _ => false,
+      };
 }

@@ -56,6 +56,13 @@
             android:process=":xray"
             android:foregroundServiceType="specialUse"
             android:exported="false" />
+        <!-- v0.5.3: mihomo (Clash.Meta) core — same child-process topology
+             as :xray (its own Go runtime, own :mihomo process). -->
+        <service
+            android:name=".vpn.MihomoCoreService"
+            android:process=":mihomo"
+            android:foregroundServiceType="specialUse"
+            android:exported="false" />
         <service
             android:name=".vpn.AtlanhixVpnService"
             android:exported="false"

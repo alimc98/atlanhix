@@ -104,6 +104,28 @@ class XrayCoreState {
   }
 }
 
+/// v0.5.3: MIHOMO (Clash.Meta) as the standalone third engine. Availability
+/// model differs from Xray: mihomo is a PLAIN BINARY we exec (desktop now;
+/// Android follows the same child-process shape — never an in-process
+/// gomobile AAR next to libbox, the go.Seq wall). Readiness = a successful
+/// `mihomo -v` probe by the BinaryManager at boot, flipped here so the
+/// UI/gates see it everywhere without re-probing per node.
+class MihomoCoreState {
+  MihomoCoreState._();
+  static final MihomoCoreState instance = MihomoCoreState._();
+
+  bool _runtimeLoaded = false;
+
+  /// True once a mihomo binary answered its version probe.
+  bool get runtimeLoaded => _runtimeLoaded;
+
+  void setRuntimeLoaded(bool v) {
+    if (_runtimeLoaded == v) return;
+    _runtimeLoaded = v;
+    VpnRefresh.notify();
+  }
+}
+
 /// v0.4.9: AmneziaWG capability of the ANDROID engine (libbox). The AWG
 /// obfuscated handshake only executes when the AAR is the forked sing-box
 /// build (`with_awg`); stock sing-box parses the `jc/jmin/...` fields and

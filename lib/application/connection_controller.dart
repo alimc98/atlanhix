@@ -82,10 +82,15 @@ class ConnectionController {
     required this.detector,
     required this.cores,
     this.warpRepo,
-  }) {
+    AppSettings? settings,
+  }) : _settings = settings {
     // Phase 26: react to engine crashes (front AND upstreams — v0.2.1 W4).
     cores.onAnyExit.listen(_onEngineExit);
   }
+
+  /// v0.5.3 §mihomo: the engine preference (Settings → Engine) feeds the
+  /// detector; optional so existing test constructors keep compiling.
+  final AppSettings? _settings;
 
   final ProfileRepository repository;
   final HealthStore healthStore;
@@ -216,7 +221,11 @@ class ConnectionController {
     try {
       _setState(ConnectionStateSnapshot(
           phase: ConnectionPhase.validating, activeProfile: profile));
-      final decision = detector.resolve(profile);
+      // v0.5.3 §mihomo: the app-level engine choice reaches detection —
+      // `mihomo` steers mihomo-runnable nodes to the standalone engine.
+      final decision = detector.resolve(
+          profile,
+          preference: _settings?.corePreference ?? CorePreference.auto);
       final problems = _validateProfile(profile);
       if (problems.isNotEmpty) {
         throw ConfigValidationError(
@@ -287,9 +296,14 @@ class ConnectionController {
           phase: ConnectionPhase.verifying,
           activeProfile: profile,
           core: decision.core));
+      // v0.5.3 §mihomo: a standalone mihomo session listens on ITS OWN
+      // mixed port (2081) — the probe must knock there, not at the front's.
+      final probePort = decision.core == CoreKind.mihomo
+          ? cores.mihomo.mixedPort
+          : cores.front.mixedPort;
       final probe = await tester.testHttpViaSocksProxy(
         '127.0.0.1',
-        cores.front.mixedPort,
+        probePort,
         'https://www.gstatic.com/generate_204',
         timeout: const Duration(seconds: 6),
       );

@@ -287,6 +287,7 @@ class AppDependencies {
       detector: deps.detector,
       cores: deps.cores,
       warpRepo: deps.warpRepo,
+      settings: deps.appSettings,
     );
     deps.subscriptionService = SubscriptionService(
       subscriptions: deps.subscriptions,

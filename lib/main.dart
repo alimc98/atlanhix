@@ -15,6 +15,7 @@ import 'localization/generated/app_localizations.dart';
 import 'settings/app_settings.dart';
 import 'platform/android_vpn.dart';
 import 'platform/probe_engine.dart';
+import 'platform/mihomo_bridge.dart';
 import 'platform/xray_bridge.dart';
 import 'presentation/app_shell.dart';
 import 'presentation/screens/warp_screen.dart';
@@ -50,6 +51,11 @@ Future<void> main() async {
       // first interactive frame for it.
       await XrayBridge.instance.probe();
       XrayCoreState.instance.setRuntimeLoaded(XrayBridge.instance.available);
+      // v0.5.3: learn the truth about the mihomo runtime (libmihomo.so in
+      // the :mihomo process) the same way — feeds the engine gates/badges.
+      await MihomoBridge.instance.probe();
+      MihomoCoreState.instance
+          .setRuntimeLoaded(MihomoBridge.instance.available);
       // v0.4.9: arm the AmneziaWG gates from the libbox engine's
       // self-reported version (fork marker `-lx.`).
       await probeEngineVersion();

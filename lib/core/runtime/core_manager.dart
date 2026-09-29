@@ -7,11 +7,13 @@ import '../../routing/routing_models.dart';
 import '../fragmentation/fragment_profiles.dart';
 import '../fragmentation/fragment_ladder_cache.dart';
 import '../../settings/app_settings.dart';
+import '../configgen/mihomo_config_generator.dart';
 import '../logger.dart';
 import 'binary_manager.dart';
 import 'core_process.dart';
 import 'core_runtime.dart';
 import 'external_runtimes.dart';
+import 'mihomo_runtime.dart';
 import 'singbox_runtime.dart';
 import 'xray_runtime.dart';
 
@@ -61,6 +63,14 @@ class CoreManager {
       binaryManager: binaryManager,
       workDir: Directory('${workDir.path}${Platform.pathSeparator}mdvpn'),
     );
+    // v0.5.3: the third standalone engine (its own work dir, own API port —
+    // 9097 is the front's; mihomo takes 9099 to never collide).
+    mihomo = MihomoRuntime(
+      binaryManager: binaryManager,
+      workDir: Directory('${workDir.path}${Platform.pathSeparator}mihomo'),
+      mixedPort: 2081,
+      apiPort: 9099,
+    );
   }
 
   final BinaryManager binaryManager;
@@ -71,6 +81,9 @@ class CoreManager {
   late final XrayRuntime xray;
   late final AmneziaWgRuntime amneziaWg;
   late final MasterDnsVpnRuntime masterDnsVpn;
+
+  /// v0.5.3: standalone mihomo (Clash.Meta) — full xhttp/XMUX ownership.
+  late final MihomoRuntime mihomo;
 
   bool _prepared = false;
   ProxyProfile? _active;
@@ -220,6 +233,9 @@ class CoreManager {
     await xray.prepare();
     await amneziaWg.prepare();
     await masterDnsVpn.prepare();
+    // v0.5.3: mihomo probes its binary too (flip MihomoCoreState when
+    // found); a missing binary keeps the engine honestly disabled.
+    await mihomo.prepare();
     // v0.3.1 §21: MDVPN SOCKS port is dynamically allocated per manager
     // instance so parallel test files / concurrent sessions never contend.
     masterDnsVpn.socksPort = await PortAllocator.freePort(prefer: 18000);
@@ -237,6 +253,10 @@ class CoreManager {
             CoreKind.masterDnsVpn ||
             CoreKind.unknown =>
               true,
+            // v0.5.3: mihomo-owned nodes NEVER ride the sing-box front —
+            // they dial through the standalone engine (single truth per
+            // node, no stub confusion between the two engines).
+            CoreKind.mihomo => false,
             CoreKind.amneziaWg => false, // standalone daemon
           })
       .toList();
@@ -335,6 +355,11 @@ class CoreManager {
   /// materialized inside the front sing-box config and node outbounds dial
   /// through it per [chainWarpOutside]. The chain is real: sing-box itself
   /// dials the WireGuard handshake through the chain.
+  ///
+  /// v0.5.3 §mihomo: when the resolved engine is [CoreKind.mihomo] (user
+  /// pin or the xhttp engine choice) and the binary is present, the node is
+  /// served by the STANDALONE mihomo engine — full config ownership, no
+  /// sing-box front. [startFor] delegates to [startMihomo] here.
   Future<StartResult> startFor(
     ProxyProfile profile, {
     required List<ProxyProfile> all,
@@ -355,6 +380,14 @@ class CoreManager {
       if (r.ok) _active = profile;
       return r;
     }
+    if (profile.effectiveCore == CoreKind.mihomo) {
+      return startMihomo(
+        profile: profile,
+        all: all,
+        routing: routing,
+        dns: dns,
+      );
+    }
     await _ensureUpstream(profile, routing: routing);
     final r = await singbox.startWith(
       profiles: _singboxLoad(all),
@@ -374,6 +407,48 @@ class CoreManager {
     }
     return r;
   }
+
+  /// v0.5.3 §mihomo — STANDALONE START: mihomo owns the whole session.
+  /// The whole runnable pool rides the config (selector group ATX), the
+  /// mixed inbound serves the OS/front, and the engine's native Clash API
+  /// (port 9099) serves the app's delay tests + selector migration.
+  Future<StartResult> startMihomo({
+    required ProxyProfile profile,
+    required List<ProxyProfile> all,
+    required RoutingProfile routing,
+    required DnsSettings dns,
+  }) async {
+    final sw = Stopwatch()..start();
+    if (mihomo.status == RuntimeStatus.running ||
+        mihomo.status == RuntimeStatus.starting) {
+      await mihomo.stop();
+    }
+    final pool = all
+        .where((p) => p.enabled && p.effectiveCore == CoreKind.mihomo)
+        .toList();
+    if (mihomoSingletonPool(profile, pool)) pool.clear();
+    final cfg = MihomoConfigGenerator().build(
+      profiles: pool.isEmpty ? [profile] : pool,
+      selectedId: profile.id,
+      routing: routing,
+      dns: dns,
+    );
+    final r = await mihomo.startWithConfig(cfg);
+    if (r.ok) {
+      _active = profile;
+      lastStartupMs = sw.elapsedMilliseconds;
+      Logger.instance.info('runtime',
+          'mihomo session up: node=${profile.name} api=127.0.0.1:${mihomo.apiPort} '
+          'mixed=${mihomo.mixedPort} in ${sw.elapsedMilliseconds}ms');
+    }
+    return r;
+  }
+
+  /// A single-node pool is fine; this predicate exists to keep the (rare)
+  /// "profile itself not in `all`" case honest (connect hands us the pinned
+  /// copy separately — see startFor callers).
+  static bool mihomoSingletonPool(ProxyProfile profile, List<ProxyProfile> pool) =>
+      !pool.any((p) => p.id == profile.id);
 
   /// Phase 5 fast switch: selector swap, no restart — but ONLY when the
   /// target profile actually carries traffic after the swap (v0.3.0 §15/§12):
@@ -410,6 +485,10 @@ class CoreManager {
         break;
       case CoreKind.amneziaWg:
         return false; // standalone daemon, never in the front selector
+      case CoreKind.mihomo:
+        // v0.5.3: mihomo-owned nodes migrate through mihomo's OWN selector
+        // (Clash API PUT /proxies/ATX), never the sing-box front.
+        return false;
     }
     if (cur != null &&
         (cur.effectiveCore == CoreKind.singbox ||
@@ -506,6 +585,8 @@ class CoreManager {
   Future<void> stop() async {
     await _stopUpstreams();
     if (amneziaWg.status == RuntimeStatus.running) await amneziaWg.stop();
+    // v0.5.3: a STANDALONE mihomo session dies with everything else.
+    if (mihomo.status == RuntimeStatus.running) await mihomo.stop();
     await singbox.stop();
     _active = null;
     _restartCount = 0;

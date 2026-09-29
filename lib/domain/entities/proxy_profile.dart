@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart' as c;
 enum CoreKind {
   singbox,
   xray,
+  mihomo, // v0.5.3: standalone mihomo (Clash.Meta) engine — full xhttp/XMUX
   wireguardSingbox, // WireGuard endpoint inside sing-box
   amneziaWg, // external amneziawg-go daemon
   masterDnsVpn, // external mdvpn-client daemon

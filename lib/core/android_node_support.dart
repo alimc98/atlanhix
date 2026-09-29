@@ -154,6 +154,7 @@ class AndroidNodeSupport {
   static String coreDisplayName(CoreKind k) => switch (k) {
         CoreKind.singbox => 'sing-box',
         CoreKind.xray => 'Xray',
+        CoreKind.mihomo => 'mihomo',
         CoreKind.wireguardSingbox => 'sing-box (WireGuard)',
         CoreKind.amneziaWg => 'AmneziaWG',
         CoreKind.masterDnsVpn => 'MDVPN',
@@ -172,6 +173,9 @@ class AndroidNodeSupport {
         CoreKind.unknown =>
           true,
         CoreKind.xray => XrayCoreState.instance.runtimeLoaded,
+        // v0.5.3: mihomo runs as a child process (same shape as :xray) —
+        // gated on its own boot-time version probe, never an AAR.
+        CoreKind.mihomo => MihomoCoreState.instance.runtimeLoaded,
         // v0.4.9: AWG executes in-libbox on the forked engine (with_awg).
         CoreKind.amneziaWg => AmneziaWgCoreState.instance.runtimeLoaded,
         CoreKind.masterDnsVpn =>
@@ -191,6 +195,16 @@ class AndroidNodeSupport {
           ? null
           : 'amnezia_wg: AmneziaWG needs the forked sing-box engine '
               '(libbox with_awg), which this build does not report';
+    }
+    // v0.5.3: BEFORE the xhttp gate — a mihomo-owned node's transport is
+    // mihomo's problem, not the Xray runtime's. The pin-or-resolved core
+    // decides which engine's availability answer applies.
+    if (p.userPinnedCore == CoreKind.mihomo ||
+        p.effectiveCore == CoreKind.mihomo) {
+      return MihomoCoreState.instance.runtimeLoaded
+          ? null
+          : 'mihomo: the mihomo (Clash.Meta) engine was not found — put '
+              'mihomo.exe next to the app (cores dir) or pick the Xray engine';
     }
     if (p.transport == Transport.xhttp || p.rawParams['type'] == 'mkcp' ||
         p.rawParams['type'] == 'kcp') {

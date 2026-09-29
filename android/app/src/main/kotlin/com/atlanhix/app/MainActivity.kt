@@ -8,6 +8,7 @@ import org.json.JSONObject
 import com.atlanhix.app.vpn.AtlanhixProbeChannel
 import com.atlanhix.app.vpn.AtlanhixVpnChannel
 import com.atlanhix.app.vpn.AtlanhixXrayChannel
+import com.atlanhix.app.vpn.AtlanhixMihomoChannel
 import com.atlanhix.app.vpn.InstalledAppsSource
 
 class MainActivity : FlutterActivity() {
@@ -30,6 +31,21 @@ class MainActivity : FlutterActivity() {
                 result.success(xrayChannelOrNew().handle(call.method, arg).toString())
             } catch (e: Exception) {
                 result.error("xray_channel", e.message, null)
+            }
+        }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AtlanhixMihomoChannel.CHANNEL
+        ).setMethodCallHandler { call, result ->
+            // v0.5.3: mihomo runtime control (`:mihomo` process) — same
+            // JSON-string contract as the Xray channel.
+            try {
+                val rawArg: Any? = call.arguments()
+                val arg: JSONObject? =
+                    if (rawArg == null) null else JSONObject(rawArg.toString())
+                result.success(mihomoChannelOrNew().handle(call.method, arg).toString())
+            } catch (e: Exception) {
+                result.error("mihomo_channel", e.message, null)
             }
         }
         // v0.4.9 §user: transient probe engine (real delay tests with no
@@ -105,6 +121,10 @@ class MainActivity : FlutterActivity() {
     private var xrayChannel: AtlanhixXrayChannel? = null
     private fun xrayChannelOrNew(): AtlanhixXrayChannel =
         xrayChannel ?: AtlanhixXrayChannel(this).also { xrayChannel = it }
+
+    private var mihomoChannel: AtlanhixMihomoChannel? = null
+    private fun mihomoChannelOrNew(): AtlanhixMihomoChannel =
+        mihomoChannel ?: AtlanhixMihomoChannel(this).also { mihomoChannel = it }
 
     private var probeChannel: AtlanhixProbeChannel? = null
     private fun probeChannelOrNew(): AtlanhixProbeChannel =
