@@ -62,6 +62,10 @@ class _DashboardScreenState extends State<DashboardScreen>
   LadderProgress _ladder = LadderProgress.idle;
   StreamSubscription<LadderProgress>? _ladderSub;
 
+  /// v0.5.3 §perf-fix: one-paint-per-frame coalescing flag (see the
+  /// ladder subscription in initState).
+  bool _ladderPaintScheduled = false;
+
   // v0.5.2 §globe — IP geolocation for the dashboard globe: the HOME fix
   // (device's direct IP) and the EXIT fix (tunnel egress). A host fix
   // resolves the selected node's server BEFORE the tunnel comes up so the
@@ -219,9 +223,20 @@ class _DashboardScreenState extends State<DashboardScreen>
     // v0.5.2 §user: the ladder's progress stream keeps the latest event for
     // NEW subscribers too — a dashboard remounted mid-ladder (tab switch)
     // resumes the count instead of waiting for the next node to land.
+    // v0.5.3 §perf-fix: the events arrive in PARALLEL completion order —
+    // bursts of 6+ in one frame, each previously running a FULL-screen
+    // setState (rebuild of the hero, graph, monitor…). Store the payload
+    // and microtask-coalesce: at most ONE repaint per frame drains the
+    // pending value (identical UI outcome, a fraction of the rebuilds).
     _ladderSub = widget.deps.vpnSession.smartLadderProgress.listen((p) {
       if (!mounted) return;
-      setState(() => _ladder = p);
+      _ladder = p;
+      if (_ladderPaintScheduled) return;
+      _ladderPaintScheduled = true;
+      scheduleMicrotask(() {
+        _ladderPaintScheduled = false;
+        if (mounted) setState(() {});
+      });
     });
   }
 
@@ -587,8 +602,14 @@ class _DashboardScreenState extends State<DashboardScreen>
                     // ── TOTAL TRAFFIC pill (mockup top-left): cumulative
                     // session usage over the icon, current down+up speed
                     // under it. Glass pill, rides the artwork.
+                    // v0.5.3 §fix (user report: the two pills COLLIDED on
+                    // narrow phones — both were hard-anchored with no width
+                    // budget): the traffic pill is width-CAPPED (44%) and
+                    // the route chip gets the remaining room; on narrow
+                    // screens the traffic pill also drops to top:6 so the
+                    // two never interleave (each clips its own text).
                     Positioned(
-                      top: 10,
+                      top: 6,
                       left: 4,
                       child: _TotalTrafficPill(
                           downBps: _down.last, upBps: _up.last),
@@ -1048,7 +1069,14 @@ class _TotalTrafficPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = ThemeExt.of(context);
+    // v0.5.3 §fix (pill collision): hard width budget from the ACTUAL hero
+    // width — 40% here + 4px left inset leaves the GEO ROUTE chip (54% cap
+    // on its own) guaranteed non-overlapping room even at 320 dp. Texts
+    // ellipsize inside instead of pushing the pill wider.
+    final heroW = MediaQuery.sizeOf(context).width;
+    final maxW = (heroW * 0.40).clamp(150.0, 240.0);
     return Container(
+      constraints: BoxConstraints(maxWidth: maxW),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
         color: c.surface.withValues(alpha: 0.62),
@@ -1060,24 +1088,35 @@ class _TotalTrafficPill extends StatelessWidget {
         children: [
           Icon(Icons.show_chart, size: 18, color: c.textPrimary),
           const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('TOTAL TRAFFIC',
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: c.textSecondary,
-                        letterSpacing: 1.2,
-                        fontSize: 9,
-                      )),
-              Text(
-                '${_DashboardScreenState.fmtSpeed(downBps)} ↓  '
-                '${_DashboardScreenState.fmtSpeed(upBps)} ↑',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: c.textPrimary,
-                      fontWeight: FontWeight.w600,
-                    ),
-              ),
-            ],
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // v0.5.3 §fix: scale-down instead of ellipsis — the label
+                // (13 caps letters) used to clip to "TOTAL TRA…" on narrow
+                // screens; now it shrinks to fit the pill's budget.
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text('TOTAL TRAFFIC',
+                      maxLines: 1,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: c.textSecondary,
+                            letterSpacing: 1.2,
+                            fontSize: 9,
+                          )),
+                ),
+                Text(
+                  '${_DashboardScreenState.fmtSpeed(downBps)} ↓  '
+                  '${_DashboardScreenState.fmtSpeed(upBps)} ↑',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: c.textPrimary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -1103,7 +1142,12 @@ class _GeoRouteChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = ThemeExt.of(context);
+    // v0.5.3 §fix (pill collision): 54% width cap mirrors the traffic
+    // pill's 40% — together they can never overlap the hero.
+    final heroW = MediaQuery.sizeOf(context).width;
+    final maxW = (heroW * 0.54).clamp(170.0, 300.0);
     return Container(
+      constraints: BoxConstraints(maxWidth: maxW),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
         color: c.surface.withValues(alpha: 0.62),
@@ -1115,18 +1159,22 @@ class _GeoRouteChip extends StatelessWidget {
         children: [
           Icon(Icons.travel_explore, size: 18, color: c.textPrimary),
           const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('GEO ROUTE',
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: c.textSecondary,
-                        letterSpacing: 1.2,
-                        fontSize: 9,
-                      )),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 180),
-                child: Text(
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text('GEO ROUTE',
+                      maxLines: 1,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: c.textSecondary,
+                            letterSpacing: 1.2,
+                            fontSize: 9,
+                          )),
+                ),
+                Text(
                   label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -1135,53 +1183,53 @@ class _GeoRouteChip extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                       ),
                 ),
-              ),
-              // v0.5.2 §user — the LIVE ladder line: crossfades in when
-              // the sweep starts counting and out when it closes, so the
-              // chip never jumps. The empty state keeps a zero-size box
-              // (a plain SizedBox would go UNCONSTRAINED inside the
-              // AnimatedSwitcher's stack and explode the layout).
-              AnimatedSize(
-                duration: const Duration(milliseconds: 220),
-                curve: Curves.easeOutCubic,
-                alignment: Alignment.topLeft,
-                child: AnimatedSwitcher(
+                // v0.5.2 §user — the LIVE ladder line: crossfades in when
+                // the sweep starts counting and out when it closes, so the
+                // chip never jumps. The empty state keeps a zero-size box
+                // (a plain SizedBox would go UNCONSTRAINED inside the
+                // AnimatedSwitcher's stack and explode the layout).
+                AnimatedSize(
                   duration: const Duration(milliseconds: 220),
-                  child: ladderText == null
-                      ? const SizedBox(width: 0, height: 0)
-                      : Padding(
-                          key: ValueKey(ladderText),
-                          padding: const EdgeInsets.only(top: 3),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.bolt_rounded,
-                                  size: 12,
-                                  color: c.success.withValues(alpha: 0.9)),
-                              const SizedBox(width: 3),
-                              Flexible(
-                                child: Text(
-                                  ladderText!,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .labelSmall
-                                      ?.copyWith(
-                                        color: c.success,
-                                        fontWeight: FontWeight.w600,
-                                        fontFeatures: const [
-                                          FontFeature.tabularFigures()
-                                        ],
-                                      ),
+                  curve: Curves.easeOutCubic,
+                  alignment: Alignment.topLeft,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 220),
+                    child: ladderText == null
+                        ? const SizedBox(width: 0, height: 0)
+                        : Padding(
+                            key: ValueKey(ladderText),
+                            padding: const EdgeInsets.only(top: 3),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.bolt_rounded,
+                                    size: 12,
+                                    color: c.success.withValues(alpha: 0.9)),
+                                const SizedBox(width: 3),
+                                Flexible(
+                                  child: Text(
+                                    ladderText!,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelSmall
+                                        ?.copyWith(
+                                          color: c.success,
+                                          fontWeight: FontWeight.w600,
+                                          fontFeatures: const [
+                                            FontFeature.tabularFigures()
+                                          ],
+                                        ),
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
-                        ),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ],
       ),

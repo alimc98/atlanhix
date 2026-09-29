@@ -202,23 +202,29 @@ class _AppShellState extends State<AppShell>
               child: ClipRect(
                 // v0.5.2 §user — SLIDE transition between tabs: a soft
                 // directional slide driven by one 340 ms controller.
+                // v0.5.3 §user-fix ("هر تب که عوض می‌کنم همه چیز از نو لود
+                // می‌شود"): the screens now LIVE in an IndexedStack — their
+                // State objects survive tab switches (LiveMonitor keeps its
+                // sample, the dashboard keeps its graphs/stats, the nodes
+                // list keeps its scroll). The slide animates the STACK's
+                // transform; the hidden screens are simply OFFSTAGE (zero
+                // paint cost, full state retention). TickerMode inside each
+                // screen parks its animations while offstage.
                 child: AnimatedBuilder(
                   animation: _slideCtrl,
                   builder: (context, child) {
                     final t =
                         Curves.easeOutCubic.transform(_slideCtrl.value);
                     final dir = _index >= _previousIndex ? 1.0 : -1.0;
-                    return Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        Transform.translate(
-                          offset: Offset(dir * (1 - t) * 40, 0),
-                          child: Opacity(
-                              opacity: t, child: screens[_index]),
-                        ),
-                      ],
+                    return Transform.translate(
+                      offset: Offset(dir * (1 - t) * 40, 0),
+                      child: Opacity(opacity: t, child: child),
                     );
                   },
+                  child: IndexedStack(
+                    index: _index,
+                    children: screens,
+                  ),
                 ),
               ),
             ),
@@ -548,8 +554,6 @@ class _PillDestination extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final fa = Localizations.localeOf(context).languageCode == 'fa';
-    final shown = fa ? label : label.toUpperCase();
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(28),
@@ -586,15 +590,23 @@ class _PillDestination extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 2),
+            // v0.5.3 §fix (user: "das…" / "sett…" — labels truncated): the
+            // UPPERCASE transform made Latin labels ~25% wider than the
+            // 5-slot pill budget. Keep the ORIGINAL casing (the tab labels
+            // are short words), drop the fixed font to 8.5/9.5, and allow
+            // the text to scale down instead of ellipsizing.
             AnimatedDefaultTextStyle(
               duration: const Duration(milliseconds: 240),
               style: Theme.of(context).textTheme.labelSmall!.copyWith(
-                    fontSize: selected ? 10 : 9,
+                    fontSize: selected ? 9.5 : 8.5,
                     color: selected ? colors.accent : colors.textMuted,
                     fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
-                    letterSpacing: 0.4,
+                    letterSpacing: 0.2,
                   ),
-              child: Text(shown, maxLines: 1, overflow: TextOverflow.ellipsis),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(label, maxLines: 1),
+              ),
             ),
           ],
         ),

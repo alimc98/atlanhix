@@ -116,10 +116,18 @@ class _DashboardGlobeState extends State<DashboardGlobe>
     with SingleTickerProviderStateMixin {
   // Repeats forever (drives rotation + anchor pulse); TickerMode upstream
   // parks it while the hero is offscreen. The unfold reads elapsed time.
+  // v0.5.3 §perf-fix: the painter's per-frame cost is ~17.7k circle draws;
+  // a smooth slow rotation needs nowhere near 60 fps. FRAMES ARE SKIPPED —
+  // only every Nth tick notifies the RepaintBoundary (a yaw-step
+  // accumulator keeps the rotation speed identical). The UNFOLD morph and
+  // the connect FOCUS still repaint every frame (they are brief and they
+  // animate fast) — throttle applies only to the steady-state rotation.
+  static const _throttleEvery = 4; // ≈15 repaints/s instead of 60
   late final AnimationController _ctrl = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 1),
   )..repeat();
+  int _tickCount = 0;
 
   static const _unfoldDuration = Duration(milliseconds: 4200);
 
@@ -129,6 +137,10 @@ class _DashboardGlobeState extends State<DashboardGlobe>
   bool _hasFocus = false;
   DateTime? _unfoldStart;
   bool _introDoneFired = false;
+
+  /// The gated listenable the painter subscribes to (built after _ctrl).
+  late final _ThrottledListenable _throttledCtrl =
+      _ThrottledListenable(_ctrl, _throttleEvery);
 
   @override
   void initState() {
@@ -148,6 +160,8 @@ class _DashboardGlobeState extends State<DashboardGlobe>
 
   void _tick() {
     // Unfold progress from wall clock (survives controller restarts).
+    // NOTE: the unfold path repaints EVERY frame (fast animation) — the
+    // repaint throttle below only applies to the steady rotation.
     final start = _unfoldStart;
     if (start != null) {
       final t = DateTime.now().difference(start).inMicroseconds /
@@ -212,16 +226,22 @@ class _DashboardGlobeState extends State<DashboardGlobe>
   @override
   void dispose() {
     _ctrl.removeListener(_tick);
+    _throttledCtrl.dispose();
     _ctrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // v0.5.3 §perf-fix: the painter listens to _throttledCtrl (a gate that
+    // only forwards every Nth tick), so the steady rotation repaints at
+    // ~15 fps instead of 60 — the unfold/focus fast paths still go through
+    // _ctrl directly (every frame) via the same painter listenable.
+    final animatingFast = _unfoldStart != null || _hasFocus;
     return RepaintBoundary(
       child: CustomPaint(
         painter: _GlobePainter(
-          repaint: _ctrl,
+          repaint: animatingFast ? _ctrl : _throttledCtrl,
           camera: _cam,
           ext: ThemeExt.of(context),
           anchors: widget.anchors,
@@ -230,6 +250,29 @@ class _DashboardGlobeState extends State<DashboardGlobe>
         child: const SizedBox.expand(),
       ),
     );
+  }
+}
+
+/// Listenable gate: forwards a listener ping only every [_Every.th] tick.
+/// Cheap (an int compare per tick) and keeps the rotation visually smooth
+/// while cutting the painter's 17.7k-draw cost by the same factor.
+class _ThrottledListenable extends ChangeNotifier {
+  _ThrottledListenable(this._source, this.every) {
+    _source.addListener(_onTick);
+  }
+  final Listenable _source;
+  final int every;
+  int _n = 0;
+
+  void _onTick() {
+    _n++;
+    if (_n % every == 0) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _source.removeListener(_onTick);
+    super.dispose();
   }
 }
 

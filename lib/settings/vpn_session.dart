@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../core/android_node_support.dart';
 import '../core/fragmentation/fragment_profiles.dart';
 import '../core/runtime/core_process.dart';
@@ -319,6 +321,13 @@ class VpnSession {
   /// re-arms exactly what they left enabled.
   bool smartSwitchPreferred = true;
 
+  /// v0.5.3 §user-fix ("دستی انتخاب کردم، دوباره اسمارت‌سوییچ شد"): set on
+  /// [selectNode] (a real user tap) and CLEARED only by [enableSmartSwitch]
+  /// or a [connect] that runs the ladder for real. While held, the cleared
+  /// selection SURVIVES disconnect: the next connect dials the SAME node —
+  /// a ping test never silently re-picks for a user who just chose one.
+  bool _manualSelectionHold = false;
+
   /// Persists the picked node id + both switch flags (live + preferred).
   /// Fire-and-forget: the store coalesces writes (400 ms debounce).
   void persistState() {
@@ -327,6 +336,8 @@ class VpnSession {
         'selectedNodeId': selectedNode?.id,
         'smartSwitch': smartSwitch,
         'smartSwitchPreferred': smartSwitchPreferred,
+        // v0.5.3 §user-fix: the manual pick survives a disconnect.
+        'manualSelectionHold': _manualSelectionHold,
       }));
     } catch (_) {/* persistence must never break the connect path */}
   }
@@ -340,6 +351,8 @@ class VpnSession {
       smartSwitch = (s['smartSwitch'] as bool?) ?? smartSwitch;
       smartSwitchPreferred =
           (s['smartSwitchPreferred'] as bool?) ?? smartSwitch;
+      _manualSelectionHold =
+          (s['manualSelectionHold'] as bool?) ?? _manualSelectionHold;
       final id = s['selectedNodeId'] as String?;
       if (id != null && selectedNode == null) {
         selectedNode = deps.profiles.byId(id);
@@ -364,15 +377,26 @@ class VpnSession {
     try {
       deps.scheduler.setActive(null);
     } catch (_) {}
-    selectedNode = null;
-    smartSwitch = smartSwitchPreferred;
+    // v0.5.3 §user-fix: a MANUAL pick is sticky — it survives the clear so
+    // the next connect dials the SAME node instead of re-running the
+    // ladder over the user's head. Auto mode keeps the old behavior.
+    if (!_manualSelectionHold) {
+      selectedNode = null;
+    }
+    // v0.5.3 §user-fix ("دستی انتخاب کردم، دوباره اسمارت‌سوییچ شد"): while a
+    // manual pick is HELD the live switch stays OFF across disconnects —
+    // converging to the preference here re-armed the ladder and the next
+    // connect silently re-picked over the user's head. The preference still
+    // rules when there is no hold (pure auto users keep their auto).
+    smartSwitch = _manualSelectionHold ? false : smartSwitchPreferred;
     _bootedHost = null;
     lastLatencyMs = null;
     _selectionEvents.add(null);
     persistState();
     Logger.instance.info('vpn-session',
-        '[ATX-DART] SESSION_CLEARED selection dropped, switch re-armed per '
-        'preference (${smartSwitchPreferred ? 'auto' : 'manual'})');
+        '[ATX-DART] SESSION_CLEARED '
+        '${_manualSelectionHold ? 'manual selection KEPT (${selectedNode?.name ?? '∅'})' : 'selection dropped'}'
+        ', switch re-armed per preference (${smartSwitchPreferred ? 'auto' : 'manual'})');
   }
 
   /// v0.5.0 §user-fix: after the native reconcile re-adopted a still-running
@@ -416,10 +440,14 @@ class VpnSession {
     // An explicit tap STEERS away from auto — smart mode resumes only via
     // [enableSmartSwitch] (the Nodes-tab card).
     smartSwitch = false;
+    // v0.5.3 §user-fix: HOLD the pick across disconnects — the next connect
+    // dials THIS node (never a silent ladder re-pick). Cleared only when
+    // the user turns the smart switch back on.
+    _manualSelectionHold = true;
     _smart.stop();
     Logger.instance.info('vpn-session',
         '[ATX-DART UI] NODE_SELECTED ${p.name} proto=${p.protocol.name} '
-        'transport=${p.transport.name} core=${p.effectiveCore.name}');
+        'transport=${p.transport.name} core=${p.effectiveCore.name} (manual hold)');
     _selectionEvents.add(null);
     persistState();
   }
@@ -431,6 +459,9 @@ class VpnSession {
   void enableSmartSwitch() {
     smartSwitch = true;
     smartSwitchPreferred = true;
+    // v0.5.3 §user-fix: turning the switch ON is an explicit hand-back to
+    // auto — the sticky manual pick releases here (and only here).
+    _manualSelectionHold = false;
     _armSmart(currentId: selectedNode?.id);
     _selectionEvents.add(null);
     persistState();
@@ -486,6 +517,11 @@ class VpnSession {
     Logger.instance.info('smart-switch',
         '[ATX-DART] SMART_SWITCH disabled by user — manual selection');
   }
+
+  /// v0.5.3: TEST HOOK — the disconnect-clear without the native stop.
+  /// [visibleForTesting] keeps production callers on [disconnect].
+  @visibleForTesting
+  void clearDisconnectedStateForTest() => _clearDisconnectedState();
 
   /// Proxy for UI reads (Nodes-tab card highlight).
   bool get isSmartSwitchActive => smartSwitch;

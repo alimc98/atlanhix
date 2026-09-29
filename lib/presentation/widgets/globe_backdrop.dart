@@ -183,17 +183,30 @@ class _StaticGlobe extends StatefulWidget {
 
 class _StaticGlobeState extends State<_StaticGlobe>
     with SingleTickerProviderStateMixin {
+  // v0.5.3 §perf-fix ("برنامه شدیداً کند شده"): the backdrop painted
+  // 17,737 land points EVERY frame (a repeat()-ing controller) — behind
+  // EVERY tab, for a globe mostly hidden under the vignette. The rotation
+  // is now FRAME-THROTTLED: the controller still beats at 60 fps but only
+  // ~10 repaints/s actually reach the painter (a yaw-step accumulator
+  // holds the smooth motion between them). ~6× less paint work per second
+  // for the backdrop, no visible stutter at this rotation speed.
+  static const _throttleEvery = 6; // frames ≈ 10 repaints/s @60fps
   late final AnimationController _spin = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 1),
   )..repeat();
+  int _spinTick = 0;
   double _yaw = 0;
 
   @override
   void initState() {
     super.initState();
     _yaw = math.Random().nextDouble() * 2 * math.pi;
-    _spin.addListener(() => _yaw += 0.00025);
+    _spin.addListener(() {
+      _spinTick++;
+      // Advance the yaw by the FULL per-second step of the skipped frames.
+      if (_spinTick % _throttleEvery == 0) _yaw += 0.00025 * _throttleEvery;
+    });
   }
 
   @override
