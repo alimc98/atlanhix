@@ -1,4 +1,5 @@
 ﻿import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard;
 import '../../application/dependencies.dart';
 import '../../core/fragmentation/fragment_ladder_cache.dart';
 import '../../domain/entities/proxy_profile.dart';
@@ -63,10 +64,22 @@ class SubscriptionsScreen extends StatelessWidget {
                 alignment: AlignmentDirectional.centerEnd,
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
-                  child: TextButton.icon(
-                    onPressed: () => _addDialog(context),
-                    icon: const Icon(Icons.add, size: 18),
-                    label: Text(l.addSubscription),
+                  child: Wrap(
+                    spacing: 4,
+                    children: [
+                      // v0.5.2 §user — IMPORT FROM CLIPBOARD: reads the
+                      // clipboard; a URL becomes a subscription instantly.
+                      TextButton.icon(
+                        onPressed: () => _importFromClipboard(context),
+                        icon: const Icon(Icons.content_paste, size: 18),
+                        label: Text(l.fromClipboard),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => _addDialog(context),
+                        icon: const Icon(Icons.add, size: 18),
+                        label: Text(l.addSubscription),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -85,6 +98,48 @@ class SubscriptionsScreen extends StatelessWidget {
         );
       },
     );
+  }
+
+  /// v0.5.2 §user — IMPORT FROM CLIPBOARD: one tap, no dialog typing. An
+  /// http(s) URL becomes a subscription; share links become nodes.
+  Future<void> _importFromClipboard(BuildContext context) async {
+    final l = AppLocalizations.of(context)!;
+    String text = '';
+    try {
+      text = (await Clipboard.getData(Clipboard.kTextPlain))?.text ?? '';
+    } catch (_) {}
+    text = text.trim();
+    if (text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(l.importFailed)));
+      return;
+    }
+    try {
+      if (text.startsWith('http://') || text.startsWith('https://')) {
+        final existing = deps.subscriptions.all
+            .where((s) => s.url.trim() == text)
+            .isNotEmpty;
+        if (!existing) {
+          await deps.subscriptionService.add(text);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(l.importSuccess(1))));
+          }
+          return;
+        }
+      }
+      final result = deps.importer.import(text);
+      await deps.profiles.upsertMany(result.profiles);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(l.importSuccess(result.profiles.length))));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(l.importFailed)));
+      }
+    }
   }
 
   Future<void> _addDialog(BuildContext context) async {

@@ -83,6 +83,17 @@ class AppSettings {
     // v0.5.0 §user: switch tolerance (ms) — how much better a challenger
     // node must be before the tunnel migrates (0 = any strictly-better).
     this.smartSwitchMarginMs = 60,
+    // v0.5.2 §user — THE PROFESSIONAL SMART SWITCH dials:
+    //  * marginPercent — "Switch to a faster server ONLY when it is faster
+    //    by N%" (default 30). The challenger's REAL delay must beat the
+    //    incumbent's by this share before the tunnel migrates.
+    //  * activeRecheckSeconds — "Recheck the server in use every N s"
+    //    (default 30): a cheap in-tunnel URL test of the ACTIVE node only.
+    //  * othersRescanMinutes — "Re-measure the other servers every N min"
+    //    (default 10): a full batch over the rest of the pool.
+    this.smartSwitchMarginPercent = 30,
+    this.smartSwitchActiveRecheckSeconds = 30,
+    this.smartSwitchOthersRescanMinutes = 10,
     // ---- v0.4.9 §user-fix: clipboard dedup (persisted offer memory) ----
     this.clipboardOfferedHashes = const [],
   });
@@ -193,6 +204,18 @@ class AppSettings {
   /// A dead active node is always abandoned regardless of this value.
   int smartSwitchMarginMs;
 
+  /// v0.5.2 §user — margin as a PERCENTAGE (default 30): migrate only when
+  /// the challenger is ≥ this % faster on the REAL delay test.
+  int smartSwitchMarginPercent;
+
+  /// v0.5.2 §user — recheck the ACTIVE node every N seconds (default 30).
+  /// 0 disables the active recheck (pool rescans still apply).
+  int smartSwitchActiveRecheckSeconds;
+
+  /// v0.5.2 §user — re-measure the OTHER servers every N minutes (default
+  /// 10). 0 disables the periodic pool rescan (connect-time ladder only).
+  int smartSwitchOthersRescanMinutes;
+
   /// Effective MTU for the TUN handoff (§24). AUTO resolves to 8500 —
   /// sing-box's own default TUN MTU on mobile (safe for all carriers).
   static const int autoMtu = 8500;
@@ -234,6 +257,9 @@ class AppSettings {
         'debugLogging': debugLogging,
         'smartSwitchIntervalSeconds': smartSwitchIntervalSeconds,
         'smartSwitchMarginMs': smartSwitchMarginMs,
+        'smartSwitchMarginPercent': smartSwitchMarginPercent,
+        'smartSwitchActiveRecheckSeconds': smartSwitchActiveRecheckSeconds,
+        'smartSwitchOthersRescanMinutes': smartSwitchOthersRescanMinutes,
         'clipboardOfferedHashes': clipboardOfferedHashes,
       };
 
@@ -289,6 +315,12 @@ class AppSettings {
         smartSwitchIntervalSeconds:
             j['smartSwitchIntervalSeconds'] as int? ?? 120,
         smartSwitchMarginMs: j['smartSwitchMarginMs'] as int? ?? 60,
+        smartSwitchMarginPercent:
+            j['smartSwitchMarginPercent'] as int? ?? 30,
+        smartSwitchActiveRecheckSeconds:
+            j['smartSwitchActiveRecheckSeconds'] as int? ?? 30,
+        smartSwitchOthersRescanMinutes:
+            j['smartSwitchOthersRescanMinutes'] as int? ?? 10,
         clipboardOfferedHashes:
             (j['clipboardOfferedHashes'] as List?)?.cast<String>() ?? const [],
       );

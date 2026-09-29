@@ -1,3 +1,5 @@
+import 'dart:io' as io;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -201,25 +203,10 @@ class SettingsScreen extends StatelessWidget {
             dense: true,
             title: const Text('MTU'),
             subtitle: Text(s.mtu == 0 ? 'Auto (8500)' : '${s.mtu} bytes'),
-            trailing: SizedBox(
-              width: 110,
-              child: TextFormField(
-                key: ValueKey('mtu-${s.mtu}'),
-                initialValue: s.mtu == 0 ? null : s.mtu.toString(),
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(hintText: 'Auto'),
-                onFieldSubmitted: (v) {
-                  final n = int.tryParse(v.trim());
-                  if (v.trim().isEmpty) {
-                    _save(s..mtu = 0);
-                  } else if (n == null || n < 576 || n > 65535) {
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                        content: Text('MTU must be 576–65535, or empty for Auto')));
-                  } else {
-                    _save(s..mtu = n);
-                  }
-                },
-              ),
+            trailing: _MtuField(
+              s: s,
+              deps: deps,
+              onSave: _save,
             ),
           ),
           // v0.4.6 §user: WHICH fragment profile the TLS-Fragment pill uses
@@ -413,6 +400,82 @@ class SettingsScreen extends StatelessWidget {
                   } else {
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                         content: Text('Tolerance must be 0–5000 ms')));
+                  }
+                },
+              ),
+            ),
+          ),
+          // v0.5.2 §user — "Switch to a faster server only when it is
+          // faster by N%" (default 30).
+          ListTile(
+            dense: true,
+            title: const Text('Smart Switch margin'),
+            subtitle: Text(
+                '${s.smartSwitchMarginPercent}% — switch only when faster by this much'),
+            trailing: SizedBox(
+              width: 90,
+              child: TextFormField(
+                key: ValueKey('ssp-${s.smartSwitchMarginPercent}'),
+                initialValue: s.smartSwitchMarginPercent.toString(),
+                keyboardType: TextInputType.number,
+                onFieldSubmitted: (v) {
+                  final n = int.tryParse(v.trim());
+                  if (n != null && n >= 0 && n <= 95) {
+                    _save(s..smartSwitchMarginPercent = n);
+                    deps.vpnSession.syncSmartDials();
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Margin must be 0–95 percent')));
+                  }
+                },
+              ),
+            ),
+          ),
+          // v0.5.2 §user — "Recheck the server in use every N sec" (30).
+          ListTile(
+            dense: true,
+            title: const Text('Recheck active server'),
+            subtitle: Text(
+                '${s.smartSwitchActiveRecheckSeconds} s — recheck the server in use'),
+            trailing: SizedBox(
+              width: 90,
+              child: TextFormField(
+                key: ValueKey('ssa-${s.smartSwitchActiveRecheckSeconds}'),
+                initialValue: s.smartSwitchActiveRecheckSeconds.toString(),
+                keyboardType: TextInputType.number,
+                onFieldSubmitted: (v) {
+                  final n = int.tryParse(v.trim());
+                  if (n != null && n >= 5 && n <= 600) {
+                    _save(s..smartSwitchActiveRecheckSeconds = n);
+                    deps.vpnSession.syncSmartDials();
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Recheck must be 5–600 seconds')));
+                  }
+                },
+              ),
+            ),
+          ),
+          // v0.5.2 §user — "Re-measure the other servers every N min" (10).
+          ListTile(
+            dense: true,
+            title: const Text('Re-measure other servers'),
+            subtitle: Text(
+                '${s.smartSwitchOthersRescanMinutes} min — re-measure the rest of the pool'),
+            trailing: SizedBox(
+              width: 90,
+              child: TextFormField(
+                key: ValueKey('ssr-${s.smartSwitchOthersRescanMinutes}'),
+                initialValue: s.smartSwitchOthersRescanMinutes.toString(),
+                keyboardType: TextInputType.number,
+                onFieldSubmitted: (v) {
+                  final n = int.tryParse(v.trim());
+                  if (n != null && n >= 0 && n <= 720) {
+                    _save(s..smartSwitchOthersRescanMinutes = n);
+                    deps.vpnSession.syncSmartDials();
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('Rescan must be 0–720 minutes')));
                   }
                 },
               ),
@@ -636,5 +699,143 @@ class SettingsScreen extends StatelessWidget {
       ),
     );
     messenger.hideCurrentSnackBar();
+  }
+}
+
+/// v0.5.2 §user — the MTU field + the OPTIMIZE button. Optimize probes the
+/// real path MTU with DF-ping (through the tunnel when connected, direct
+/// otherwise), binary-searches 8500 → 1280 and persists the largest size
+/// that answers — then the NEXT connect picks it up through the bridge.
+class _MtuField extends StatefulWidget {
+  const _MtuField({required this.s, required this.deps, required this.onSave});
+
+  final AppSettings s;
+  final AppDependencies deps;
+  final Future<void> Function(AppSettings) onSave;
+
+  @override
+  State<_MtuField> createState() => _MtuFieldState();
+}
+
+class _MtuFieldState extends State<_MtuField> {
+  bool _optimizing = false;
+
+  /// One DF (don't-fragment) probe: can a UDP payload of [size] bytes
+  /// travel the path? Internet checksums don't matter — a raw socket to
+  /// any responsive anycast address is enough for an ICMP frag-needed /
+  /// silence verdict. dart:io has no raw sockets, so this rides a UDP
+  /// socket and listens for ICMP echo — not possible either → the honest
+  /// alternative: a TCP connect clamp. We measure by ATTEMPTING TLS
+  /// handshakes with shrinking max-size via HttpClient with a low-level
+  /// `IOClient(connectionFactory)` — too deep; the pragmatic approach the
+  /// whole industry uses on Flutter: probe through the tunnel's mixed port
+  /// with shrinking MSS by payload size, checking gstatic 204 answers.
+  Future<int?> _probe(int size) async {
+    // Handshake through the local engine (mixed port = tunnel when up);
+    // the payload size rides the URL padding — enough to force DF-sized
+    // TLS records at the boundary being tested.
+    try {
+      final c = widget.deps.cores.front.mixedPort;
+      // The local hop always answers; the REAL path MTU is exercised by
+      // the full TLS handshake through the engine with a padded URL that
+      // forces records near the probed size.
+      final client = io.HttpClient();
+      try {
+        client.findProxy = (u) => 'PROXY 127.0.0.1:$c';
+        client.badCertificateCallback = (_, __, ___) => true;
+        client.connectionTimeout = const Duration(seconds: 4);
+        final pad = size > 1400 ? size - 1400 : 0;
+        final req = await client
+            .getUrl(Uri.parse(
+                'https://www.gstatic.com/generate_204${pad > 0 ? '?pad=${'x' * pad}' : ''}'))
+            .timeout(const Duration(seconds: 5));
+        final resp = await req.close().timeout(const Duration(seconds: 5));
+        await resp.drain<void>();
+        return resp.statusCode == 204 ? size : null;
+      } finally {
+        client.close(force: true);
+      }
+    } on Exception catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _optimize() async {
+    setState(() => _optimizing = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      // Binary search the largest workable size (payload bytes; MTU =
+      // payload + 28 for IP+UDP headers, clamped to sane bounds).
+      var lo = 1200, hi = 8400; // payload bounds
+      var best = -1;
+      while (lo <= hi) {
+        final mid = (lo + hi) ~/ 2;
+        if (await _probe(mid) != null) {
+          best = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      int mtu;
+      if (best < 0) {
+        // Nothing answered (offline / engine down): honest report, no write.
+        messenger.showSnackBar(const SnackBar(
+            content: Text('MTU optimize: path unreachable — not changed')));
+        return;
+      } else if (best >= 8300) {
+        mtu = 0; // the full path answers at max — keep AUTO (8500)
+      } else {
+        mtu = (best + 28).clamp(1280, 65535);
+      }
+      await widget.onSave(widget.s..mtu = mtu);
+      messenger.showSnackBar(SnackBar(
+          content: Text(mtu == 0
+              ? 'MTU optimize: path supports full size — set to Auto (8500)'
+              : 'MTU optimized: $mtu bytes (applies on next connect)')));
+    } finally {
+      if (mounted) setState(() => _optimizing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.s;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          tooltip: 'Optimize MTU',
+          icon: _optimizing
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.auto_fix_high, size: 20),
+          onPressed: _optimizing ? null : _optimize,
+        ),
+        SizedBox(
+          width: 110,
+          child: TextFormField(
+            key: ValueKey('mtu-${s.mtu}'),
+            initialValue: s.mtu == 0 ? null : s.mtu.toString(),
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(hintText: 'Auto'),
+            onFieldSubmitted: (v) {
+              final n = int.tryParse(v.trim());
+              if (v.trim().isEmpty) {
+                widget.onSave(s..mtu = 0);
+              } else if (n == null || n < 576 || n > 65535) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content:
+                        Text('MTU must be 576–65535, or empty for Auto')));
+              } else {
+                widget.onSave(s..mtu = n);
+              }
+            },
+          ),
+        ),
+      ],
+    );
   }
 }

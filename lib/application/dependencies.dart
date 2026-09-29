@@ -14,6 +14,8 @@ import '../core/core_detector.dart';
 import '../core/fragmentation/fragment_ladder_cache.dart';
 import '../core/health/latency_tester.dart';
 import '../core/health/test_scheduler.dart';
+import '../core/net/geo_locator.dart';
+import '../application/node_usage.dart';
 import '../core/runtime/binary_manager.dart';
 import '../core/runtime/clash_api_client.dart';
 import '../core/runtime/core_manager.dart';
@@ -103,16 +105,52 @@ class AppDependencies {
     // zip layout) and fall back to the CWD layout (dev runs from the repo
     // root). Directory.current alone broke the bundled zip when the user
     // launched the exe from another working directory (terminal/shortcut).
+    //
+    // v0.5.2 §windows-fix ("فراخوانی هسته‌ها مسیرش اشتباه بود و کار
+    // نمی‌کرد"): the old resolver ONLY ever probed
+    // <exe-dir>/cores/<platform>-<arch> — but users drop the engines in
+    // ANY of the following layouts, and a miss fell back to a CWD dir
+    // that exists nowhere near the exe. Now EVERY layout is probed for a
+    // NON-EMPTY dir and the winner (or the honest first guess) is logged
+    // at boot so a path bug is diagnosable from the log alone.
     Directory resolveCoresDir() {
-      final exe = Platform.resolvedExecutable;
-      final exeDir = File(exe).parent.path;
-      final bundled = Directory(
-          '$exeDir${Platform.pathSeparator}cores'
-          '${Platform.pathSeparator}${BinaryManager.platformDirName()}');
-      if (bundled.existsSync()) return bundled;
-      return Directory(
-          '${Directory.current.path}${Platform.pathSeparator}cores'
-          '${Platform.pathSeparator}${BinaryManager.platformDirName()}');
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final cwd = () {
+        try {
+          return Directory.current.path;
+        } catch (_) {
+          return exeDir; // Directory.current can throw on odd launches
+        }
+      }();
+      final plat = BinaryManager.platformDirName();
+      final sep = Platform.pathSeparator;
+      final roots = <String>[exeDir, cwd];
+      final nests = <String>[
+        'cores$sep$plat', // shipped zip layout
+        plat, // engines dropped NEXT TO the exe / repo root
+        'cores', // engines directly in cores\ (no platform nesting)
+        'bin', // portable-tools habit
+      ];
+      Directory? firstGuess;
+      for (final root in roots) {
+        for (final nest in nests) {
+          final d = Directory('$root$sep$nest');
+          firstGuess ??= d;
+          try {
+            if (d.existsSync() &&
+                d.listSync().any((e) =>
+                    e is File &&
+                    (e.path.endsWith('.exe') || e.path.endsWith('.exe.bak')))) {
+              return d;
+            }
+          } catch (_) {/* unreadable dir → keep probing */}
+        }
+      }
+      final fallback = firstGuess ?? Directory('$exeDir$sep' 'cores$sep$plat');
+      Logger.instance.warn('binary',
+          '[ATX-DART] CORES_DIR resolved to a MISSING dir: '
+          '\${fallback.path} — engines will read as notInstalled');
+      return fallback;
     }
 
     deps.binaryManager = BinaryManager(
@@ -129,6 +167,29 @@ class AppDependencies {
 
     deps.tester = LatencyTester();
     deps.healthStore = HealthStore();
+    // v0.5.2 §globe: home/exit IP geolocation for the dashboard globe
+    // (cheap client, no boot cost — lookups fire on connect events only).
+    deps.geo = GeoLocator();
+    // v0.5.2 §user: per-node usage accounting (delta attribution of the
+    // global engine counters to the active node's lifetime bucket).
+    deps.nodeUsage = NodeUsage(
+      () async {
+        final s = deps.store.section('nodeUsage');
+        if (s.isEmpty) return null;
+        return {
+          for (final e in s.entries)
+            e.key: (
+              up: ((e.value as Map)['up'] as num?)?.toInt() ?? 0,
+              down: ((e.value as Map)['down'] as num?)?.toInt() ?? 0,
+            ),
+        };
+      },
+      (m) => deps.store.putSection('nodeUsage', {
+            for (final e in m.entries)
+              e.key: {'up': e.value.up, 'down': e.value.down},
+          }),
+    );
+    unawaited(deps.nodeUsage.restore());
     deps.scheduler = TestScheduler(tester: deps.tester, store: deps.healthStore)
       // v0.4.9 §user-fix (ping/sweep dead): the scheduler was CONSTRUCTED
       // but never started (its pump refuses every job while stopped) and
@@ -218,7 +279,7 @@ class AppDependencies {
     await deps.warpRepo.load();
     _mark('warpRepo.load');
     deps.warpService = WarpService(registrar: WarpRegistrar(http: HttpWarpApi()));
-
+    deps.geo ??= GeoLocator();
     deps.connection = ConnectionController(
       repository: deps.profiles,
       healthStore: deps.healthStore,
@@ -351,6 +412,8 @@ class AppDependencies {
         directory: Directory('${dir.path}${Platform.pathSeparator}data'),
         schemaVersion: 1);
     deps.vault = InMemoryVault();
+    deps.geo = GeoLocator();
+    deps.nodeUsage = NodeUsage(() async => null, (_) async {});
     await deps.store.load();
     deps.profiles = ProfileRepository(deps.store, deps.vault);
     await deps.profiles.load();
@@ -377,6 +440,8 @@ class AppDependencies {
   late final LatencyTester tester;
   late final HealthStore healthStore;
   late final TestScheduler scheduler;
+  late GeoLocator geo; // v0.5.2 §globe (non-late: tests may preseed a stub)
+  late NodeUsage nodeUsage; // v0.5.2 §user: per-node up/down accounting
   late final CoreDetector detector;
   late final MultiFormatImporter importer;
   // v0.4.9 §user: end-to-end URL delay tester for the node list.

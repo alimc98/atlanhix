@@ -95,6 +95,14 @@ class BinaryManager {
       };
 
   /// Candidate absolute paths for one engine, in priority order.
+  ///
+  /// v0.5.2 §windows-fix: a candidate whose FILE exists must never be
+  /// shadowed by an earlier registered-but-stale dir — but that was already
+  /// the contract (first existing file wins). What WAS broken: nothing ever
+  /// told the manager the engines landed somewhere else after bootstrap.
+  /// [updateAppDir] now lets the bootstrap's smarter resolver (or the
+  /// Settings → Cores screen) re-point the search WITHOUT rebuilding the
+  /// object graph — runtimes re-inspect on their next start anyway.
   List<String> candidatePaths(CoreBinaryKind kind) {
     final out = <String>[];
     for (final name in [binaryName(kind), ...binaryAliases(kind)]) {
@@ -116,8 +124,15 @@ class BinaryManager {
     return out;
   }
 
+  /// v0.5.2 §windows-fix: re-point the app-bundle search dir at runtime
+  /// (bootstrap re-resolution / Settings → Cores override). The next
+  /// [inspect] sees it — runtimes re-inspect on every start when their
+  /// binary is missing.
+  set appCoresDirOverride(Directory dir) => _appCoresDir = dir;
+
   Future<CoreBinaryInfo> inspect(CoreBinaryKind kind) async {
-    for (final path in candidatePaths(kind)) {
+    final candidates = candidatePaths(kind);
+    for (final path in candidates) {
       final f = File(path);
       if (!f.existsSync()) continue;
       try {
@@ -130,6 +145,9 @@ class BinaryManager {
         final out = '${result.stdout}\n${result.stderr}';
         final version = _extractVersion(kind, out);
         if (version == null) {
+          Logger.instance.warn('binary',
+              '[ATX-DART] CORE_BINARY ${kind.name} at $path answered but its '
+              'version is unparsable → incompatible');
           return CoreBinaryInfo(
               kind: kind, status: 'incompatible', path: path);
         }
@@ -147,6 +165,11 @@ class BinaryManager {
             kind: kind, status: 'incompatible', path: path);
       }
     }
+    // v0.5.2 §windows-fix: a MISS is worth one line with the full search
+    // story — "مسیر اشتباه" is diagnosable from the log alone now.
+    Logger.instance.info('binary',
+        '[ATX-DART] CORE_BINARY ${kind.name} NOT FOUND in '
+        '${candidates.length} candidate path(s): ${candidates.take(4).join(' | ')}');
     return CoreBinaryInfo(kind: kind, status: 'notInstalled');
   }
 

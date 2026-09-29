@@ -41,11 +41,22 @@ class VpnSession {
   VpnSession({required this.deps}) {
     controller = AndroidVpnController();
     _sub = controller.states.listen((_) => _syncFromAndroid());
+    // v0.5.2 §user: PER-NODE USAGE — fold the engine's global counters
+    // into the active node's bucket on every native state poll (the same
+    // 2 s cadence the dashboard reads for speeds). Delta accounting keeps
+    // every byte attributed to exactly the node that carried it.
+    _usageTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (controller.isConnected && selectedNode != null) {
+        deps.nodeUsage
+            .fold(selectedNode!.id, controller.upBytes, controller.downBytes);
+      }
+    });
   }
 
   final AppDependencies deps;
   late final AndroidVpnController controller;
   StreamSubscription<AndroidVpnPhase>? _sub;
+  Timer? _usageTimer;
 
   /// The node chosen for the current/next connection (set by the UI).
   ProxyProfile? selectedNode;
@@ -60,13 +71,19 @@ class VpnSession {
     scheduler: deps.scheduler,
     health: deps.healthStore,
     interval: Duration(seconds: deps.appSettings.smartSwitchIntervalSeconds),
+    // v0.5.2 §user — the professional dials (live-synced in _armSmart):
+    marginPercent: deps.appSettings.smartSwitchMarginPercent,
+    activeRecheckInterval:
+        Duration(seconds: deps.appSettings.smartSwitchActiveRecheckSeconds),
+    othersRescanInterval:
+        Duration(minutes: deps.appSettings.smartSwitchOthersRescanMinutes),
     // v0.5.0 §perf-fix: the WHOLE candidate pool in ONE call. The old
     // per-node urlProbe re-entered the transient probe engine per candidate
     // — every new node id REBUILT the Box (a full libbox restart) and all
     // parallel measurements died mid-sweep, so the ladder starved ("the
     // switch never switches") and pings took forever. One boot + parallel
     // delay tests now feeds the ladder real numbers in seconds.
-    urlBatchProbe: (batch) async {
+    urlBatchProbe: (batch, {onNode}) async {
       final url = deps.appSettings.effectiveDelayTestUrl;
       // 1) LIVE engine (VPN up): measure through the running config —
       //    tags of nodes not in the running pool answer honestly below.
@@ -76,11 +93,14 @@ class VpnSession {
             missing: ProbeResult(
                 ok: false, latencyMs: null,
                 errorKind: 'engine-off',
-                detail: 'not in live config'));
+                detail: 'not in live config'),
+            onNode: onNode);
       }
       // 2) Transient probe engine (no VPN): one boot for the whole pool.
+      //    v0.5.2 §user: per-node reporting rides straight through so the
+      //    dashboard hero counts the ladder live.
       final ms = await ProbeEngine.instance
-          .delayTestBatch(batch, url, 5000);
+          .delayTestBatch(batch, url, 5000, onNode: onNode);
       if (ms.isEmpty) {
         return {
           for (final p in batch)
@@ -150,11 +170,14 @@ class VpnSession {
   /// Delay-tests [batch] through [api] in parallel. A tag missing from the
   /// RUNNING config gets [missing] verbatim (engine-off → honest
   /// fall-through), never a fake 5-second timeout.
+  /// v0.5.2 §user: [onNode] fires per LANDED measurement (live ladder
+  /// count); a missing-tag node is reported immediately with null ms.
   static Future<Map<String, ProbeResult>> _delayBatchVia(
     ClashApiClient api,
     List<ProxyProfile> batch,
     String url, {
     required ProbeResult missing,
+    void Function(ProxyProfile p, int? ms)? onNode,
   }) async {
     final out = <String, ProbeResult>{};
     await Future.wait(batch.map((p) async {
@@ -165,6 +188,7 @@ class VpnSession {
       final tags = await api.proxyTags();
       if (tags == null || !tags.contains(tag)) {
         out[p.id] = missing;
+        onNode?.call(p, null);
         return;
       }
       int? ms;
@@ -173,6 +197,7 @@ class VpnSession {
       } catch (_) {
         ms = null;
       }
+      onNode?.call(p, ms);
       out[p.id] = ms == null
           ? ProbeResult(ok: false, latencyMs: null, errorKind: 'timeout')
           : ProbeResult(ok: true, latencyMs: ms);
@@ -384,7 +409,12 @@ class VpnSession {
     final st = deps.appSettings;
     _smart
       ..interval = Duration(seconds: st.smartSwitchIntervalSeconds)
-      ..marginMs = st.smartSwitchMarginMs;
+      ..marginMs = st.smartSwitchMarginMs
+      ..marginPercent = st.smartSwitchMarginPercent
+      ..activeRecheckInterval =
+          Duration(seconds: st.smartSwitchActiveRecheckSeconds)
+      ..othersRescanInterval =
+          Duration(minutes: st.smartSwitchOthersRescanMinutes);
     _smartSub ??= _smart.changes.listen(_migrateForSmartSwitch);
     _smart.start(SmartSwitch.candidatesOf(deps.profiles.all),
         currentId: currentId);
@@ -398,6 +428,11 @@ class VpnSession {
     if (!smartSwitch) return;
     _armSmart(currentId: selectedNode?.id ?? _smart.best?.id);
   }
+
+  /// v0.5.2 §user: LIVE-applies the three professional dials (percent
+  /// margin / active recheck / others rescan) to a RUNNING ladder — same
+  /// no-op-while-off contract as [syncSmartTuning].
+  void syncSmartDials() => syncSmartTuning();
 
   /// v0.4.8 §user: turns the Smart Switch OFF — the user's tap on the
   /// card's OFF state is an explicit hand-back to manual selection. Before
@@ -415,6 +450,40 @@ class VpnSession {
 
   /// Proxy for UI reads (Nodes-tab card highlight).
   bool get isSmartSwitchActive => smartSwitch;
+
+  /// v0.5.2 §user-fix: the ladder's OWN measurement stream (sweeps + the
+  /// initial pre-connect ladder + active rechecks) — the Nodes tab reads
+  /// THIS to repaint its ping column. Before, the list only listened to
+  /// scheduler.results, so the switcher's REAL delay results (which skip
+  /// the scheduler entirely) never moved the UI and the first sweep read
+  /// as "no pings" until a manual re-test.
+  Stream<void> get smartMeasured => _smart.measured;
+
+  /// v0.5.2 §user — LIVE pre-connect ladder progress (start → per landed
+  /// node → finish; see [LadderProgress]). The dashboard hero reads THIS
+  /// while connecting: "testing 5/11… 180 ms" instead of a bare
+  /// "Connecting…". Background rescans/rechecks stay silent (announce-only
+  /// runs report), and a run that died to the 9 s cap still closes itself.
+  Stream<LadderProgress> get smartLadderProgress => _smart.progress;
+
+  /// v0.5.2 §user-fix ("بار اول وصل نمیشه، بار دوم درسته") — THE PRE-CONNECT
+  /// LADDER. When Smart Switch is ON and the user has no explicit pick, the
+  /// connect FIRST measures the whole runnable pool with REAL delay tests
+  /// (one transient-engine boot) and connects to the FASTEST healthy node.
+  /// Bounded by [SmartSwitch.initialSweep]'s maxWait — a slow engine boot
+  /// degrades to the health-store pick, never hangs the connect.
+  Future<void> _preConnectLadder(String trace) async {
+    final candidates = SmartSwitch.candidatesOf(deps.profiles.all);
+    if (candidates.isEmpty) return;
+    Logger.instance.info('smart-switch',
+        '$trace SMART_LADDER pre-connect sweep over ${candidates.length} node(s)');
+    await _smart.initialSweep(candidates);
+    final pick = _smart.best;
+    if (pick != null) {
+      Logger.instance.info('smart-switch',
+          '$trace SMART_LADDER winner=${pick.name} lat=${deps.healthStore.statsOf(pick.id)?.lastLatencyMs ?? '?'}ms');
+    }
+  }
 
   /// The core that will actually run the connection on this device — from
   /// the REAL state (selected node + engine gating), never hardcoded.
@@ -539,6 +608,16 @@ class VpnSession {
     }
 
     // ── 2. AUTO-SELECT among ANDROID-RUNNABLE nodes only. ──
+    // v0.5.2 §user: with the switch ON, the ladder RUNS FIRST (real delay
+    // per candidate) and the fastest healthy node connects. With it OFF,
+    // the classic health-store pick applies.
+    if (smartSwitch) {
+      await _preConnectLadder(trace);
+    }
+    // The tunnel boot veto goes up REGARDLESS of the ladder outcome — from
+    // here until the tunnel verdict no probe-engine start may fight the
+    // VPN engine for cache.db (v0.5.2 keeps the v0.5.0 veto discipline).
+    ProbeEngine.instance.setTunnelBootHold(true);
     final best = _bestNode();
     if (best == null) {
       lastError = 'NO_RUNNABLE_NODE';
@@ -552,6 +631,10 @@ class VpnSession {
         '$trace NODE_SELECTED source=auto node=${best.name} proto=${best.protocol.name} transport=${best.transport.name} core=${best.effectiveCore.name}');
     // v0.4.7 §user: smart mode is the DEFAULT — with no explicit pick the
     // ladder starts here and keeps re-testing; tunnel migrates on change.
+    // v0.5.2 §order: the ladder must arm AFTER the tunnel boot completed
+    // (it did inside connect → _connectProfile already holds the boot
+    // veto; arming here is safe) — and best was pre-selected by the
+    // pre-connect ladder's REAL measurements.
     if (smartSwitch) _armSmart(currentId: best.id);
     return _connectProfile(best, trace);
   }
@@ -792,8 +875,40 @@ class VpnSession {
 
       // 3. Real connect: permission → service → TUN → engine → probe.
       Logger.instance.info('vpn-session', '$trace VPN_PERMISSION requested');
+      // v0.5.2 §first-connect-fix ("بار اول وصل نمیشه، بار دوم درسته"):
+      // the probe fires THE INSTANT the native side reports VALIDATING —
+      // on the very first connect the engine's outbound DNS + TLS are
+      // still warming, so a single 8 s probe window regularly expired and
+      // the whole attempt was torn down (second attempt: warm caches →
+      // instant pass). The probe now RETRIES inside the same startup
+      // budget (3 tries, 1.2 s apart) — one honest session, not a
+      // teardown-for-warmup.
       final ok = await controller.connect(
-        probeTunnel: () => _probeThroughTunnel(trace),
+        probeTunnel: () async {
+          for (var i = 0; i < 3; i++) {
+            if (i > 0) {
+              await Future<void>.delayed(const Duration(milliseconds: 1200));
+              Logger.instance.info('vpn-session',
+                  '$trace HEALTH_RETRY attempt=${i + 1}/3 (engine warm-up grace)');
+            }
+            final port = deps.cores.front.mixedPort;
+            final probe = await deps.tester.testHttpViaSocksProxy(
+              '127.0.0.1',
+              port,
+              'https://www.gstatic.com/generate_204',
+              timeout: const Duration(seconds: 8),
+            );
+            if (probe.ok) {
+              lastLatencyMs = probe.latencyMs;
+              Logger.instance.info('vpn-session',
+                  '$trace HEALTH_CHECK via mixed:$port OK ${probe.latencyMs ?? '?'}ms');
+              return true;
+            }
+            Logger.instance.warn('vpn-session',
+                '$trace HEALTH_CHECK try=${i + 1}/3 kind=${probe.errorKind} detail=${probe.detail != null ? Logger.redact(probe.detail!) : '-'}');
+          }
+          return false;
+        },
         startupTimeout: Duration(seconds: deps.appSettings.connectionTimeoutSeconds),
         proxyMode: deps.appSettings.proxyMode,
       );
@@ -1346,6 +1461,7 @@ class VpnSession {
 
   void dispose() {
     _warpWatchdog?.cancel();
+    _usageTimer?.cancel();
     _smartSub?.cancel();
     _smart.dispose();
     _sub?.cancel();

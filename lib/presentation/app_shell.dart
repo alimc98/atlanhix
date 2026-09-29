@@ -17,6 +17,8 @@ import 'screens/logs_screen.dart';
 import 'screens/settings_screen.dart';
 import 'widgets/common_widgets.dart';
 import 'widgets/atlanhix_logo.dart';
+import 'widgets/dashboard_globe.dart' show GlobeAnchor, GlobeAnchorKind;
+import 'widgets/globe_backdrop.dart';
 
 /// Responsive shell: desktop sidebar (§52) / mobile bottom navigation (§51).
 class AppShell extends StatefulWidget {
@@ -37,8 +39,15 @@ class AppShell extends StatefulWidget {
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
+class _AppShellState extends State<AppShell>
+    with SingleTickerProviderStateMixin {
   int _index = 0;
+  int _previousIndex = 0;
+  late final AnimationController _slideCtrl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 340),
+    value: 1,
+  );
   ConnectionPhase _phase = ConnectionPhase.disconnected;
   ProxyProfile? _active;
   AppError? _lastError;
@@ -98,7 +107,19 @@ class _AppShellState extends State<AppShell> {
   void dispose() {
     _sub?.cancel();
     _vpnSub?.cancel();
+    _slideCtrl.dispose();
     super.dispose();
+  }
+
+  /// v0.5.2 §user — tab switch: play the slide EVERY time (restarting the
+  /// controller from 0), remembering the direction the user moved.
+  void _goTo(int i) {
+    if (i == _index) return;
+    setState(() {
+      _previousIndex = _index;
+      _index = i;
+      _slideCtrl.forward(from: 0);
+    });
   }
 
   @override
@@ -137,14 +158,79 @@ class _AppShellState extends State<AppShell> {
 
     // Settings -> WARP row pushes /warp; the shell owns the Navigator.
     // (registered in main.dart routes)
-    final body = Row(
+    final connected = _phase == ConnectionPhase.connected;
+    final connecting = const [
+      ConnectionPhase.connecting,
+      ConnectionPhase.startingCore,
+      ConnectionPhase.switching,
+      ConnectionPhase.validating,
+    ].contains(_phase);
+    final body = Stack(
+      fit: StackFit.expand,
       children: [
-        if (wide) _buildRail(labels),
-        Expanded(child: screens[_index]),
+        // v0.5.2 §user — THE GLOBE IS THE APP BACKGROUND: one full-screen
+        // point globe behind every screen; its wash shifts color when the
+        // tunnel connects (the app visibly changes mood). The geo anchors
+        // (home/exit fixes) ride along when the locator has them.
+        Positioned.fill(
+          child: Builder(builder: (context) {
+            final geo = widget.deps.geo;
+            final home = geo.lastHome;
+            final exit = connected ? geo.lastExit : null;
+            final anchors = <GlobeAnchor>[
+              if (home != null)
+                GlobeAnchor(
+                    lat: home.lat, lon: home.lon, kind: GlobeAnchorKind.home),
+              if (exit != null)
+                GlobeAnchor(
+                    lat: exit.lat,
+                    lon: exit.lon,
+                    kind: GlobeAnchorKind.exit,
+                    active: true),
+            ];
+            return GlobeBackdrop(
+              connected: connected,
+              connecting: connecting,
+              anchors: anchors,
+            );
+          }),
+        ),
+        Row(
+          children: [
+            if (wide) _buildRail(labels),
+            Expanded(
+              child: ClipRect(
+                // v0.5.2 §user — SLIDE transition between tabs: a soft
+                // directional slide driven by one 340 ms controller.
+                child: AnimatedBuilder(
+                  animation: _slideCtrl,
+                  builder: (context, child) {
+                    final t =
+                        Curves.easeOutCubic.transform(_slideCtrl.value);
+                    final dir = _index >= _previousIndex ? 1.0 : -1.0;
+                    return Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        Transform.translate(
+                          offset: Offset(dir * (1 - t) * 40, 0),
+                          child: Opacity(
+                              opacity: t, child: screens[_index]),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ),
+          ],
+        ),
       ],
     );
 
     return Scaffold(
+      // v0.5.2 §user: transparent scaffold — the globe backdrop (the
+      // Stack's base layer in `body`) IS the page background now.
+      backgroundColor: Colors.transparent,
       appBar: wide
           ? null
           : AppBar(
@@ -188,34 +274,12 @@ class _AppShellState extends State<AppShell> {
                 ),
               ],
             ),
-      body: body,
-      bottomNavigationBar: wide
+      body: body,      bottomNavigationBar: wide
           ? null
-          : NavigationBar(
-              selectedIndex: _index.clamp(0, labels.length - 1),
-              onDestinationSelected: (i) => setState(() => _index = i),
-              height: 72,
-              // v0.4.4 brand sheet: tiles on Surface, hairline Border,
-              // rounded-square active indicator (not a soft blob).
-              backgroundColor: ThemeExt.of(context).surface,
-              indicatorColor: ThemeExt.of(context).accentSoft,
-              indicatorShape:
-                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              shadowColor: Colors.transparent,
-              surfaceTintColor: Colors.transparent,
-              labelBehavior:
-                  NavigationDestinationLabelBehavior.alwaysShow,
-              destinations: [
-                // v0.4.1 § user request: the mobile bar must expose ALL
-                // sections — Settings (with the DNS tools) was desktop-only
-                // before this, which read as "the app has no settings".
-                for (var i = 0; i < labels.length; i++)
-                  NavigationDestination(
-                    icon: _navIcon(i, selected: false),
-                    selectedIcon: _navIcon(i, selected: true),
-                    label: labels[i],
-                  ),
-              ],
+          : _ExpressiveNavBar(
+              labels: labels,
+              index: _index,
+              onTap: (i) => _goTo(i),
             ),
       // v0.4.7 §user: the floating green play button is GONE — the
       // dashboard's power pill is the single connect control (sheet v2).
@@ -276,7 +340,7 @@ class _AppShellState extends State<AppShell> {
         borderRadius: BorderRadius.circular(NexusSpacing.radiusInput),
         child: InkWell(
           borderRadius: BorderRadius.circular(NexusSpacing.radiusInput),
-          onTap: () => setState(() => _index = i),
+          onTap: () => _goTo(i),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             child: Row(
@@ -408,6 +472,132 @@ class _BrandNavIcon extends StatelessWidget {
         height: 30,
         fit: BoxFit.contain,
         errorBuilder: (_, __, ___) => const SizedBox(width: 30, height: 30),
+      ),
+    );
+  }
+}
+
+/// v0.5.2 §user — EXPRESSIVE PILL NAVIGATION BAR. A floating rounded bar
+/// (hairline border, glass surface) whose active tab is a MORPHING pill:
+/// the pill slides + stretches between destinations with a spring, the
+/// active icon scales up gently and the label fades in. Pure Flutter
+/// animation (no third-party dependency), theme-token only.
+class _ExpressiveNavBar extends StatelessWidget {
+  const _ExpressiveNavBar({
+    required this.labels,
+    required this.index,
+    required this.onTap,
+  });
+
+  final List<String> labels;
+  final int index;
+  final ValueChanged<int> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    final l = AppLocalizations.of(context)!;
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+        child: Container(
+          height: 68,
+          decoration: BoxDecoration(
+            color: c.surface.withValues(alpha: 0.92),
+            borderRadius: BorderRadius.circular(34),
+            border: Border.all(color: c.border),
+          ),
+          child: Row(
+            children: [
+              for (var i = 0; i < labels.length; i++)
+                Expanded(
+                  child: _PillDestination(
+                    label: labels[i],
+                    icon: _AppShellState._navIcon(i, selected: index == i),
+                    selected: index == i,
+                    colors: c,
+                    onTap: () => onTap(i),
+                    navLabel: l,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PillDestination extends StatelessWidget {
+  const _PillDestination({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.colors,
+    required this.onTap,
+    required this.navLabel,
+  });
+
+  final String label;
+  final Widget icon;
+  final bool selected;
+  final ThemeExt colors;
+  final VoidCallback onTap;
+  final AppLocalizations navLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final fa = Localizations.localeOf(context).languageCode == 'fa';
+    final shown = fa ? label : label.toUpperCase();
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(28),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 340),
+        curve: Curves.easeOutCubic,
+        margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+        padding: EdgeInsets.symmetric(
+            horizontal: selected ? 14 : 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: selected ? colors.accentSoft : Colors.transparent,
+          borderRadius: BorderRadius.circular(28),
+          border: Border.all(
+            color: selected ? colors.accent.withValues(alpha: 0.4) : Colors.transparent,
+          ),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // The active icon breathes (gentle scale) via an implicit
+            // animation — a soft handoff, not a jump.
+            TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.92, end: selected ? 1.12 : 0.92),
+              duration: const Duration(milliseconds: 340),
+              curve: Curves.easeOutBack,
+              builder: (context, s, child) =>
+                  Transform.scale(scale: s, child: child),
+              child: IconTheme.merge(
+                data: IconThemeData(
+                  size: 22,
+                  color: selected ? colors.accent : colors.textMuted,
+                ),
+                child: icon,
+              ),
+            ),
+            const SizedBox(height: 2),
+            AnimatedDefaultTextStyle(
+              duration: const Duration(milliseconds: 240),
+              style: Theme.of(context).textTheme.labelSmall!.copyWith(
+                    fontSize: selected ? 10 : 9,
+                    color: selected ? colors.accent : colors.textMuted,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+                    letterSpacing: 0.4,
+                  ),
+              child: Text(shown, maxLines: 1, overflow: TextOverflow.ellipsis),
+            ),
+          ],
+        ),
       ),
     );
   }

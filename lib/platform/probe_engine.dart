@@ -134,15 +134,22 @@ class ProbeEngine {
   /// for one sweep, and every in-flight measurement died mid-restart. Now:
   /// ONE engine up for the WHOLE batch, then all nodes measured in parallel
   /// against a single config. Returns id → ms (null = no answer in time).
+  ///
+  /// v0.5.2 §user: [onNode] fires the moment each node's measurement LANDS
+  /// (parallel completion order) — the dashboard hero's live ladder count
+  /// ("testing 5/11… 180 ms") counts real progress instead of a frozen
+  /// spinner. Null → silent (legacy callers unchanged).
   Future<Map<String, int?>> delayTestBatch(
     List<ProxyProfile> nodes,
     String url,
-    int timeoutMs,
-  ) async {
+    int timeoutMs, {
+    void Function(ProxyProfile p, int? ms)? onNode,
+  }) async {
     if (!isAndroid || nodes.isEmpty) return const {};
     final api = await ensureUp(nodes);
     if (api == null) return const {};
-    final out = await _measureBatch(api, nodes, url, timeoutMs);
+    final out = await _measureBatch(api, nodes, url, timeoutMs,
+        onNode: onNode);
     _armIdleStop();
     return out;
   }
@@ -154,8 +161,9 @@ class ProbeEngine {
     ClashApiClient api,
     List<ProxyProfile> nodes,
     String url,
-    int timeoutMs,
-  ) async {
+    int timeoutMs, {
+    void Function(ProxyProfile p, int? ms)? onNode,
+  }) async {
     final entries = await Future.wait(nodes.map((p) async {
       final tag = '${SingBoxRuntime.tagPrefix}${p.id}';
       int? ms;
@@ -164,6 +172,7 @@ class ProbeEngine {
       } catch (_) {
         ms = null;
       }
+      onNode?.call(p, ms);
       return MapEntry(p.id, ms);
     }));
     return Map.fromEntries(entries);

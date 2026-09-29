@@ -55,6 +55,7 @@ class AtlanhixProbeChannel(private val activity: android.app.Activity) {
         // replaced by the fresh config. startOrReloadService on a live server
         // would reload; an explicit restart keeps the generation story simple.
         if (engine?.isRunning == true) {
+            probeIdle = false // latch: a tunnel start may not race this stop
             stopLocked()
         }
         val platform = object : AtlanhixPlatformInterface {
@@ -115,9 +116,18 @@ class AtlanhixProbeChannel(private val activity: android.app.Activity) {
             engine?.stop()
         } catch (_: Exception) {}
         engine = null
+        // v0.5.2 §first-connect-fix: the tunnel startTunnel() waits on this
+        // latch — the probe Box must be FULLY stopped (its native close
+        // joined) before the VPN engine reuses the shared libbox state,
+        // otherwise both Boxes race cache.db in the same process and the
+        // FIRST tunnel start dies with `initialize cache-file: timeout`.
+        probeIdle = true
     }
 
     companion object {
         const val CHANNEL = "dev.atlanhix/probe"
+
+        /** @see stopLocked */
+        @Volatile @JvmStatic var probeIdle: Boolean = true
     }
 }

@@ -4,12 +4,14 @@ import 'package:flutter/material.dart';
 import '../../application/connection_controller.dart';
 import '../../application/dependencies.dart';
 import '../../core/android_node_support.dart';
+import '../../core/net/geo_locator.dart';
 import '../../settings/app_settings.dart';
+import '../../settings/smart_switch.dart' show LadderProgress;
 import '../../domain/entities/health.dart';
 import '../../domain/entities/proxy_profile.dart';
 import '../../localization/generated/app_localizations.dart';
 import '../../theme/theme.dart';
-import '../widgets/galaxy_background.dart';
+import '../widgets/live_monitor.dart';
 import '../widgets/traffic_graph.dart';
 
 /// Main dashboard (§30): answers in 5 seconds — connected? which node?
@@ -51,6 +53,29 @@ class _DashboardScreenState extends State<DashboardScreen>
   StreamSubscription? _selectionSub;
   StreamSubscription? _counterSub;
   StreamSubscription<HealthRecord>? _healthSub;
+
+  // v0.5.2 §user — LIVE PRE-CONNECT LADDER: while the smart switch measures
+  // the pool before connecting, the hero counts per-node progress
+  // ("testing 5/11… 180 ms") instead of a bare "Connecting…". Starts and
+  // finishes are sentinels on the same stream, so this state needs no
+  // extra bookkeeping beyond the reset on disconnect.
+  LadderProgress _ladder = LadderProgress.idle;
+  StreamSubscription<LadderProgress>? _ladderSub;
+
+  // v0.5.2 §globe — IP geolocation for the dashboard globe: the HOME fix
+  // (device's direct IP) and the EXIT fix (tunnel egress). A host fix
+  // resolves the selected node's server BEFORE the tunnel comes up so the
+  // globe can pre-ping Romania while connecting.
+  GeoFix? _homeFix;
+  GeoFix? _exitFix;
+  GeoFix? _hostFix; // provisional exit from the node's server hostname
+  String? _geoHostKey; // which node server _hostFix was resolved for
+  String? _exitIpHint; // last seen exit IP from the engine, when exposed
+  bool _geoBusy = false;
+  StreamSubscription<String>? _geoSub;
+
+  // v0.5.2 §globe: the unfold intro now lives on the SHELL's backdrop
+  // (the globe is the app background); the dashboard no longer owns it.
 
   bool get _onAndroid => widget.deps.vpnSession.controller.isAndroid;
 
@@ -95,6 +120,10 @@ class _DashboardScreenState extends State<DashboardScreen>
           _sessionUpBytes = 0;
         }
       });
+      // v0.5.2 §globe: the tunnel lifecycle drives the geo roles —
+      // disconnect re-verifies HOME; connect resolves the EXIT.
+      unawaited(_refreshGeo(
+          connecting: s.phase != ConnectionPhase.disconnected));
     });
     // v0.4.1 §5: single authoritative state — on Android the VPN session is
     // the source of truth; mirror its native phases into the dashboard UI.
@@ -102,11 +131,17 @@ class _DashboardScreenState extends State<DashboardScreen>
       _vpnSub = widget.deps.vpnSession.states.listen((_) {
         if (!mounted) return;
         final vs = widget.deps.vpnSession;
+        final prev = _phase;
         setState(() {
           _phase = vs.uiPhase;
           _active = vs.selectedNode;
           if (vs.lastLatencyMs != null) _latencyMs = vs.lastLatencyMs;
         });
+        // v0.5.2 §globe: phase transitions re-point the geo roles.
+        if (_phase != prev) {
+          unawaited(
+              _refreshGeo(connecting: _phase != ConnectionPhase.disconnected));
+        }
       });
       // Selection changed without a phase event (tap while disconnected):
       // repaint so the tapped node appears the moment it is tapped.
@@ -115,6 +150,9 @@ class _DashboardScreenState extends State<DashboardScreen>
         setState(() {
           _active = widget.deps.vpnSession.selectedNode;
         });
+        // v0.5.2 §globe: a different node → its server pin pre-lights even
+        // before the user connects (cached; zero cost on repeats).
+        unawaited(_refreshGeo(connecting: true));
       });
     }
     // v0.5.0 §user-fix: the controller's counters are refreshed by the
@@ -170,6 +208,167 @@ class _DashboardScreenState extends State<DashboardScreen>
         setState(() {}); // session clock + metrics
       }
     });
+
+    // v0.5.2 §globe — start with the persisted home fix (no boot cost; the
+    // first paint already shows the pin from the LAST run) then refresh it.
+    _geoSub = widget.deps.store.changes.listen((section) {
+      if (section == 'geo') _restoreGeoCache();
+    });
+    _restoreGeoCache();
+
+    // v0.5.2 §user: the ladder's progress stream keeps the latest event for
+    // NEW subscribers too — a dashboard remounted mid-ladder (tab switch)
+    // resumes the count instead of waiting for the next node to land.
+    _ladderSub = widget.deps.vpnSession.smartLadderProgress.listen((p) {
+      if (!mounted) return;
+      setState(() => _ladder = p);
+    });
+  }
+
+  /// v0.5.2 §globe: the LAST home fix persists in the JsonStore section
+  /// `geo` — the globe shows the pin on the first paint of every run and
+  /// only then re-verifies (one network call, once per IP rotation).
+  void _restoreGeoCache() {
+    final s = widget.deps.store.section('geo');
+    if (s.isEmpty) return;
+    final j = s['home'] as Map<String, dynamic>?;
+    if (j == null || _homeFix != null) return;
+    final lat = (j['lat'] as num?)?.toDouble();
+    final lon = (j['lon'] as num?)?.toDouble();
+    final cc = (j['countryCode'] as String?) ?? '';
+    if (lat == null || lon == null || cc.isEmpty) return;
+    _homeFix = GeoFix(
+      lat: lat,
+      lon: lon,
+      countryCode: cc,
+      countryName: (j['countryName'] as String?) ?? '',
+      city: (j['city'] as String?) ?? '',
+      ip: (j['ip'] as String?) ?? '',
+    );
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _persistGeoCache(GeoFix f) async {
+    try {
+      await widget.deps.store.putSection('geo', {
+        'home': {
+          'lat': f.lat,
+          'lon': f.lon,
+          'countryCode': f.countryCode,
+          'countryName': f.countryName,
+          'city': f.city,
+          'ip': f.ip,
+        },
+      });
+    } on Exception catch (_) {
+      // Persistence is best-effort decoration — never surface.
+    }
+  }
+
+  /// v0.5.2 §globe — ONE resolver for both anchors.
+  ///
+  /// * On CONNECT (or selection): resolve the selected node's server host
+  ///   immediately (provisional pin — "Romania is about to light up"), then
+  ///   locate the tunnel EXIT once connected (honest egress),
+  /// * On DISCONNECT: re-verify HOME (the direct IP) and clear the exit.
+  /// Every step is best-effort: a dead network just leaves the globe calm.
+  Future<void> _refreshGeo({required bool connecting}) async {
+    if (_geoBusy) return;
+    _geoBusy = true;
+    try {
+      final geo = widget.deps.geo;
+      final active = _onAndroid
+          ? widget.deps.vpnSession.selectedNode
+          : _active;
+      if (!connecting) {
+        // DISCONNECTED: the direct-IP fix is the truth again.
+        final fix = await geo.locateHome(force: _exitFix != null);
+        if (fix != null && mounted) {
+          setState(() => _homeFix = fix);
+          unawaited(_persistGeoCache(fix));
+        }
+        if (mounted) setState(() => _exitFix = null);
+        return;
+      }
+      // CONNECTING/CONNECTED: pin the node's server first (cheap, cached).
+      final host = active?.server ?? '';
+      if (host.isNotEmpty && host != _geoHostKey) {
+        _geoHostKey = host;
+        final hf = await geo.locateHost(host);
+        if (hf != null && mounted) setState(() => _hostFix = hf);
+      }
+      // Then the honest tunnel-exit fix once the tunnel is actually up.
+      if (_phase == ConnectionPhase.connected) {
+        final fix = await geo.locateExit(
+            force: _exitIpHint == null, exitIpHint: _exitIpHint);
+        if (fix != null && mounted) {
+          setState(() {
+            _exitFix = fix;
+            _exitIpHint = fix.ip.isNotEmpty ? fix.ip : _exitIpHint;
+          });
+        }
+      }
+    } on Exception catch (_) {
+      // Geo is decorative: never break the dashboard over it.
+    } finally {
+      _geoBusy = false;
+    }
+  }
+
+  /// v0.5.2 §user — the ladder's line for the GEO ROUTE chip: the LAST
+  /// node tested with its ping, next to the Iran → Romania route text
+  /// ("تست ۳/۱۱ · ۱۲۰ ms"). Silent for idle.
+  String _ladderText(AppLocalizations l) {
+    final lp = _ladder;
+    return lp.lastMs == null
+        ? l.ladderTesting(lp.done, lp.total)
+        : l.ladderTestingMs(lp.done, lp.total, lp.lastMs!);
+  }
+
+  /// True while a lookup is in flight for the CURRENT role (the chip shows
+  /// "Locating…" instead of pretending nothing is happening).
+  bool get _geoPending => _geoBusy;
+
+  /// v0.5.2 §globe — the anchor fixes now live on the shell's backdrop
+  /// (the shell reads deps.geo directly). The dashboard keeps the CHIP's
+  /// text resolution + the geo refresh lifecycle.
+
+  /// Top-right chip text: honest state, no invented cities.
+  String _geoChipLabel(AppLocalizations l) {
+    if (_geoPending) return l.globeLocating;
+    final exit = _exitFix;
+    if (_phase == ConnectionPhase.connected) {
+      if (exit != null) {
+        final where = exit.hasCity
+            ? exit.city
+            : (exit.countryName.isNotEmpty
+                ? exit.countryName
+                : exit.countryCode);
+        return l.globeConnectedVia(where);
+      }
+      return l.globeExitUnknown;
+    }
+    if (_phase == ConnectionPhase.disconnected) {
+      final home = _homeFix;
+      if (home != null) {
+        final where = home.hasCity
+            ? home.city
+            : (home.countryName.isNotEmpty
+                ? home.countryName
+                : home.countryCode);
+        return '${l.globeDirectConnection} · $where';
+      }
+      return l.globeDirectConnection;
+    }
+    // Connecting/validating with a host fix: "Bucharest connecting…".
+    final host = _hostFix;
+    if (host != null) {
+      final where = host.hasCity
+          ? host.city
+          : (host.countryName.isNotEmpty ? host.countryName : host.countryCode);
+      return '$where · ${l.globeConnectingYou}';
+    }
+    return l.globeConnectingYou;
   }
 
   /// v0.5.0 §user-fix ("وقتی برمی‌گردم گراف/پینگ تکون نمی‌خورن"): the
@@ -236,6 +435,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     _selectionSub?.cancel();
     _counterSub?.cancel();
     _healthSub?.cancel();
+    _geoSub?.cancel();
+    _ladderSub?.cancel();
     _clock?.cancel();
     super.dispose();
   }
@@ -280,8 +481,25 @@ class _DashboardScreenState extends State<DashboardScreen>
     // (CONNECTED / …) sits under it, the active-node card rides ON the
     // artwork, the 3-metric stats row + hairline speed graph follow, and a
     // NARROW full-width power pill (Disconnect mockup) closes the hero.
+    // v0.5.2 §user — LIVE LADDER READOUT: while the smart switch's
+    // pre-connect ladder measures the pool, the phase word becomes the
+    // per-node counter ("testing 5/11 · 180 ms"). A started run announces
+    // itself; the FINISH sentinel (or a non-ladder connect) falls back to
+    // the plain word — the count never outlives its run. startingCore /
+    // switching keep the plain word (those phases run after the ladder).
+    final ladderLive = (_phase == ConnectionPhase.connecting ||
+            _phase == ConnectionPhase.validating) &&
+        _ladder.total > 0 &&
+        !_ladder.isFinish &&
+        _ladder.id != LadderProgress.idle.id;
     final phaseWord = switch (_phase) {
       ConnectionPhase.connected => l.connected,
+      ConnectionPhase.connecting ||
+      ConnectionPhase.validating when ladderLive =>
+        _ladder.lastMs == null
+            ? l.ladderTesting(_ladder.done, _ladder.total)
+            : l.ladderTestingMs(
+                _ladder.done, _ladder.total, _ladder.lastMs!),
       ConnectionPhase.connecting ||
       ConnectionPhase.startingCore ||
       ConnectionPhase.switching ||
@@ -331,41 +549,39 @@ class _DashboardScreenState extends State<DashboardScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // ── HERO (v0.5.0 §user — the mockup): the traffic graph now
-              // LIVES ON the moon artwork (same Stack), compact 320 px so
-              // the power pill stays above the fold; a TOTAL TRAFFIC pill
-              // sits top-left and the phase word + node card stay pinned.
+              // ── HERO (v0.5.2 §globe — the mockup, third act): the point
+              // cloud GLOBE replaces the moon artwork. The world map unfolds
+              // onto the sphere on every connect (the Vercel spell), the
+              // selected node's server pre-lights its pin, and once the
+              // tunnel is up the great-circle ARC home → exit draws itself
+              // (Iran → Romania). Traffic graph + pills ride it unchanged.
               SizedBox(
                 height: 320,
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    // Moon artwork (unchanged fall-through to the painted
-                    // galaxy when the asset is missing).
-                    ShaderMask(
-                      shaderCallback: (r) => const LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Color(0xFFFFFFFF),
-                          Color(0xFFFFFFFF),
-                          Color(0x00FFFFFF),
-                        ],
-                        stops: [0.0, 0.62, 1.0],
-                      ).createShader(r),
-                      blendMode: BlendMode.dstIn,
-                      child: Image.asset(
-                        'assets/brand/moon_hero.png',
-                        fit: BoxFit.cover,
-                        alignment: Alignment.topCenter,
-                        // v0.5.0 §lag: the artwork is 1536×1024 but the hero
-                        // paints at ~900×320 logical (~3× on a phone). Decode
-                        // at the DEVICE pixel size — a full-res decode costs
-                        // ~6 MB + GPU upload on every app start and every
-                        // memory-pressure reload, for pixels that are
-                        // downscaled away.
-                        cacheWidth: 1200,
-                        errorBuilder: (_, __, ___) => const GalaxyBackground(),
+                    // v0.5.2 §user: the HERO GLOBE moved to the APP BACKDROP
+                    // (shell-level, visible through every screen). The hero
+                    // keeps the geo chips + graph over the shared artwork.
+                    // ── GEO ROUTE chip (top-right, mirror of the traffic
+                    // pill): where am I → where is the exit.
+                    // v0.5.2 §user: DURING the pre-connect ladder the chip
+                    // also carries the live per-node count — the last node
+                    // tested and its ping ride under the Iran → Romania
+                    // route line ("Bucharest connecting… · تست ۳/۱۱ · ۱۲۰ ms").
+                    // Shown while the ladder is COUNTING (any phase — the
+                    // sweep runs before/along the tunnel handshake); the
+                    // finish sentinel fades it back out.
+                    Positioned(
+                      top: 10,
+                      right: 4,
+                      child: _GeoRouteChip(
+                        label: _geoChipLabel(l),
+                        ladderText: _ladder.id != LadderProgress.idle.id &&
+                                !_ladder.isFinish &&
+                                _ladder.total > 0
+                            ? _ladderText(l)
+                            : null,
                       ),
                     ),
                     // ── TOTAL TRAFFIC pill (mockup top-left): cumulative
@@ -543,6 +759,10 @@ class _DashboardScreenState extends State<DashboardScreen>
               // lives ON the hero artwork instead.
               _UsageCard(
                   downBytes: _sessionDownBytes, upBytes: _sessionUpBytes),
+              const SizedBox(height: 10),
+              // v0.5.2 §user — LIVE MONITOR: battery %/temp + app CPU/RAM
+              // (Android only; a no-op SizedBox elsewhere).
+              const LiveMonitor(),
               const SizedBox(height: 18),
               // ── NARROW POWER PILL (mockup bottom bar) — full width,
               // hairline ring + power glyph + LIVE localized label. ──
@@ -856,6 +1076,110 @@ class _TotalTrafficPill extends StatelessWidget {
                       color: c.textPrimary,
                       fontWeight: FontWeight.w600,
                     ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// v0.5.2 §globe — GEO ROUTE chip (hero top-right, mirroring the traffic
+/// pill): where the tunnel exits ("Bucharest connected") / home ("Direct ·
+/// Tehran") / locating. Same glass pill language as [_TotalTrafficPill].
+/// v0.5.2 §user: while the smart switch's pre-connect ladder runs,
+/// [ladderText] adds a THIRD live line under the route — the last node
+/// tested and its ping ("تست ۳/۱۱ · ۱۲۰ ms") — so the Iran → Romania
+/// journey visibly counts through the pool. Null hides the line.
+class _GeoRouteChip extends StatelessWidget {
+  const _GeoRouteChip({required this.label, this.ladderText});
+
+  final String label;
+
+  /// Live ladder readout; null = hidden (no ladder running).
+  final String? ladderText;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: c.surface.withValues(alpha: 0.62),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: c.border.withValues(alpha: 0.7)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.travel_explore, size: 18, color: c.textPrimary),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('GEO ROUTE',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: c.textSecondary,
+                        letterSpacing: 1.2,
+                        fontSize: 9,
+                      )),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 180),
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: c.textPrimary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ),
+              // v0.5.2 §user — the LIVE ladder line: crossfades in when
+              // the sweep starts counting and out when it closes, so the
+              // chip never jumps. The empty state keeps a zero-size box
+              // (a plain SizedBox would go UNCONSTRAINED inside the
+              // AnimatedSwitcher's stack and explode the layout).
+              AnimatedSize(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+                alignment: Alignment.topLeft,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  child: ladderText == null
+                      ? const SizedBox(width: 0, height: 0)
+                      : Padding(
+                          key: ValueKey(ladderText),
+                          padding: const EdgeInsets.only(top: 3),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.bolt_rounded,
+                                  size: 12,
+                                  color: c.success.withValues(alpha: 0.9)),
+                              const SizedBox(width: 3),
+                              Flexible(
+                                child: Text(
+                                  ladderText!,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .labelSmall
+                                      ?.copyWith(
+                                        color: c.success,
+                                        fontWeight: FontWeight.w600,
+                                        fontFeatures: const [
+                                          FontFeature.tabularFigures()
+                                        ],
+                                      ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                ),
               ),
             ],
           ),

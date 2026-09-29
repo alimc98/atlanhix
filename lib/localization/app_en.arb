@@ -273,5 +273,54 @@
   "clipboardLater": "Later",
   "warpOfferTitle": "Node looks filtered",
   "warpOfferBody": "{node} did not answer {count} URL tests through the tunnel. Enable the WARP chain in front of it? (You can turn WARP off any time.)",
-  "warpOfferEnable": "Chain WARP"
+  "warpOfferEnable": "Chain WARP",
+  "globeYourLocation": "Your location",
+  "globeExit": "Exit",
+  "globeRoute": "Route",
+  "globeLocating": "Locating…",
+  "globeConnectingYou": "Connecting you…",
+  "ladderTesting": "testing {done}/{total}…",
+  "@ladderTesting": {
+    "placeholders": {
+      "done": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "ladderTestingMs": "testing {done}/{total} · {ms} ms",
+  "@ladderTestingMs": {
+    "placeholders": {
+      "done": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      },
+      "ms": {
+        "type": "int"
+      }
+    }
+  },
+  "globeConnectedVia": "{city} connected",
+  "@globeConnectedVia": {
+    "placeholders": {
+      "city": {
+        "type": "String"
+      }
+    }
+  },
+  "globeDistance": "{km} km",
+  "@globeDistance": {
+    "placeholders": {
+      "km": {
+        "type": "String"
+      }
+    }
+  },
+  "globeDirectConnection": "Direct connection",
+  "globeUnknownLocation": "Unknown location",
+  "globeExitUnknown": "Exit unknown"
 }

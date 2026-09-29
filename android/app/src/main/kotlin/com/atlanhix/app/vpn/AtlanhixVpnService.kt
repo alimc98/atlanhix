@@ -181,6 +181,21 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
         pendingConfig = null
         val include = stringList(config, "includeApps")
         val exclude = stringList(config, "excludeApps")
+        // v0.5.2 §first-connect-fix: if the TRANSIENT probe engine was up
+        // when Dart handed off this config, its Box may still be joining
+        // its stop. Wait (bounded) for the probe channel's idle latch so
+        // both Boxes never contend cache.db — the "first connect fails,
+        // second works" device report.
+        runCatching {
+            val probeIdle = com.atlanhix.app.vpn.AtlanhixProbeChannel.probeIdle
+            if (!probeIdle) {
+                AtlanhixTrace.log("PROBE_LATCH_WAIT")
+                for (i in 0 until 40) {
+                    if (com.atlanhix.app.vpn.AtlanhixProbeChannel.probeIdle) break
+                    Thread.sleep(100)
+                }
+            }
+        }
         val eng = engine ?: LibboxEngine(this, this).also { engine = it }
         eng.start(configJson, include, exclude, engineEvents)
         // State advances ONLY via engineEvents + Dart-side probe (§5).

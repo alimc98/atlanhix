@@ -1411,6 +1411,78 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Chain WARP'**
   String get warpOfferEnable;
+
+  /// No description provided for @globeYourLocation.
+  ///
+  /// In en, this message translates to:
+  /// **'Your location'**
+  String get globeYourLocation;
+
+  /// No description provided for @globeExit.
+  ///
+  /// In en, this message translates to:
+  /// **'Exit'**
+  String get globeExit;
+
+  /// No description provided for @globeRoute.
+  ///
+  /// In en, this message translates to:
+  /// **'Route'**
+  String get globeRoute;
+
+  /// No description provided for @globeLocating.
+  ///
+  /// In en, this message translates to:
+  /// **'Locating…'**
+  String get globeLocating;
+
+  /// No description provided for @globeConnectingYou.
+  ///
+  /// In en, this message translates to:
+  /// **'Connecting you…'**
+  String get globeConnectingYou;
+
+  /// No description provided for @ladderTesting.
+  ///
+  /// In en, this message translates to:
+  /// **'testing {done}/{total}…'**
+  String ladderTesting(int done, int total);
+
+  /// No description provided for @ladderTestingMs.
+  ///
+  /// In en, this message translates to:
+  /// **'testing {done}/{total} · {ms} ms'**
+  String ladderTestingMs(int done, int total, int ms);
+
+  /// No description provided for @globeConnectedVia.
+  ///
+  /// In en, this message translates to:
+  /// **'{city} connected'**
+  String globeConnectedVia(String city);
+
+  /// No description provided for @globeDistance.
+  ///
+  /// In en, this message translates to:
+  /// **'{km} km'**
+  String globeDistance(String km);
+
+  /// No description provided for @globeDirectConnection.
+  ///
+  /// In en, this message translates to:
+  /// **'Direct connection'**
+  String get globeDirectConnection;
+
+  /// No description provided for @globeUnknownLocation.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown location'**
+  String get globeUnknownLocation;
+
+  /// No description provided for @globeExitUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Exit unknown'**
+  String get globeExitUnknown;
 }
 
 class _AppLocalizationsDelegate

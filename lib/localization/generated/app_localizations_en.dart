@@ -686,4 +686,48 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get warpOfferEnable => 'Chain WARP';
+
+  @override
+  String get globeYourLocation => 'Your location';
+
+  @override
+  String get globeExit => 'Exit';
+
+  @override
+  String get globeRoute => 'Route';
+
+  @override
+  String get globeLocating => 'Locating…';
+
+  @override
+  String get globeConnectingYou => 'Connecting you…';
+
+  @override
+  String ladderTesting(int done, int total) {
+    return 'testing $done/$total…';
+  }
+
+  @override
+  String ladderTestingMs(int done, int total, int ms) {
+    return 'testing $done/$total · $ms ms';
+  }
+
+  @override
+  String globeConnectedVia(String city) {
+    return '$city connected';
+  }
+
+  @override
+  String globeDistance(String km) {
+    return '$km km';
+  }
+
+  @override
+  String get globeDirectConnection => 'Direct connection';
+
+  @override
+  String get globeUnknownLocation => 'Unknown location';
+
+  @override
+  String get globeExitUnknown => 'Exit unknown';
 }

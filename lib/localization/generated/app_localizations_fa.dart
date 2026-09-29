@@ -686,4 +686,48 @@ class AppLocalizationsFa extends AppLocalizations {
 
   @override
   String get warpOfferEnable => 'زنجیر با WARP';
+
+  @override
+  String get globeYourLocation => 'موقعیت شما';
+
+  @override
+  String get globeExit => 'خروجی';
+
+  @override
+  String get globeRoute => 'مسیر';
+
+  @override
+  String get globeLocating => 'در حال یافتن موقعیت…';
+
+  @override
+  String get globeConnectingYou => 'در حال وصل شدن…';
+
+  @override
+  String ladderTesting(int done, int total) {
+    return 'تست $done/$total…';
+  }
+
+  @override
+  String ladderTestingMs(int done, int total, int ms) {
+    return 'تست $done/$total · $ms ms';
+  }
+
+  @override
+  String globeConnectedVia(String city) {
+    return '$city وصل شد';
+  }
+
+  @override
+  String globeDistance(String km) {
+    return '$km کیلومتر';
+  }
+
+  @override
+  String get globeDirectConnection => 'اتصال مستقیم';
+
+  @override
+  String get globeUnknownLocation => 'موقعیت نامشخص';
+
+  @override
+  String get globeExitUnknown => 'خروجی نامشخص';
 }

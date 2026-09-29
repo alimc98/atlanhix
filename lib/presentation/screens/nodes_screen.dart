@@ -3,7 +3,9 @@ import 'dart:io';
 import 'dart:math' show sqrt;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard;
 import '../../application/dependencies.dart';
+import '../../application/node_usage.dart' show fmtBytes;
 import '../../core/android_node_support.dart';
 import '../../core/logger.dart';
 import '../../core/node_core_choice.dart';
@@ -34,11 +36,14 @@ class _NodesScreenState extends State<NodesScreen> {
   _NodeFilter _filter = _NodeFilter.all;
   /// v0.4.3: Subscriptions merged into this tab — 0 = nodes, 1 = subs.
   int _section = 0;
+  /// v0.5.2 §user: per-subscription sub-tab filter (null = All).
+  String? _subFilterId;
   String _sortBy = 'latency';
   List<ProxyProfile> _profiles = const [];
   String? _selectedId;
   StreamSubscription<void>? _selectionSub;
   StreamSubscription<HealthRecord>? _healthSub;
+  StreamSubscription<void>? _smartSub;
   bool _healthCoalesce = false;
 
   @override
@@ -65,6 +70,19 @@ class _NodesScreenState extends State<NodesScreen> {
         if (mounted) setState(() {});
       });
     });
+    // v0.5.2 §user-fix ("پینگ‌ها بار اول نمیاد"): Smart Switch's sweeps,
+    // its PRE-CONNECT ladder and the active rechecks write into HealthStore
+    // DIRECTLY (they never pass scheduler.results). Subscribe to the
+    // ladder's own measured stream — the first sweep's REAL pings now
+    // repaint this list immediately.
+    _smartSub = widget.deps.vpnSession.smartMeasured.listen((_) {
+      if (!mounted || _healthCoalesce) return;
+      _healthCoalesce = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _healthCoalesce = false;
+        if (mounted) setState(() {});
+      });
+    });
     // v0.4.1 §5: reflect the VPN session's explicit selection immediately —
     // the tapped node is shown as chosen on the dashboard BEFORE any connect.
     _selectedId = widget.deps.vpnSession.selectedNode?.id;
@@ -83,6 +101,7 @@ class _NodesScreenState extends State<NodesScreen> {
   void dispose() {
     _selectionSub?.cancel();
     _healthSub?.cancel();
+    _smartSub?.cancel();
     super.dispose();
   }
 
@@ -90,7 +109,18 @@ class _NodesScreenState extends State<NodesScreen> {
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context)!;
     final c = ThemeExt.of(context);
-    final nodes = _filterSort(_profiles);
+    // v0.5.2 §user — per-subscription SUB-TABS: the segmented bar gains a
+    // chip per subscription (its name) beside All; the list filters to that
+    // subscription's nodes only.
+    List<ProxyProfile> nodes;
+    if (_section == 1) {
+      nodes = _filterSort(_profiles);
+    } else if (_subFilterId != null) {
+      nodes = _filterSort(
+          _profiles.where((p) => p.subscriptionId == _subFilterId).toList());
+    } else {
+      nodes = _filterSort(_profiles);
+    }
     final fa = Localizations.localeOf(context).languageCode == 'fa';
 
     // v0.4.3: one tab instead of two — the WARP chain card rides at the top
@@ -175,7 +205,13 @@ class _NodesScreenState extends State<NodesScreen> {
               ),
               const SizedBox(width: 8),
               // Compact ghost actions kept from the functional layout —
-              // import / add / test-all.
+              // clipboard / import / add / test-all.
+              // v0.5.2 §user — IMPORT FROM CLIPBOARD: one tap imports the
+              // clipboard's share links (no dialog, no typing).
+              _GhostIconButton(
+                  icon: Icons.content_paste_rounded,
+                  tooltip: l.fromClipboard,
+                  onTap: () => _importFromClipboard(context)),
               _GhostIconButton(
                   icon: Icons.download_rounded,
                   tooltip: l.import,
@@ -275,11 +311,15 @@ class _NodesScreenState extends State<NodesScreen> {
                   itemBuilder: (context, i) {
                     final p = nodes[i];
                     final s = widget.deps.healthStore.statsOf(p.id);
+                    // v0.5.2 §user: lifetime usage attributed to this node.
+                    final usage = widget.deps.nodeUsage.of(p.id);
                     return NodeTile(
                       profile: p,
                       stats: s,
                       selected: _selectedId == p.id,
                       isAndroid: Platform.isAndroid,
+                      usageUp: usage.up,
+                      usageDown: usage.down,
                       onConnect: () => _onNodeTap(context, p),
                       onCoreTap: () => _showCorePicker(context, p),
                       onEdit: () async {
@@ -306,22 +346,81 @@ class _NodesScreenState extends State<NodesScreen> {
   }
 
   Widget _sectionBar(ThemeExt c, bool fa) {
+    // v0.5.2 §user — sub-tabs: All · <sub names…> under the Nodes segment.
+    final subs = widget.deps.subscriptions.all;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
-      child: SegmentedButton<int>(
-        segments: [
-          ButtonSegment(
-              value: 0,
-              icon: const Icon(Icons.hub_outlined, size: 18),
-              label: Text(fa ? 'نودها' : 'Nodes')),
-          ButtonSegment(
-              value: 1,
-              icon: const Icon(Icons.rss_feed_outlined, size: 18),
-              label: Text(fa ? 'اشتراک‌ها' : 'Subscriptions')),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SegmentedButton<int>(
+            segments: [
+              ButtonSegment(
+                  value: 0,
+                  icon: const Icon(Icons.hub_outlined, size: 18),
+                  label: Text(fa ? 'نودها' : 'Nodes')),
+              ButtonSegment(
+                  value: 1,
+                  icon: const Icon(Icons.rss_feed_outlined, size: 18),
+                  label: Text(fa ? 'اشتراک‌ها' : 'Subscriptions')),
+            ],
+            selected: {_section},
+            onSelectionChanged: (v) => setState(() => _section = v.first),
+            style: const ButtonStyle(visualDensity: VisualDensity.compact),
+          ),
+          if (_section == 0 && subs.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            SizedBox(
+              height: 34,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                children: [
+                  _subChip(
+                    label: fa ? 'همه' : 'All',
+                    selected: _subFilterId == null,
+                    onTap: () => setState(() => _subFilterId = null),
+                  ),
+                  for (final s in subs)
+                    _subChip(
+                      label: s.name.trim().isEmpty
+                          ? (fa ? 'ساب ${s.id.substring(0, 4)}' : 'Sub ${s.id.substring(0, 4)}')
+                          : s.name,
+                      selected: _subFilterId == s.id,
+                      onTap: () => setState(() => _subFilterId = s.id),
+                    ),
+                ],
+              ),
+            ),
+          ],
         ],
-        selected: {_section},
-        onSelectionChanged: (v) => setState(() => _section = v.first),
-        style: const ButtonStyle(visualDensity: VisualDensity.compact),
+      ),
+    );
+  }
+
+  Widget _subChip(
+      {required String label, required bool selected, required VoidCallback onTap}) {
+    final c = ThemeExt.of(context);
+    return Padding(
+      padding: const EdgeInsetsDirectional.only(end: 8),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(999),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            color: selected ? c.accentSoft : Colors.transparent,
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(
+                color: selected ? c.accent : c.border.withValues(alpha: 0.7)),
+          ),
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: selected ? c.accent : c.textSecondary,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+                ),
+          ),
+        ),
       ),
     );
   }
@@ -585,6 +684,37 @@ class _NodesScreenState extends State<NodesScreen> {
     }
   }
 
+  /// v0.5.2 §user — IMPORT FROM CLIPBOARD: reads the clipboard and imports
+  /// whatever it recognizes (share links / base64 / YAML / JSON) as nodes.
+  /// One tap — the manual paste dialog stays for editing before import.
+  Future<void> _importFromClipboard(BuildContext context) async {
+    final l = AppLocalizations.of(context)!;
+    String text = '';
+    try {
+      text = (await Clipboard.getData(Clipboard.kTextPlain))?.text ?? '';
+    } catch (_) {}
+    text = text.trim();
+    if (text.isEmpty) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.importFailed)));
+      return;
+    }
+    try {
+      final result = widget.deps.importer.import(text);
+      await widget.deps.profiles.upsertMany(result.profiles);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l.importSuccess(result.profiles.length))));
+      }
+    } on AppError catch (e) {
+      Logger.instance.error('clipboard-import', e.userMessage);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('${l.importFailed}: ${e.userMessage}')));
+      }
+    }
+  }
+
   Future<void> _showImportDialog(BuildContext context) async {
     final controller = TextEditingController();
     final l = AppLocalizations.of(context)!;
@@ -687,6 +817,8 @@ class NodeTile extends StatelessWidget {
     this.onDelete,
     this.selected = false,
     this.isAndroid = false,
+    this.usageUp,
+    this.usageDown,
   });
 
   final ProxyProfile profile;
@@ -701,6 +833,11 @@ class NodeTile extends StatelessWidget {
   final VoidCallback onCoreTap;
   final bool selected;
   final bool isAndroid;
+
+  /// v0.5.2 §user — lifetime upload/download attributed to THIS node
+  /// (delta accounting in NodeUsage). Null → hidden (no accounting).
+  final int? usageUp;
+  final int? usageDown;
 
   @override
   Widget build(BuildContext context) {
@@ -848,6 +985,21 @@ class NodeTile extends StatelessWidget {
                               ?.copyWith(
                                   color: selected ? c.accent : c.textMuted),
                         ),
+                        // v0.5.2 §user — USAGE under each node: lifetime
+                        // upload + download while THIS node carried traffic.
+                        // Hidden when the accounting is unavailable.
+                        if (usageUp != null && usageDown != null) ...[
+                          const SizedBox(height: 1),
+                          Text(
+                            '↑ ${fmtBytes(usageUp!)}  ↓ ${fmtBytes(usageDown!)}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelSmall
+                                ?.copyWith(color: c.textSecondary),
+                          ),
+                        ],
                       ],
                     ),
                   ),

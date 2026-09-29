@@ -21,7 +21,7 @@ void main() {
       scheduler: TestScheduler(tester: LatencyTester(), store: health),
       health: health,
       interval: const Duration(seconds: 0), // connect-time sweep only
-      urlBatchProbe: (batch) async => {
+      urlBatchProbe: (batch, {onNode}) async => {
         for (final p in batch)
           p.id: ProbeResult(ok: true, latencyMs: p.id == 'fast' ? 100 : 800),
       },
@@ -41,7 +41,7 @@ void main() {
       scheduler: TestScheduler(tester: LatencyTester(), store: health),
       health: health,
       interval: const Duration(seconds: 0),
-      urlBatchProbe: (batch) async => {
+      urlBatchProbe: (batch, {onNode}) async => {
         // The incumbent answers; the challenger times out.
         'inc': ProbeResult(ok: true, latencyMs: 200),
       }, // 'chal' missing from the map
@@ -63,7 +63,7 @@ void main() {
         perNodeCalls++;
         return ProbeResult(ok: true, latencyMs: 900);
       },
-      urlBatchProbe: (batch) async =>
+      urlBatchProbe: (batch, {onNode}) async =>
           {for (final p in batch) p.id: ProbeResult(ok: true, latencyMs: 120)},
     );
     switcher.start([_p('a'), _p('b')], currentId: 'a');

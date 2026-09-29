@@ -56,6 +56,11 @@ void main() {
       scheduler: TestScheduler(tester: LatencyTester(), store: health),
       health: health,
       interval: const Duration(seconds: 0),
+      // v0.5.2 §user: the PERCENT margin gates pure latency-led swaps.
+      // This test pins the COMPOSITE ranking semantics — a steadier node
+      // must out-RANK a spiky one — so the margin is disabled here (the
+      // dials' migration behavior is covered in smart_switch_dials_test).
+      marginPercent: 0,
     );
     switcher.start([_p('spiky'), _p('steady')], currentId: 'spiky');
     await Future<void>.delayed(const Duration(milliseconds: 450));

@@ -274,5 +274,54 @@
   "clipboardLater": "بعداً",
   "warpOfferTitle": "نود به نظر فیلتر است",
   "warpOfferBody": "{node} به {count} تست پیاپی URL از داخل تونل جواب نداد. زنجیر WARP را جلوی آن روشن کنم؟ (هر وقت بخواهی می‌توانی WARP را خاموش کنی.)",
-  "warpOfferEnable": "زنجیر با WARP"
+  "warpOfferEnable": "زنجیر با WARP",
+  "globeYourLocation": "موقعیت شما",
+  "globeExit": "خروجی",
+  "globeRoute": "مسیر",
+  "globeLocating": "در حال یافتن موقعیت…",
+  "globeConnectingYou": "در حال وصل شدن…",
+  "ladderTesting": "تست {done}/{total}…",
+  "@ladderTesting": {
+    "placeholders": {
+      "done": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "ladderTestingMs": "تست {done}/{total} · {ms} ms",
+  "@ladderTestingMs": {
+    "placeholders": {
+      "done": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      },
+      "ms": {
+        "type": "int"
+      }
+    }
+  },
+  "globeConnectedVia": "{city} وصل شد",
+  "@globeConnectedVia": {
+    "placeholders": {
+      "city": {
+        "type": "String"
+      }
+    }
+  },
+  "globeDistance": "{km} کیلومتر",
+  "@globeDistance": {
+    "placeholders": {
+      "km": {
+        "type": "String"
+      }
+    }
+  },
+  "globeDirectConnection": "اتصال مستقیم",
+  "globeUnknownLocation": "موقعیت نامشخص",
+  "globeExitUnknown": "خروجی نامشخص"
 }

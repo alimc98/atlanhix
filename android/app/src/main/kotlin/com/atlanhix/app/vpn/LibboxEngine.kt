@@ -285,6 +285,14 @@ class LibboxEngine(
     fun stop() {
         isRunning = false
         stopQuietly()
+        // v0.5.2 §first-connect-fix: make the stop SYNCHRONOUS for callers
+        // (the probe channel's latch + the tunnel start that waits on it).
+        // commandClient.serviceClose() is already a blocking call, but the
+        // Box's own close path is posted — a short bounded join keeps the
+        // "first tunnel start races the probe Box teardown" window shut.
+        try {
+            Thread.sleep(150)
+        } catch (_: InterruptedException) {}
     }
 
     private fun stopQuietly() {

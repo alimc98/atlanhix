@@ -70,6 +70,7 @@ class AtlanhixVpnChannel(private val activity: Activity) {
         "clearProxy" -> clearProxy()
         // v0.4.7 §user — updater: open the release APK URL in the browser
         // (user-visible download; no in-app sideloading).
+        "deviceStats" -> deviceStats()
         "openUrl" -> {
             val url = arg?.optString("url").orEmpty()
             try {
@@ -149,6 +150,57 @@ class AtlanhixVpnChannel(private val activity: Activity) {
     }
 
     private var consentIntent: Intent? = null
+
+    /**
+     * v0.5.2 §user — LIVE MONITOR: battery %, battery temperature (°C),
+     * THIS app's CPU share and RAM footprint. All values are real device
+     * readings (BatteryManager / Debug / /proc self stat), never faked;
+     * unavailable readings come back as null and the UI shows '—'.
+     */
+    private fun deviceStats(): JSONObject {
+        val out = JSONObject()
+        val bm = activity.getSystemService(android.content.Context.BATTERY_SERVICE)
+            as? android.os.BatteryManager
+        val level = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+        out.put("batteryPct", if (level in 0..100) level else JSONObject.NULL)
+        // Temperature: BATTERY_PROPERTY_PROPERTIES is flaky across vendors —
+        // fall back to the ACTION_BATTERY_CHANGED sticky broadcast.
+        var temp: Double? = null
+        runCatching {
+            val i = activity.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+            val t = i?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+            if (t != null && t != Int.MIN_VALUE) temp = t / 10.0
+        }
+        out.put("batteryTemp", temp ?: JSONObject.NULL)
+        // Charging state (nice-to-have on the monitor tile).
+        var charging: Boolean? = null
+        runCatching {
+            val i = activity.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+            val st = i?.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1) ?: -1
+            charging = st == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
+                    st == android.os.BatteryManager.BATTERY_STATUS_FULL
+        }
+        out.put("charging", charging ?: JSONObject.NULL)
+        // This app's RAM (PSS via Debug) — honest, cheap, no /proc parsing.
+        out.put("ramBytes", android.os.Debug.getPss() * 1024L)
+        // This app's CPU share: utime+stime deltas from /proc/self/stat over
+        // a 200 ms window, normalized by core count (best-effort, honest).
+        runCatching {
+            val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+            fun cpuMs(): Long {
+                val st = java.io.File("/proc/self/stat").readText().split(" ")
+                val ut = st[13].toLong() * 1000L / 100L
+                val sy = st[14].toLong() * 1000L / 100L
+                return ut + sy
+            }
+            val a = cpuMs()
+            Thread.sleep(200)
+            val b = cpuMs()
+            val pct = ((b - a).toDouble() / 200.0 / cores * 100.0)
+            out.put("cpuPct", pct.coerceIn(0.0, 100.0))
+        }.onFailure { out.put("cpuPct", JSONObject.NULL) }
+        return out
+    }
 
     companion object {
         const val RC_VPN = 4141 // 'AT'
