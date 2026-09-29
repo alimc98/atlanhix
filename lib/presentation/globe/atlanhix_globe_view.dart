@@ -1,0 +1,682 @@
+// v0.5.4 §globe3d — ATLANHIX GLOBE VIEW. The signature visual: a REAL GPU
+// planet (fragment shader: dark rocky surface, rim light, atmosphere,
+// night-lights) with the user→node great-circle ROUTE and its packet flow
+// drawn by an overlay painter, rotating slowly and reacting to the real
+// VPN connection state.
+//
+// Architecture contract:
+//  * ZERO VPN coupling — the widget receives plain values (source,
+//    destination, visual state) and never imports application/ or settings/.
+//  * GPU-first, CPU-fallback: when the fragment-program asset fails to
+//    load (test envs, shader compiler issues) the painter draws the same
+//    planet procedurally on the CPU — the look survives, the FPS budget
+//    drops. A nullable [ui.FragmentProgram] drives the switch.
+//  * One controller object per widget instance mutates camera/phase fields;
+//    the overlay painter subscribes to a throttled listenable so steady
+//    rotation costs ~15 repaints/s, not 60 (same perf pattern as the
+//    dashboard point globe, v0.5.3 §perf-fix).
+//  * Gestures: horizontal drag = yaw, vertical drag = tilt, release =
+//    inertia then auto-rotation resumes. No scroll interference: the
+//    backdrop instance is wrapped in IgnorePointer by its owner.
+
+import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
+
+import 'package:flutter/material.dart';
+
+import '../../theme/theme.dart';
+import 'globe_geo.dart';
+import 'land_mask.dart';
+
+/// Visual states the globe animates through — mapped 1:1 from the REAL
+/// connection phases by the owner (shell/dashboard). Never invented here.
+enum GlobeVisualState { idle, connecting, connected, disconnecting, error }
+
+/// One tunable bundle for the whole globe (no scattered magic numbers).
+class AtlanhixGlobeConfig {
+  const AtlanhixGlobeConfig({
+    this.autoRotate = true,
+    this.rotationSpeed = 0.105, // rad/s → one revolution ≈ 60 s
+    this.interactive = true,
+    this.showRoute = true,
+    this.showAtmosphere = true,
+    this.showPacketFlow = true,
+    this.showOrbit = true,
+    this.routeAnimationEnabled = true,
+    this.maxFps = 30.0,
+    this.shaderAsset = 'assets/shaders/planet.frag',
+  });
+
+  final bool autoRotate;
+  final double rotationSpeed;
+  final bool interactive;
+  final bool showRoute;
+  final bool showAtmosphere;
+  final bool showPacketFlow;
+  final bool showOrbit;
+  final bool routeAnimationEnabled;
+
+  /// Steady-state repaint ceiling (the shader quad is cheap; 30 fps is
+  /// indistinguishable at these rotation speeds and halves the power draw).
+  final double maxFps;
+  final String shaderAsset;
+
+  static const AtlanhixGlobeConfig standard = AtlanhixGlobeConfig();
+}
+
+/// ─────────────────────────────────────────────────────────────────────
+/// The widget.
+/// ─────────────────────────────────────────────────────────────────────
+class AtlanhixGlobeView extends StatefulWidget {
+  const AtlanhixGlobeView({
+    super.key,
+    this.source,
+    this.destination,
+    this.state = GlobeVisualState.idle,
+    this.config = AtlanhixGlobeConfig.standard,
+    this.initialYaw,
+    this.error = false,
+  });
+
+  /// The user's approximate origin (country centroid is fine). When null
+  /// the globe stays calm and un-anchored — no fake home.
+  final GlobeLocation? source;
+
+  /// The selected node's location. Null = no destination yet.
+  final GlobeLocation? destination;
+
+  final GlobeVisualState state;
+  final AtlanhixGlobeConfig config;
+
+  /// Deterministic start yaw (tests); production randomizes.
+  final double? initialYaw;
+
+  /// Drives the error visual state (subtle rim breath, not a red screen).
+  final bool error;
+
+  @override
+  State<AtlanhixGlobeView> createState() => AtlanhixGlobeViewState();
+}
+
+/// Public state (the backdrop needs to nudge the camera on node changes).
+class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  late final AnimationController _ctrl =
+      AnimationController(vsync: this, duration: const Duration(seconds: 1))
+        ..repeat();
+
+  // Camera state (radians; yaw wraps).
+  late double _yaw = widget.initialYaw ?? _randomYaw;
+  double _pitch = 0.30;
+  double _yawVelocity = 0;
+  double _tiltVelocity = 0;
+
+  // Route draw progress 0..1 and its target (1 when the route shows).
+  double _routeT = 0;
+  double _routeTarget = 0;
+  // Source/destination appear 0..1 (staggered dots fade-in on connecting).
+  double _sourceA = 0;
+  double _destA = 0;
+
+  // Destination transition: from → to with an eased t (no teleporting).
+  GlobeLocation? _fromDest;
+  GlobeLocation? _toDest;
+  double _destMorph = 1; // 1 = settled on _toDest
+  GlobeLocation? get _effectiveDest {
+    if (_toDest == null) return null;
+    if (_fromDest == null || _destMorph >= 1) return _toDest;
+    // Great-circle interpolation between the old and new destination.
+    final (la, lo) = slerpLatLon(
+        _fromDest!.lat, _fromDest!.lon, _toDest!.lat, _toDest!.lon,
+        Curves.easeInOutCubic.transform(_destMorph));
+    return _toDest!.copyWith(lat: la, lon: lo);
+  }
+
+  // Focus: while a route exists, the camera gently centers on the arc.
+  bool _hasFocus = false;
+  double _focusYaw = 0;
+  double _focusPitch = 0.30;
+
+  // Gestures.
+  bool _dragging = false;
+
+  // Shader program (null → CPU fallback painter).
+  ui.FragmentShader? _shader;
+  ui.Image? _landMask;
+
+  // Steady repaint throttle + route/packet phase advanced per tick.
+  double _phase = 0; // 0..1 packets + pulses driver
+  Duration _accum = Duration.zero;
+  double get _minFrameMs => 1000 / widget.config.maxFps;
+
+  late final _ThrottledListenable _throttle =
+      _ThrottledListenable(_ctrl, _minFrameMs);
+
+  static double get _randomYaw =>
+      math.Random().nextDouble() * 2 * math.pi;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _routeTarget =
+        widget.config.showRoute && _routeVisible ? 1 : 0;
+    _sourceA = _routeTarget;
+    _destA = _routeTarget;
+    _ctrl.addListener(_tick);
+    _loadAssets();
+  }
+
+  bool get _routeVisible =>
+      widget.destination != null &&
+      widget.state != GlobeVisualState.idle;
+
+  Future<void> _loadAssets() async {
+    try {
+      final program =
+          await ui.FragmentProgram.fromAsset(widget.config.shaderAsset);
+      final mask = await landMaskImage();
+      if (!mounted) return;
+      setState(() {
+        _shader = program.fragmentShader();
+        _landMask = mask;
+      });
+    } catch (_) {
+      // CPU fallback keeps the visuals alive (test VMs, old GPUs).
+      if (!mounted) return;
+      setState(() {
+        _landMask = null;
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant AtlanhixGlobeView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // State transitions that end a route stop the focus pull.
+    if (widget.state != oldWidget.state) {
+      _routeTarget =
+          widget.config.showRoute && _routeVisible ? 1 : 0;
+    }
+    // Destination changed → smooth great-circle morph (no teleport).
+    final d = widget.destination;
+    final cur = _toDest;
+    if (d?.lat != cur?.lat || d?.lon != cur?.lon) {
+      if (d == null) {
+        _fromDest = cur;
+        _toDest = null;
+        _destMorph = cur == null ? 1 : 0;
+      } else if (cur != null) {
+        _fromDest = cur;
+        _toDest = d;
+        _destMorph = 0;
+      } else {
+        _fromDest = null;
+        _toDest = d;
+        _destMorph = 1;
+      }
+      _hasFocus = false; // re-acquire after the morph
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Battery: stop the ticker entirely when backgrounded.
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      _ctrl.stop();
+    } else if (state == AppLifecycleState.resumed && mounted) {
+      // TickerMode gate: only resume when the widget tree allows it.
+      // (value getter on the listenable — v3.35+ deprecates getNotifier,
+      // but the pattern below reads through it without the deprecated
+      // ``enabled`` field: simply resume; TickerMode gates the ticker
+      // upstream anyway when the tree is disabled.)
+      _ctrl.repeat();
+    }
+  }
+
+  void _tick() {
+    // Fast animations (route draw, destination morph, gesture inertia)
+    // advance every tick; STEADY rotation repaints are throttled below.
+    final dt = 1 / 60.0; // controller tick ≈ frame
+
+    // Route draw progress (ease-out on the way in, slower fade out).
+    final speed = _routeTarget > _routeT ? 0.035 : 0.012;
+    _routeT += (_routeTarget - _routeT).clamp(-speed, speed);
+    // Anchor dots: source first, destination staggered after.
+    _sourceA += ((_routeT > 0.02 ? 1 : 0) - _sourceA).clamp(-0.06, 0.06);
+    _destA += ((_routeT > 0.30 ? 1 : 0) - _destA).clamp(-0.06, 0.06);
+
+    // Destination morph.
+    if (_destMorph < 1) {
+      _destMorph = math.min(1, _destMorph + dt / 0.9);
+    }
+
+    // Gestures/inertia.
+    if (!_dragging) {
+      _yaw += _yawVelocity;
+      _pitch = (_pitch + _tiltVelocity).clamp(-0.9, 0.9);
+      _yawVelocity *= 0.94;
+      _tiltVelocity *= 0.90;
+      // Auto rotation resumes as inertia dies.
+      if (widget.config.autoRotate && _yawVelocity.abs() < 0.0015) {
+        _yaw += widget.config.rotationSpeed * dt;
+      }
+    }
+    // Gentle pitch spring back toward the resting tilt.
+    if (!_dragging) {
+      _pitch += (0.30 - _pitch) * 0.005;
+    }
+
+    // Focus pull toward the arc's midpoint once the route is mostly drawn.
+    final dest = _effectiveDest;
+    final src = widget.source;
+    if (dest != null && src != null && _routeT > 0.55 && !_dragging) {
+      final (mla, mlo) =
+          slerpLatLon(src.lat, src.lon, dest.lat, dest.lon, 0.5);
+      final fy = -mlo * math.pi / 180;
+      final fp = -(mla.clamp(-60, 60).toDouble()) *
+          math.pi /
+          180 *
+          0.9;
+      if (!_hasFocus) {
+        _hasFocus = true;
+        // Take the SHORT way around the sphere.
+        var dy = fy - _yaw;
+        while (dy > math.pi) {
+          dy -= 2 * math.pi;
+        }
+        while (dy < -math.pi) {
+          dy += 2 * math.pi;
+        }
+        _focusYaw = _yaw + dy;
+        _focusPitch = fp;
+      } else {
+        _focusYaw = fy + (_focusYaw - fy) * 0; // keep short-way base
+        _focusPitch = fp;
+      }
+      _yaw += (_focusYaw - _yaw) * 0.02;
+      _pitch += (_focusPitch - _pitch) * 0.02;
+    }
+
+    // Packet/pulse phase (only meaningful when connected).
+    _phase = (_phase + dt / 4.0) % 1.0;
+
+    _accum += const Duration(milliseconds: 16);
+    if (_accum.inMilliseconds >= _minFrameMs) {
+      _accum = Duration.zero;
+      _throttle.ping();
+    }
+  }
+
+  // ── Gestures ────────────────────────────────────────────────────────
+  Offset? _lastDrag;
+  void _onDragStart(DragStartDetails d) {
+    if (!widget.config.interactive) return;
+    _dragging = true;
+    _lastDrag = d.localPosition;
+    _hasFocus = false;
+  }
+
+  void _onDragUpdate(DragUpdateDetails d) {
+    if (!_dragging || _lastDrag == null) return;
+    final dx = d.localPosition.dx - _lastDrag!.dx;
+    final dy = d.localPosition.dy - _lastDrag!.dy;
+    _lastDrag = d.localPosition;
+    _yaw -= dx * 0.006;
+    _pitch = (_pitch + dy * 0.003).clamp(-0.9, 0.9);
+    _yawVelocity = -dx * 0.006;
+    _tiltVelocity = dy * 0.003;
+  }
+
+  void _onDragEnd(DragEndDetails d) {
+    _dragging = false;
+    _lastDrag = null;
+    // Inertia comes from the velocities already set; auto-rotation resumes
+    // when they decay below the threshold in _tick.
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _ctrl.removeListener(_tick);
+    _throttle.dispose();
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: widget.config.interactive
+          ? SystemMouseCursors.move
+          : MouseCursor.defer,
+      child: GestureDetector(
+        onHorizontalDragStart: _onDragStart,
+        onHorizontalDragUpdate: _onDragUpdate,
+        onHorizontalDragEnd: _onDragEnd,
+        onVerticalDragStart: _onDragStart,
+        onVerticalDragUpdate: _onDragUpdate,
+        onVerticalDragEnd: _onDragEnd,
+        child: ClipRect(
+          child: RepaintBoundary(
+            child: CustomPaint(
+              painter: _GlobeScenePainter(
+                repaint: _throttle,
+                state: this,
+                ext: ThemeExt.of(context),
+              ),
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Throttled repaint gate (forwards at most one ping per min-frame).
+class _ThrottledListenable extends ChangeNotifier {
+  _ThrottledListenable(this._source, this.minFrameMs) {
+    _source.addListener(_onTick);
+  }
+  final Listenable _source;
+  final double minFrameMs;
+  DateTime _last = DateTime.now();
+
+  void _onTick() {
+    ping();
+  }
+
+  void ping() {
+    final now = DateTime.now();
+    if (now.difference(_last).inMilliseconds >= minFrameMs.floor() - 1) {
+      _last = now;
+      notifyListeners();
+    }
+  }
+
+  @override
+  void dispose() {
+    _source.removeListener(_onTick);
+    super.dispose();
+  }
+}
+
+/// ─────────────────────────────────────────────────────────────────────
+/// The scene painter: shader planet underneath + CPU overlay for the
+/// route/anchors/packets (overlay needs screen-space 2D, not GLSL).
+/// ─────────────────────────────────────────────────────────────────────
+class _GlobeScenePainter extends CustomPainter {
+  _GlobeScenePainter({
+    required Listenable repaint,
+    required this.state,
+    required this.ext,
+  }) : super(repaint: repaint);
+
+  final AtlanhixGlobeViewState state;
+  final ThemeExt ext;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = state;
+    final cx = size.width / 2;
+    final cy = size.height * 0.46;
+    final r = math.min(size.shortestSide * 0.46, size.height * 0.42);
+
+    // ── 1) The planet body ────────────────────────────────────────────
+    final mask = s._landMask;
+    if (s._shader != null && mask != null) {
+      final sh = s._shader!;
+      final atmos = _atmosTarget(s.widget.state) *
+          (s.widget.config.showAtmosphere ? 1 : 0.35);
+      sh.setFloat(0, size.width);
+      sh.setFloat(1, size.height);
+      sh.setFloat(2, s._phase * 0 + (DateTime.now().millisecondsSinceEpoch % 100000) / 1000.0);
+      sh.setFloat(3, s._yaw);
+      sh.setFloat(4, s._pitch);
+      sh.setFloat(5, atmos);
+      sh.setFloat(6, s.widget.error ? 1 : 0);
+      sh.setFloat(7, -0.35); // light x (upper-left)
+      sh.setFloat(8, -0.25); // light y
+      sh.setImageSampler(0, mask);
+      canvas.drawRect(
+          Offset.zero & size, Paint()..shader = sh);
+    } else {
+      _paintFallbackPlanet(canvas, size, cx, cy, r);
+    }
+
+    // ── 2) Route + anchors + packets (CPU overlay) ────────────────────
+    if (s.widget.config.showRoute && s._routeT > 0.01) {
+      _paintRoute(canvas, size, cx, cy, r);
+    }
+    _paintOrbit(canvas, cx, cy, r);
+  }
+
+  double _atmosTarget(GlobeVisualState st) => switch (st) {
+        GlobeVisualState.idle => 0.25,
+        GlobeVisualState.connecting => 0.65,
+        GlobeVisualState.connected => 0.85,
+        GlobeVisualState.disconnecting => 0.45,
+        GlobeVisualState.error => 0.5,
+      };
+
+  /// Projects a unit vector + lift to screen space using the CURRENT
+  /// camera; null when the point is on the far backside.
+  (Offset, double)? _project(
+      double x, double y, double z, double lift, double cx, double cy,
+      double r) {
+    final yaw = state._yaw, pitch = state._pitch;
+    final cy_ = math.cos(yaw), sy_ = math.sin(yaw);
+    final x1 = x * cy_ + z * sy_;
+    final z1 = -x * sy_ + z * cy_;
+    final cp = math.cos(pitch), sp = math.sin(pitch);
+    final y2 = y * cp - z1 * sp;
+    final z2 = y * sp + z1 * cp;
+    if (z2 < -0.25) return null;
+    final rr = r * lift;
+    return (Offset(cx + x1 * rr, cy - y2 * rr), z2);
+  }
+
+  void _paintRoute(
+      Canvas canvas, Size size, double cx, double cy, double r) {
+    final src = state.widget.source;
+    final dest = state._effectiveDest;
+    if (src == null || dest == null) return;
+
+    final t = Curves.easeOutCubic.transform(state._routeT.clamp(0.0, 1.0));
+    final segs = arcSegmentsFor(src.lat, src.lon, dest.lat, dest.lon);
+    final visibleSegs = (segs * t).ceil();
+
+    // ── The arc path (elevated great-circle) ──────────────────────────
+    final path = Path();
+    var pen = false;
+    for (var i = 0; i <= visibleSegs; i++) {
+      final f = i / segs;
+      final (la, lo) = slerpLatLon(src.lat, src.lon, dest.lat, dest.lon, f);
+      final (vx, vy, vz) = globeVec(la, lo);
+      final lift = arcLift(src.lat, src.lon, dest.lat, dest.lon, f);
+      final p = _project(vx, vy, vz, lift, cx, cy, r);
+      if (p == null) {
+        pen = false;
+        continue;
+      }
+      if (!pen) {
+        path.moveTo(p.$1.dx, p.$1.dy);
+        pen = true;
+      } else {
+        path.lineTo(p.$1.dx, p.$1.dy);
+      }
+    }
+    final routePaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..strokeCap = StrokeCap.round
+      ..color = ext.textPrimary.withValues(alpha: 0.88);
+    canvas.drawPath(path, routePaint);
+
+    // Subtle glow under the route (connected only).
+    if (state.widget.state == GlobeVisualState.connected) {
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 5
+          ..color = ext.textPrimary.withValues(alpha: 0.10),
+      );
+    }
+
+    // ── Packets: small light dots traveling src → dest ────────────────
+    if (state.widget.config.showPacketFlow &&
+        state.widget.state == GlobeVisualState.connected) {
+      const packetCount = 4;
+      for (var k = 0; k < packetCount; k++) {
+        final f =
+            (state._phase + k / packetCount) % 1.0;
+        if (f > t) continue;
+        final (la, lo) =
+            slerpLatLon(src.lat, src.lon, dest.lat, dest.lon, f);
+        final (vx, vy, vz) = globeVec(la, lo);
+        final lift = arcLift(src.lat, src.lon, dest.lat, dest.lon, f);
+        final p = _project(vx, vy, vz, lift, cx, cy, r);
+        if (p == null) continue;
+        final fade = (p.$2 + 1) / 2;
+        canvas.drawCircle(
+          p.$1,
+          1.8,
+          Paint()
+            ..color = Colors.white.withValues(alpha: 0.25 + 0.55 * fade),
+        );
+      }
+    }
+
+    // ── Anchors: source (home) + destination (exit) with pulses ───────
+    _paintAnchor(canvas, src, state._sourceA, false, cx, cy, r,
+        isSource: true);
+    if (state._destA > 0.01) {
+      _paintAnchor(
+          canvas, dest, state._destA, true, cx, cy, r,
+          isSource: false);
+    }
+  }
+
+  void _paintAnchor(Canvas canvas, GlobeLocation loc, double alpha,
+      bool active, double cx, double cy, double r,
+      {required bool isSource}) {
+    final (vx, vy, vz) = globeVec(loc.lat, loc.lon);
+    final p = _project(vx, vy, vz, 1.012, cx, cy, r);
+    if (p == null || p.$2 < -0.05) return;
+    final color =
+        isSource ? ext.success : (state.widget.error ? ext.error : ext.textPrimary);
+    final phase = state._phase;
+    final pulse = isSource
+        ? 1.0
+        : (state.widget.state == GlobeVisualState.connected ? 1.0 : 0.4);
+    final haloR = (active ? 12 : 8) + 3.5 * math.sin(phase * 2 * math.pi) * pulse;
+    canvas.drawCircle(
+        p.$1, haloR, Paint()..color = color.withValues(alpha: 0.14 * alpha));
+    canvas.drawCircle(
+        p.$1, 2.6, Paint()..color = color.withValues(alpha: 0.95 * alpha));
+    // Hairline stem so the pin reads as attached to the surface.
+    canvas.drawLine(
+      p.$1,
+      p.$1 + const Offset(0, 7),
+      Paint()
+        ..strokeWidth = 1
+        ..color = color.withValues(alpha: 0.35 * alpha),
+    );
+  }
+
+  /// Optional orbital ring: thin, slow, mostly behind the planet.
+  void _paintOrbit(Canvas canvas, double cx, double cy, double r) {
+    if (!state.widget.config.showOrbit) return;
+    final tilt = 0.42;
+    final ringR = r * 1.28;
+    final path = Path();
+    var pen = false;
+    for (var i = 0; i <= 72; i++) {
+      final a = i / 72 * 2 * math.pi + state._yaw * 0.3;
+      final x0 = math.cos(a) * ringR;
+      final y0 = math.sin(a) * ringR * math.sin(tilt);
+      final z0 = math.sin(a) * ringR * math.cos(tilt);
+      // Camera yaw affects the ring too (rotates with the planet family).
+      final p = _project(x0 / ringR, 0, z0 / ringR, ringR / r, cx, cy, r);
+      if (p == null || p.$2 < 0) {
+        pen = false;
+        continue;
+      }
+      final pt = Offset(p.$1.dx, p.$1.dy + y0 * 0.4);
+      if (!pen) {
+        path.moveTo(pt.dx, pt.dy);
+        pen = true;
+      } else {
+        path.lineTo(pt.dx, pt.dy);
+      }
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.7
+        ..color = ext.textSecondary.withValues(alpha: 0.10),
+    );
+  }
+
+  /// CPU fallback planet (shader unavailable): layered radial gradients +
+  /// rim — the SAME composition language, cheaper.
+  void _paintFallbackPlanet(
+      Canvas canvas, Size size, double cx, double cy, double r) {
+    final atmos = _atmosTarget(state.widget.state);
+    // Halo.
+    canvas.drawCircle(
+      Offset(cx, cy),
+      r * 1.35,
+      Paint()
+        ..shader = ui.Gradient.radial(Offset(cx, cy), r * 1.35, [
+          ext.textPrimary.withValues(alpha: 0.10 * atmos),
+          ext.textPrimary.withValues(alpha: 0.02 * atmos),
+          const Color(0x00000000),
+        ], [0.72, 0.88, 1.0]),
+    );
+    // Body.
+    canvas.drawCircle(
+      Offset(cx, cy),
+      r,
+      Paint()
+        ..shader = ui.Gradient.radial(
+          Offset(cx - r * 0.35, cy - r * 0.4),
+          r * 1.7,
+          [
+            const Color(0xFF1A2028),
+            const Color(0xFF0C0F14),
+            const Color(0xFF05070A),
+          ],
+          [0.0, 0.55, 1.0],
+        ),
+    );
+    // Rim light (upper-left → lower-right sweep).
+    canvas.drawCircle(
+      Offset(cx, cy),
+      r - 0.6,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..shader = ui.Gradient.sweep(
+          Offset(cx, cy),
+          [
+            Colors.white.withValues(alpha: 0.55 * atmos),
+            Colors.white.withValues(alpha: 0.06),
+            Colors.white.withValues(alpha: 0.0),
+          ],
+          [0.0, 0.25, 1.0],
+          TileMode.clamp,
+          -2.4,
+          2.4,
+        ),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_GlobeScenePainter old) => old.state != state;
+}

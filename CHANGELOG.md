@@ -1,5 +1,82 @@
 # Changelog
 
+## v0.5.4 — the signature 3D globe (GPU planet + live connection route)
+
+### The planet
+
+- **Real GPU 3D globe** (`assets/shaders/planet.frag`): cinematic dark
+  planet — rocky fbm relief, day/night terminator, cool-white rim light,
+  state-driven atmosphere, baked night-lights, hairline land dots. The
+  six-token brand palette only; no neon.
+- **CPU fallback**: if the fragment program cannot load (old GPU / test
+  env), the same composition renders procedurally — the visual never
+  breaks.
+- **Land mask from existing data**: the planet's continents and city
+  lights are baked at runtime from the same world-atlas point cloud the
+  point globe uses (512×256, ~2 ms, one-shot). Zero new assets.
+
+### The connection
+
+- **Great-circle route** user → node via true slerp, elevated by route
+  length (Tehran→NYC flies higher than Tehran→Baku); draws on during
+  connecting, stays with a subtle glow while connected.
+- **Packet flow**: four faint light particles travel source → destination
+  once connected; both endpoints pulse.
+- **Smooth destination morph**: switching nodes (London → Hong Kong →
+  Singapore) slides the pin along the great circle — never teleports.
+- **Honest geography**: destination = the tunnel's real exit fix once
+  connected, the node's own location before that (host geolocation,
+  then country hints in the node name/host: "DE-01", flag emoji, TLD).
+  No hints → no pin — the globe stays calm instead of inventing one.
+
+### The app around it
+
+- The globe is the app background on every tab (v0.5.2's contract kept);
+  the dashboard hero rides it unchanged.
+- Tapping a node moves the destination immediately — selection previews
+  before connecting.
+- Slow cinematic rotation (≈60 s/rev), horizontal drag to spin, tilt on
+  vertical drag, inertia, auto-resume; ticker fully stops when the app
+  backgrounds. Steady repaints throttled to 30 fps.
+- Visual state machine maps 1:1 from the real connection phases — no
+  invented VPN state; error stays premium (a breath on the rim, not a
+  red screen).
+
+### Engineering
+
+- New pure-math module `lib/presentation/globe/globe_geo.dart` (slerp,
+  distances, arc lift, country heuristics) — 15 unit tests.
+- 28 new tests total (globe math + widget states + backdrop mapping);
+  suite: 405 green. `flutter analyze` 0 errors; `flutter build apk`
+  verified with the shader bundled.
+
+## v0.5.3 — mihomo as the standalone third engine + user-reported fixes
+
+### mihomo (Clash.Meta) engine
+
+- `MihomoConfigGenerator`: full Xray↔mihomo translation including
+  `extra=<json>` links — xmux → reuse-settings, downloadSettings →
+  download-settings, x-padding-*, transport family 1:1.
+- `MihomoRuntime`: child process with readiness through its own Clash
+  API (smart switch/delay tests work unchanged against it).
+- Android: `:mihomo` service alongside `:xray`, libmihomo.so arm64
+  bundled; Windows: mihomo.exe in the release zip, BinaryManager
+  aliases `clash-meta`.
+- Settings → Engine picker: Auto / sing-box / Xray / mihomo (per-node
+  pins still win).
+
+### User-reported fixes
+
+- **Sticky manual pick**: a manual node selection survives disconnects
+  AND keeps the smart switch OFF across them — the ladder no longer
+  re-arms over the user's head; only an explicit enable hands back to
+  auto (`test/manual_selection_hold_test.dart` pins this).
+- **Perf**: globe tickers throttled, tab bodies moved to IndexedStack —
+  LiveMonitor/CPU/RAM/battery and speed/latency readouts no longer remount
+  on tab switches; ladder progress stream throttled (250 ms).
+- **UI**: traffic/route chips cap their width (no more collision on
+  narrow phones); nav labels scale instead of truncating ("das…").
+
 ## v0.5.2 — smart-switch pro pack + live ladder readout + Windows cores-path fix
 
 ### Smart switch, the professional shape (user dial-in)

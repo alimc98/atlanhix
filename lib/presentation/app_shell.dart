@@ -19,6 +19,7 @@ import 'widgets/common_widgets.dart';
 import 'widgets/atlanhix_logo.dart';
 import 'widgets/dashboard_globe.dart' show GlobeAnchor, GlobeAnchorKind;
 import 'widgets/globe_backdrop.dart';
+import 'globe/globe_geo.dart';
 
 /// Responsive shell: desktop sidebar (§52) / mobile bottom navigation (§51).
 class AppShell extends StatefulWidget {
@@ -53,6 +54,7 @@ class _AppShellState extends State<AppShell>
   AppError? _lastError;
   StreamSubscription? _sub;
   StreamSubscription? _vpnSub;
+  StreamSubscription<void>? _selSub;
   AppSettings? _settings;
 
   /// v0.4.1: on Android the VpnSession owns the connect lifecycle.
@@ -101,12 +103,21 @@ class _AppShellState extends State<AppShell>
       _phase = widget.deps.vpnSession.uiPhase;
       _active = widget.deps.vpnSession.selectedNode;
     }
+    // v0.5.4 §globe3d: the globe's DESTINATION previews the tapped node
+    // the moment the user selects it (before any connect) — the session's
+    // selection event moves the pin immediately on every platform.
+    _selSub = widget.deps.vpnSession.selectionChanged.listen((_) {
+      if (!mounted) return;
+      final sel = widget.deps.vpnSession.selectedNode;
+      if (sel?.id != _active?.id) setState(() => _active = sel);
+    });
   }
 
   @override
   void dispose() {
     _sub?.cancel();
     _vpnSub?.cancel();
+    _selSub?.cancel();
     _slideCtrl.dispose();
     super.dispose();
   }
@@ -169,9 +180,11 @@ class _AppShellState extends State<AppShell>
       fit: StackFit.expand,
       children: [
         // v0.5.2 §user — THE GLOBE IS THE APP BACKGROUND: one full-screen
-        // point globe behind every screen; its wash shifts color when the
-        // tunnel connects (the app visibly changes mood). The geo anchors
-        // (home/exit fixes) ride along when the locator has them.
+        // 3D planet behind every screen. v0.5.4 §globe3d: the SOURCE is
+        // the user's geo fix (country-level is fine) and the DESTINATION
+        // is the selected node — resolved by host fix first, then the
+        // country hints the node name/host carry. The route/flow animates
+        // through the REAL connection phases (no invented VPN state).
         Positioned.fill(
           child: Builder(builder: (context) {
             final geo = widget.deps.geo;
@@ -188,10 +201,32 @@ class _AppShellState extends State<AppShell>
                     kind: GlobeAnchorKind.exit,
                     active: true),
             ];
+            final src = home == null
+                ? null
+                : GlobeLocation(
+                    lat: home.lat,
+                    lon: home.lon,
+                    label: home.hasCity ? home.city : home.countryName,
+                    exact: true,
+                  );
+            // Provisional destination while connecting = the node's own
+            // location; once connected the honest EXIT fix replaces it.
+            final dest = exit != null
+                ? GlobeLocation(
+                    lat: exit.lat,
+                    lon: exit.lon,
+                    label: exit.hasCity ? exit.city : exit.countryName,
+                    exact: true,
+                  )
+                : destinationForNode(_active, geo);
             return GlobeBackdrop(
               connected: connected,
               connecting: connecting,
+              disconnecting: _phase == ConnectionPhase.disconnecting,
+              error: _phase == ConnectionPhase.error,
               anchors: anchors,
+              source: src,
+              destination: dest,
             );
           }),
         ),

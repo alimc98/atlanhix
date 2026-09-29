@@ -272,6 +272,16 @@ class GeoLocator {
   // once per app run (subscription refreshes re-import the same hosts).
   final Map<String, GeoFix?> _hostCache = {};
 
+  /// The LAST resolved host fix (any host, memoized) — the globe reads
+  /// this for the provisional destination pin before the tunnel is up.
+  /// v0.5.4 §globe3d: an honest read of the same cache.
+  GeoFix? get lastHost {
+    for (final fix in _hostCache.values) {
+      if (fix != null) return fix;
+    }
+    return null;
+  }
+
   /// Locate a NODE'S SERVER by hostname/IP (the provisional pin shown
   /// BEFORE the tunnel comes up). ip-api resolves domains server-side, so
   /// a plain hostname works; CDN-fronted hosts resolve to the CDN edge —

@@ -1,7 +1,7 @@
 name: nexus
 description: Atlanhix — production-grade cross-platform proxy/VPN client (Windows, Linux, Android).
 publish_to: "none"
-version: 0.5.2+9
+version: 0.5.4+10
 
 environment:
   sdk: ">=3.6.0 <4.0.0"
@@ -35,6 +35,7 @@ flutter:
     - assets/fonts/
     - assets/intro/
     - assets/brand/
+    - assets/shaders/
   fonts:
     - family: Inter
       fonts:
