@@ -1,5 +1,97 @@
 # Changelog
 
+## v0.5.6 — leak & crash sweep: the long-session audit
+
+No new features. A full-project review turned up three crash-class defects
+and a dozen leaks that only showed up after the app had been running for a
+while — exactly the class of bug that makes a VPN client feel "broken after
+a few hours".
+
+### Crashes
+
+- **SOCKS probe leaked its socket on 5 of 7 exit paths**
+  (`core/health/latency_tester.dart`): only the success path and `catch`
+  closed the `RawSocket`. The five early `return`s (write failed / greeting
+  rejected / CONNECT failed / request write failed) bypassed both — and a
+  `return` is not a throw, so `catch` could never clean up. Those are the
+  branches a *degraded* tunnel takes, i.e. the 30 s active-node monitor hit
+  them continuously and leaked a socket per probe. Now closed in a
+  `finally`.
+- **Clipboard import could crash on a deactivated context**
+  (`nodes_screen.dart`, `subscriptions_screen.dart`): `Clipboard.getData` is
+  a platform-channel round trip; one branch reached
+  `ScaffoldMessenger.of(context)` with no `mounted` guard while the other two
+  branches in the same function had one. Worse in subscriptions, where the
+  context is the `StreamBuilder` builder's rather than the State's.
+- **`RangeError` in the per-app routing list** (`apps_routing_screen.dart`):
+  the empty-name fallback sat *after* `.characters.first`, where it was dead
+  code (`toUpperCase()` is non-nullable) — so a blank app label (managed /
+  OEM work profiles) threw inside the `ListView` item builder.
+
+### Leaks that grew with use
+
+- **Engine log collectors** (`singbox` / `xray` / `external` / `mihomo`
+  runtimes): stdout/stderr subscriptions were discarded, so every connect,
+  restart, fragment-ladder rung and `recoverEngine` stacked another live pair
+  holding the `ManagedProcess`, its controllers and (through the closure's
+  capture) the whole runtime. Now cancelled on `stop()` and before
+  re-collecting.
+- **`ClashApiClient` orphans**: the throwaway probe in mihomo's
+  `_waitApiReady`, every non-success path of `probe_engine._startWith`,
+  `probe_engine.stop()`, and two sites in `dependencies`. Each owns a lazily
+  built `HttpClient`.
+- **Clean-DNS client** (`core/net/clean_dns_client.dart`): closed only on
+  `onDone`/`onError`, so a caller-side `.timeout()` — which subscription
+  fetch and update-check both use, and which is the *expected* failure mode
+  on the target networks — orphaned it. Now also closes on send-throw and on
+  `StreamController.onCancel`.
+- **Missing `dispose()`**: `logs_screen` (permanent listener on the
+  app-lifetime `Logger`, each retained listener copying up to 2000 lines per
+  log line), `nodes_screen` (repository change stream), `warp_chain_card`
+  (no `dispose()` at all, plus 22 undisposed dialog controllers),
+  `routing_editor_screen` (`TabController`, and two controllers that were
+  fields on *StatelessWidgets* — a fresh one per rebuild, structurally
+  impossible to dispose; both are now Stateful), `dns_scan_screen`,
+  `routing_diagnostics_screen`.
+- **Unbounded maps**: `clean_dns_client._pins` checked its TTL but never
+  evicted expired entries; `HealthStore.reset` had *no caller anywhere*, so
+  nodes dropped by a subscription refresh kept their stats and 20-record
+  history forever. Added `retainOnly`, wired into the refresh path.
+
+### The globe (carried over from the v0.5.5 shader work)
+
+- **Shader time was the wall clock** — it jumped backwards on an NTP
+  correction, popped every 100 s as the modulo wrapped, and made every frame
+  non-deterministic. Now accumulated from the ticker's frame delta.
+- **Route didn't retract on disconnect**: `disconnecting` counted as
+  "route visible", so the arc stayed at full strength while the tunnel was
+  already going down. Now fades; `error` deliberately keeps it.
+- **Every animation rate was frame-rate dependent** (`dt` hardcoded to
+  1/60): a 120 Hz phone ran the globe at double speed and the connect
+  animation at double speed. Now derived from the ticker's real delta, with
+  rates expressed per second.
+- **`FragmentShader` was never disposed** — one leaked GL program per globe
+  rebuild.
+- **Shader was washing the planet pale**: `exp(-max(r - R, 0) / …)` is
+  exactly `1.0` inside the disc, so the "atmosphere" halo added full-strength
+  fog across the whole planet; and the key light had `z = -0.30`, pointing
+  *away* from the camera, leaving the terrain unlit. Rim crescent narrowed
+  to a tight limb ridge, the leftover point-cloud dot grid removed, and the
+  source pin brought back to the brand palette (it was mint green).
+
+### Diagnostics
+
+- `android_vpn.dart`: a start generation the system service never
+  acknowledged and a genuinely slow engine both reported the same generic
+  `engineNotReady`; the two are now distinguished.
+
+### Verification
+
+`flutter analyze` clean of errors (187 pre-existing lint infos, down from
+194) · 417 tests passing (up from 408) · debug APK builds. Not verified on a
+physical device — the fixes around resource lifetime want a real soak test
+(connect/disconnect repeatedly, watch fd count and RSS).
+
 ## v0.5.5 — the planet that actually renders + instant-connect ladder
 
 ### The globe (user report: "همیشه نمی‌آید، اگر هم بیاید خیلی کم‌رنگ است")

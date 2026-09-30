@@ -133,6 +133,19 @@ class HealthStore {
     _stats.remove(profileId);
     _recent.remove(profileId);
   }
+
+  /// Drop every stat whose profileId is not in [keepIds].
+  ///
+  /// v0.5.6 §leak-fix: [reset] had NO caller anywhere in the app, so a node
+  /// dropped by a subscription refresh kept its [NodeHealthStats] and its
+  /// 20-entry [_recent] queue resident forever — both maps grew
+  /// monotonically across refreshes. Subscriptions re-import different
+  /// node id sets, so the stale entries accumulated in a long session.
+  void retainOnly(Set<String> keepIds) {
+    if (_stats.isEmpty && _recent.isEmpty) return;
+    _stats.removeWhere((id, _) => !keepIds.contains(id));
+    _recent.removeWhere((id, _) => !keepIds.contains(id));
+  }
 }
 
 /// Prioritized test scheduler. Active node is always tested first; background

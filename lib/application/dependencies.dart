@@ -297,6 +297,8 @@ class AppDependencies {
       // `?routing=<b64json>` converges its domain/CIDR rules onto the user's
       // routing settings after a successful fetch.
       currentRouting: () => deps.routingSettings,
+      // v0.5.6 §leak-fix: prune health stats for nodes a refresh removed.
+      healthStore: deps.healthStore,
       onCarriedRouting: (next) async {
         final problems = await deps.routingSettingsRepo.save(next);
         if (problems.isEmpty) {
@@ -441,7 +443,15 @@ class AppDependencies {
   late final LatencyTester tester;
   late final HealthStore healthStore;
   late final TestScheduler scheduler;
-  late GeoLocator geo; // v0.5.2 §globe (non-late: tests may preseed a stub)
+  // v0.5.2 §globe. v0.5.6 §doc-fix: the old comment claimed "(non-late: tests
+  // may preseed a stub)" which contradicted the declaration and was actively
+  // misleading — `deps.geo ??= GeoLocator()` (line ~282) reads the field
+  // first, so on a `late` field that would throw LateInitializationError
+  // (the exact white-screen failure the warpRepo comment below warns
+  // about). It is only safe today because BOTH construction paths
+  // (bootstrap and bootstrapForTest) assign `geo` before that line runs.
+  // Non-late would make the preseed actually work.
+  late GeoLocator geo;
   late NodeUsage nodeUsage; // v0.5.2 §user: per-node up/down accounting
   late final CoreDetector detector;
   late final MultiFormatImporter importer;
@@ -470,13 +480,20 @@ class AppDependencies {
   static Future<ClashApiClient?> _probeAndBuildClashApi(AppDependencies deps) async {
     final client0 = _liveClashApi;
     if (client0 != null && await client0.isAlive()) return client0;
+    // v0.5.6 §leak-fix: dispose the stale client. `isAlive()` lazily builds
+    // its HttpClient, so dropping the reference orphaned a live client on
+    // EVERY dead probe — which is the dominant case, since this runs per
+    // node while "test all" is pressed with the engine off.
     _liveClashApi = null;
+    client0?.dispose();
     final client = ClashApiClient(
         port: deps.cores.front.apiPort,
         secret: deps.cores.front.clashSecret);
     if (await client.isAlive()) {
       return _liveClashApi = client;
     }
+    // Dead: hand the client back rather than orphaning it.
+    client.dispose();
     return null;
   }
 

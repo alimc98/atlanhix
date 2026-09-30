@@ -39,7 +39,20 @@ class _WarpChainCardState extends State<WarpChainCard> {
   double _scanProgress = 0;
   String? _scanWinner; // host:port with the best handshake latency
   List<(String, Duration)> _scanResults = const [];
+  /// v0.5.6 §leak-fix: this State had NO dispose() at all. The card is
+  /// mounted only while the collapsible section is open, so each
+  /// expand/collapse cycle allocated a fresh controller and abandoned the
+  /// previous one — a leak that grows with every open.
   final _scanCtl = TextEditingController();
+
+  @override
+  void dispose() {
+    // Stop an in-flight endpoint sweep: without this the RawDatagramSocket
+    // stays bound for up to the 30 s sweep budget after the card closes.
+    _scanCancelled = true;
+    _scanCtl.dispose();
+    super.dispose();
+  }
   // v0.5.0 §user: cooperative cancel flag for the full-/24 sweep.
   bool _scanCancelled = false;
 
@@ -274,6 +287,16 @@ class _WarpChainCardState extends State<WarpChainCard> {
       return t.isEmpty ? null : t;
     }
 
+    // v0.5.6 §leak-fix: these 22 controllers are locals, so they become
+    // GC-collectable once this method returns — but each one is a
+    // ChangeNotifier wired to the platform text input, and none was ever
+    // disposed, so opening this sheet repeatedly piled them up. Collect
+    // them in a list and dispose after the dialog closes.
+    final controllers = <TextEditingController>[
+      jc, jmin, jmax, s1, s2, s3, s4, h1, h2, h3, h4,
+      i1, i2, i3, i4, i5,
+      masqId, masqIp, masqIb, hpk,
+    ];
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -384,31 +407,43 @@ class _WarpChainCardState extends State<WarpChainCard> {
         ],
       ),
     );
+    // v0.5.6 §leak-fix: read every value FIRST, then release the controllers.
+    // This must happen before the early return below, or a cancelled dialog
+    // leaks them just as surely as a saved one.
+    final jcV = p(jc), jminV = p(jmin), jmaxV = p(jmax);
+    final s1V = p(s1), s2V = p(s2), s3V = p(s3), s4V = p(s4);
+    final h1V = s(h1), h2V = s(h2), h3V = s(h3), h4V = s(h4);
+    final i1V = s(i1), i2V = s(i2), i3V = s(i3), i4V = s(i4), i5V = s(i5);
+    final masqIdV = s(masqId), masqIpV = s(masqIp), masqIbV = s(masqIb);
+    final hpkV = s(hpk);
+    for (final c in controllers) {
+      c.dispose();
+    }
     if (ok != true || !mounted) return;
     // Persist through the repository's copy-with-secrets save (secrets
     // never round-trip through the dialog; we only patch the AWG params).
     await widget.deps.warpRepo.saveWithAwgParams(
       replaceAwgParams: true,
-      jc: p(jc),
-      jmin: p(jmin),
-      jmax: p(jmax),
-      s1: p(s1),
-      s2: p(s2),
-      s3: p(s3),
-      s4: p(s4),
-      h1: s(h1),
-      h2: s(h2),
-      h3: s(h3),
-      h4: s(h4),
-      i1: s(i1),
-      i2: s(i2),
-      i3: s(i3),
-      i4: s(i4),
-      i5: s(i5),
-      masqId: s(masqId),
-      masqIp: s(masqIp),
-      masqIb: s(masqIb),
-      hpk: s(hpk),
+      jc: jcV,
+      jmin: jminV,
+      jmax: jmaxV,
+      s1: s1V,
+      s2: s2V,
+      s3: s3V,
+      s4: s4V,
+      h1: h1V,
+      h2: h2V,
+      h3: h3V,
+      h4: h4V,
+      i1: i1V,
+      i2: i2V,
+      i3: i3V,
+      i4: i4V,
+      i5: i5V,
+      masqId: masqIdV,
+      masqIp: masqIpV,
+      masqIb: masqIbV,
+      hpk: hpkV,
       randomTrailers: randTrailers ? true : null,
       disableCookies: disableCookies ? true : null,
     );

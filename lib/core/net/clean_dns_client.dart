@@ -47,6 +47,17 @@ class CleanDnsClient extends http.BaseClient {
   final Duration _lookupTimeout;
   final Map<String, _Pin> _pins = {};
 
+  /// v0.5.6 §leak-fix: drop entries whose TTL has expired. The TTL was only
+  /// ever CHECKED (`pinnedIp` / `_pinFor` return null past it) but nothing
+  /// ever removed them, so `_pins` grew monotonically — one retained entry
+  /// per distinct hostname for the life of the process (a 500-node
+  /// subscription plus every subscription/update host).
+  void _evictExpired() {
+    if (_pins.isEmpty) return;
+    final now = DateTime.now();
+    _pins.removeWhere((_, p) => now.difference(p.at) > _ttl);
+  }
+
   /// The IP currently pinned for [host], or null (diagnostics/tests).
   String? pinnedIp(String host) {
     final p = _pins[host];
@@ -57,6 +68,7 @@ class CleanDnsClient extends http.BaseClient {
 
   Future<String?> _pinFor(String host) async {
     if (InternetAddress.tryParse(host) != null) return null; // already an IP
+    _evictExpired(); // v0.5.6 §leak-fix: keep the cache bounded
     final now = DateTime.now();
     final cached = _pins[host];
     if (cached != null && now.difference(cached.at) <= _ttl) return cached.ip;
@@ -130,18 +142,45 @@ class CleanDnsClient extends http.BaseClient {
     final host = request.url.host;
     final ip = await _pinFor(host);
     final client = _clientFor(ip);
-    final streamed = await client.send(request);
+    // v0.5.6 §leak-fix: this client owns an HttpClient that must be closed
+    // on EVERY path. Two holes before: (1) `send()` throwing left it open,
+    // and (2) a caller that abandons the body stream (a `.timeout()`, which
+    // both subscription_service and update_checker use) never fired
+    // onDone/onError, so the close never ran. `onCancel` covers the
+    // abandonment case; the try/catch covers the throw.
+    var closed = false;
+    void closeOnce() {
+      if (closed) return;
+      closed = true;
+      client.close();
+    }
+
+    final StreamController<List<int>> controller = StreamController<List<int>>();
+    // v0.5.6 leak-fix: the consumer of this StreamedResponse body subscribes
+    // to controller.stream; a caller-side .timeout() (subscription_service
+    // uses 20 s, update_checker 12 s) cancels that subscription.
+    // StreamController.onCancel fires on exactly that cancellation and is the
+    // ONLY signal that the body will never reach onDone/onError, so it is
+    // where the per-request HttpClient must be released.
+    controller.onCancel = closeOnce;
+
+    final http.StreamedResponse streamed;
+    try {
+      streamed = await client.send(request);
+    } on Object {
+      closeOnce();
+      rethrow;
+    }
     // Keep the per-request client alive until the body is fully drained —
     // closing earlier would reset the socket mid-response.
-    final controller = StreamController<List<int>>();
     streamed.stream.listen(
       controller.add,
       onDone: () {
-        client.close();
+        closeOnce();
         controller.close();
       },
       onError: (Object e, StackTrace s) {
-        client.close();
+        closeOnce();
         controller.addError(e, s);
       },
       cancelOnError: false,

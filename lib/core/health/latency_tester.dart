@@ -273,10 +273,8 @@ class LatencyTester {
           transport = await RawSecureSocket.secure(sock,
               host: uri.host, onBadCertificate: (_) => false);
         } on HandshakeException catch (e) {
-          sock.close();
           return ProbeResult(ok: false, errorKind: 'tls', detail: e.message);
         } on SocketException catch (e) {
-          sock.close();
           return ProbeResult(
               ok: false, errorKind: 'tls', detail: e.message);
         }
@@ -300,7 +298,6 @@ class LatencyTester {
       final code = codeMatch != null
           ? int.parse(codeMatch.group(1)!)
           : (respBytes.isEmpty ? 0 : -1);
-      sock.close();
       final ok = code >= 200 && code < 400;
       return ProbeResult(
         ok: ok,
@@ -310,12 +307,30 @@ class LatencyTester {
             'bytes=${respBytes.length}',
       );
     } catch (e) {
-      sock?.close();
       return ProbeResult(
         ok: false,
         errorKind: e is TimeoutException ? 'timeout' : 'http',
         detail: e.toString(),
       );
+    } finally {
+      // v0.5.6 §leak-fix: the socket is closed HERE, in a finally, because
+      // the five early `return`s above (write failed / greeting rejected /
+      // CONNECT failed / request write failed) bypassed every explicit
+      // close. A `return` is not a throw, so the `catch` could never clean
+      // up — and those early returns are exactly the branches a DEGRADED
+      // tunnel takes, i.e. the 30 s active-node monitor ran them
+      // continuously and leaked a RawSocket (fd + stream subscription) per
+      // probe. `close()` is idempotent, so this also covers the success
+      // path and the TLS-upgrade case (where the RawSocket is owned by the
+      // RawSecureSocket wrapper and must NOT be closed separately).
+      try {
+        // `close()` returns a Future; nothing awaits it here (we are in a
+        // finally on the way out), so it must be explicitly unawaited or the
+        // analyzer flags a dropped error path.
+        unawaited(sock?.close());
+      } on Object {
+        // Already closed / never connected — nothing to release.
+      }
     }
   }
 

@@ -23,6 +23,14 @@ class _RoutingDiagnosticsScreenState extends State<RoutingDiagnosticsScreen> {
   final _input = TextEditingController();
   RoutingDecision? _decision;
 
+  // v0.5.6 §leak-fix: this State had no dispose(), so every push of
+  // /routing/diagnostics abandoned a live TextEditingController.
+  @override
+  void dispose() {
+    _input.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final d = widget.deps;

@@ -51,6 +51,11 @@ class XrayRuntime implements CoreRuntime {
   StreamController<CoreExitEvent>? _exitEvents;
   final _stderrRing = <String>[];
 
+  /// v0.5.6 §leak-fix: held so [_collectLogs] can cancel the previous pair
+  /// (see [_disposeLogSubs]).
+  StreamSubscription<String>? _stderrSub;
+  StreamSubscription<String>? _stdoutSub;
+
   Stream<CoreExitEvent> get onExit =>
       (_exitEvents ??= StreamController<CoreExitEvent>.broadcast()).stream;
 
@@ -252,13 +257,25 @@ class XrayRuntime implements CoreRuntime {
   void _collectLogs() {
     final p = _process;
     if (p == null) return;
+    // v0.5.6 §leak-fix: cancel the previous pair — this runs per
+    // `_ensureUpstream` / `restartXrayUpstream` / `recoverEngine`, and the
+    // discarded subscriptions used to accumulate for the process lifetime.
+    _disposeLogSubs();
     _stderrRing.clear();
-    p.stderrStream.listen((line) {
+    _stderrSub = p.stderrStream.listen((line) {
       _stderrRing.add(line);
       if (_stderrRing.length > 40) _stderrRing.removeAt(0);
       Logger.instance.debug('xray', line);
     });
-    p.stdoutStream.listen((line) => Logger.instance.debug('xray', line));
+    _stdoutSub = p.stdoutStream.listen((line) => Logger.instance.debug('xray', line));
+  }
+
+  /// Release the stderr/stdout collectors. Safe to call repeatedly.
+  void _disposeLogSubs() {
+    _stderrSub?.cancel();
+    _stdoutSub?.cancel();
+    _stderrSub = null;
+    _stdoutSub = null;
   }
 
   String _stderrTail() => _stderrRing.take(12).join('\n');
@@ -292,6 +309,8 @@ class XrayRuntime implements CoreRuntime {
   @override
   Future<void> stop() async {
     _status = RuntimeStatus.stopping;
+    // v0.5.6 §leak-fix: drop the log collectors before the process dies.
+    _disposeLogSubs();
     final p = _process;
     _process = null;
     if (p != null) await p.stop();

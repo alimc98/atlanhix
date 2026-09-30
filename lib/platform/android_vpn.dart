@@ -309,6 +309,7 @@ class AndroidVpnController {
       _set(AndroidVpnPhase.preparing);
       final generation =
           DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+      // Kept for the unacknowledged-start diagnostic below.
       await _channel.invokeMethod<String>(
           'start', jsonEncode(buildHandoff()..['generation'] = generation));
       _set(AndroidVpnPhase.starting);
@@ -385,9 +386,20 @@ class AndroidVpnController {
         }
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
+      // v0.5.6 §diag-fix: `generationAcked` was assigned but never read —
+      // the documented intent (audit #3) was to tell "the native side never
+      // adopted OUR start intent" apart from "the engine was merely slow".
+      // Both fell through to the same generic `engineNotReady`, so a lost
+      // generation handshake was indistinguishable from a slow engine and
+      // the dashboard could not explain the failure.
       _set(AndroidVpnPhase.failed,
-          detail: 'engine did not reach validating in time',
-          errorCode: VpnErrorCode.engineNotReady);
+          detail: generationAcked
+              ? 'engine did not reach validating in time'
+              : 'tunnel start was never acknowledged by the system service '
+                  '(generation $generation)',
+          errorCode: generationAcked
+              ? VpnErrorCode.engineNotReady
+              : VpnErrorCode.engineStartFailed);
       await stop();
       return false;
     } catch (e) {

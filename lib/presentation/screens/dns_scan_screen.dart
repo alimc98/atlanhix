@@ -40,6 +40,14 @@ class _DnsScanScreenState extends State<DnsScanScreen> {
   bool _scanning = false;
   bool _includeCustom = true;
 
+  /// v0.5.6 §leak-fix: this State had no dispose(), so every push of the
+  /// DNS-scan screen abandoned a live TextEditingController.
+  @override
+  void dispose() {
+    _custom.dispose();
+    super.dispose();
+  }
+
   List<DnsProbeTarget> get _scanTargets => [
         // Manual entries join the scan only while the toggle is on —
         // an honest switch: it changes WHICH resolvers get probed.

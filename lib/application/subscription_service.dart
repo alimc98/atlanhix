@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../core/logger.dart';
+import '../core/health/test_scheduler.dart';
 import '../core/net/clean_dns_client.dart';
 import '../settings/routing_settings.dart';
 import 'subscription_routing.dart';
@@ -20,6 +21,7 @@ class SubscriptionService {
     required this.importer,
     this.onCarriedRouting,
     this.currentRouting,
+    this.healthStore,
     http.Client? client,
   }) : _client = client ?? CleanDnsClient();
 
@@ -36,6 +38,11 @@ class SubscriptionService {
   final ProfileRepository profiles;
   final MultiFormatImporter importer;
   final http.Client _client;
+
+  /// v0.5.6 §leak-fix: after a refresh drops nodes, their health stats (and
+  /// 20-record history) had no reclamation path — `HealthStore.reset` was
+  /// never called anywhere. Optional so tests can omit it.
+  final HealthStore? healthStore;
 
   final _progress = StreamController<SubscriptionUpdateEvent>.broadcast();
   Stream<SubscriptionUpdateEvent> get progress => _progress.stream;
@@ -140,6 +147,11 @@ class SubscriptionService {
 
       final before = profiles.all.where((p) => p.subscriptionId == sub.id).length;
       await profiles.replaceSubscriptionProfiles(sub.id, fresh);
+      // v0.5.6 §leak-fix: this refresh may have DROPPED nodes (a provider
+      // rotates its list), and `HealthStore.reset` had no caller at all —
+      // so each removed node's stats + 20-record history stayed resident
+      // for the life of the process. Prune to the ids that still exist.
+      healthStore?.retainOnly(profiles.all.map((p) => p.id).toSet());
 
       final updated = sub
         ..info = info.hasAnyData ? info : sub.info

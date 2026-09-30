@@ -352,6 +352,11 @@ class ProbeEngine {
   }) async {
     final wanted =
         loadedIds ?? nodes.map((n) => n.id).toSet();
+    // v0.5.6 §leak-fix: the client created below owns a lazily-built
+    // HttpClient. It is handed to `_api` on success; every other exit
+    // (never-answered, MissingPluginException, any throw) must dispose it.
+    // Declared OUTSIDE the try so the catch block can see it.
+    ClashApiClient? orphan;
     try {
       await _stopNative();
       // ── Xray-owned nodes: boot the REAL :xray child (one inbound per
@@ -454,6 +459,7 @@ class ProbeEngine {
         return null;
       }
       final api = ClashApiClient(port: apiPort, secret: _apiSecret);
+      orphan = api;
       // Wait until the listener answers (Box start is async inside libbox).
       for (var i = 0; i < 20; i++) {
         if (await api.isAlive()) {
@@ -473,6 +479,7 @@ class ProbeEngine {
             await Future<void>.delayed(const Duration(milliseconds: 300));
           }
           _api = api;
+          orphan = null; // ownership transferred — stop() will dispose it
           _loadedIds = wanted;
           Logger.instance.info('probe-engine',
               'probe engine UP :$apiPort nodes=${buildNodes.length}');
@@ -481,11 +488,15 @@ class ProbeEngine {
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
       Logger.instance.warn('probe-engine', 'clash api never answered');
+      // v0.5.6 §leak-fix: dispose the client we never handed to `_api`.
+      orphan?.dispose();
       await stop();
       return null;
     } on MissingPluginException {
+      orphan?.dispose();
       return null; // desktop / tests — honest fall-through
     } catch (e) {
+      orphan?.dispose();
       Logger.instance
           .warn('probe-engine', 'start error: ${Logger.redact(e.toString())}');
       if (_ownXrayChild) {
@@ -503,6 +514,12 @@ class ProbeEngine {
   Future<void> stop() async {
     _idleStop?.cancel();
     _idleStop = null;
+    // v0.5.6 §leak-fix: `_api` owns an HttpClient (constructed lazily by
+    // isAlive/the request path) and `_startWith` allocates a fresh client on
+    // every engine start. `stop()` runs on every idle timeout AND on every
+    // app background, so this orphan accumulated one client per probe
+    // session.
+    _api?.dispose();
     _api = null;
     _loadedIds = {};
     // §ownership-fix: only OUR child dies with us — the VPN session's

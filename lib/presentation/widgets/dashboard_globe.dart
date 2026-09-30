@@ -127,7 +127,6 @@ class _DashboardGlobeState extends State<DashboardGlobe>
     vsync: this,
     duration: const Duration(seconds: 1),
   )..repeat();
-  int _tickCount = 0;
 
   static const _unfoldDuration = Duration(milliseconds: 4200);
 

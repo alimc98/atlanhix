@@ -53,39 +53,54 @@ Future<ui.Image?> landMaskImage() async {
     }
   }
 
-  // ── Night lights: cluster detection on the land mask ────────────────
-  // City light = land with many land-neighbors in a 9×9 window (dense
-  // regions) — a cheap convolution standing in for a real lights map.
-  for (var y = 2; y < h - 2; y++) {
-    for (var x = 0; x < w; x++) {
-      if (land[y * w + x] == 0) continue;
-      var n = 0;
-      for (var dy = -2; dy <= 2; dy++) {
-        for (var dx = -2; dx <= 2; dx++) {
-          if (land[(y + dy) * w + ((x + dx + w) % w)] > 0) n++;
-        }
+  // ── Night lights: DISCRETE CITY CLUSTERS (v0.5.5 §tune 2) ───────────
+  // Density/skirt approaches flood the mask: at 512×256 the 2px coastal
+  // band covers most of a continent and glow skirts sum into a beige
+  // FILL. The reference sheet reads as DISTINCT clusters — a handful of
+  // bright dots per metro area, dark rock between them. So: pick a small
+  // number of seed pixels (coastal-weighted), stamp 3–8 dots around each,
+  // NO skirt. Deterministic seed → stable bakes.
+  final rnd = math.Random(7);
+  bool isLand(int x, int y) => land[y * w + ((x % w) + w) % w] > 0;
+  bool nearWater(int x, int y) {
+    for (var dy = -2; dy <= 2; dy++) {
+      for (var dx = -2; dx <= 2; dx++) {
+        if (!isLand(x + dx, (y + dy).clamp(0, h - 1))) return true;
       }
-      // n in [1..25]; dense cores light up, sparse coasts stay dark.
-      final lum = ((n - 14) / 11).clamp(0.0, 1.0);
-      if (lum > 0) lights[y * w + x] = lum;
+    }
+    return false;
+  }
+
+  void stampCluster(int cx, int cy, int dots, double base) {
+    lights[cy * w + ((cx % w) + w) % w] = base;
+    for (var k = 0; k < dots; k++) {
+      final px = cx + rnd.nextInt(7) - 3;
+      final py = (cy + rnd.nextInt(7) - 3).clamp(0, h - 1);
+      if (isLand(px, py)) {
+        lights[py * w + ((px % w) + w) % w] =
+            math.min(1.0, base * (0.55 + 0.45 * rnd.nextDouble()));
+      }
     }
   }
-  // Lights shimmer pool: a second, larger ring adds the glow skirt.
-  final skirt = Float32List(w * h);
-  for (var y = 1; y < h - 1; y++) {
-    for (var x = 0; x < w; x++) {
-      if (lights[y * w + x] > 0) continue;
-      var acc = 0.0;
-      for (var dy = -3; dy <= 3; dy += 2) {
-        for (var dx = -3; dx <= 3; dx += 2) {
-          acc += lights[(y + dy) * w + ((x + dx + w) % w)];
-        }
-      }
-      if (acc > 0) skirt[y * w + x] = (acc / 16) * 0.5;
+
+  // ~150 coastal metros (the sheet's lit coastlines) + ~35 inland towns.
+  var seeds = 0;
+  for (var attempt = 0; attempt < 12000 && seeds < 150; attempt++) {
+    final x = rnd.nextInt(w);
+    final y = rnd.nextInt(h);
+    if (isLand(x, y) && nearWater(x, y)) {
+      stampCluster(x, y, 3 + rnd.nextInt(6), 0.85 + 0.15 * rnd.nextDouble());
+      seeds++;
     }
   }
-  for (var i = 0; i < lights.length; i++) {
-    lights[i] = math.min(1.0, lights[i] + skirt[i]);
+  seeds = 0;
+  for (var attempt = 0; attempt < 8000 && seeds < 35; attempt++) {
+    final x = rnd.nextInt(w);
+    final y = rnd.nextInt(h);
+    if (isLand(x, y) && !nearWater(x, y)) {
+      stampCluster(x, y, 2 + rnd.nextInt(3), 0.45 + 0.25 * rnd.nextDouble());
+      seeds++;
+    }
   }
 
   // ── Pack to RGBA bytes ───────────────────────────────────────────────

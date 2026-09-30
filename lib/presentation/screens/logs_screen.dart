@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../../application/dependencies.dart';
 import '../../core/logger.dart';
@@ -18,13 +20,29 @@ class _LogsScreenState extends State<LogsScreen> {
   String _query = '';
   List<LogLine> _lines = const [];
 
+  /// v0.5.6 §leak-fix: the Logger singleton's listener, so it can be
+  /// cancelled in [dispose].
+  StreamSubscription<LogLine>? _logSub;
+
   @override
   void initState() {
     super.initState();
     _lines = Logger.instance.buffer;
-    Logger.instance.stream.listen((_) {
+    // v0.5.6 §leak-fix: the subscription was discarded and this State had
+    // NO dispose(). `Logger` is a process singleton, so every mount left a
+    // live listener holding this State forever. Worse, `Logger.buffer`
+    // returns `List.unmodifiable(_buffer)` — a FRESH copy of up to 2000
+    // lines — so each retained listener allocated a full copy per log line.
+    _logSub = Logger.instance.stream.listen((_) {
       if (mounted) setState(() => _lines = Logger.instance.buffer);
     });
+  }
+
+  @override
+  void dispose() {
+    _logSub?.cancel();
+    _logSub = null;
+    super.dispose();
   }
 
   @override

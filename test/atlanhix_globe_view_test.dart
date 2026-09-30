@@ -138,6 +138,185 @@ void main() {
     }
   });
 
+  testWidgets('disconnecting retracts the route (fade-out on teardown)',
+      (tester) async {
+    // Regression guard for v0.5.6 §globe-fix: `disconnecting` used to count
+    // as "route visible", so the arc stayed at full strength while the
+    // tunnel was already going down. The spec wants it to fade.
+    final view = find.byType(AtlanhixGlobeView);
+    Widget build(GlobeVisualState st) => _wrap(
+          SizedBox(
+            width: 360,
+            height: 320,
+            child: AtlanhixGlobeView(
+              source: _tehran,
+              destination: _london,
+              state: st,
+              initialYaw: 0.7,
+            ),
+          ),
+        );
+
+    // The route eases in at ~2.1/s now that dt is wall-clock based, so
+    // ~1.5 s of pumped frames saturates it (exp decay approaches 1
+    // asymptotically; 1.5 s ≈ 0.96, then it snaps via the epsilon check).
+    await tester.pumpWidget(build(GlobeVisualState.connected));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    final state = tester.state<AtlanhixGlobeViewState>(view);
+    expect(state.routeProgress, greaterThan(0.9),
+        reason: 'connected should draw the route');
+
+    // Teardown begins → the route must start retracting.
+    await tester.pumpWidget(build(GlobeVisualState.disconnecting));
+    await tester.pump(const Duration(milliseconds: 100));
+    final during = tester.state<AtlanhixGlobeViewState>(view).routeProgress;
+    expect(during, lessThan(1.0),
+        reason: 'disconnecting must retract, not hold, the route');
+
+    // And it keeps going down to nothing. The fade rate is ~0.72/s, so give it
+    // a generous ~15 s of pumped frames — well past the point where the
+    // epsilon snap parks _routeT exactly on its 0 target.
+    for (var i = 0; i < 150; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(tester.state<AtlanhixGlobeViewState>(view).routeProgress,
+        lessThan(0.05), reason: 'route should fade out completely');
+  });
+
+  testWidgets('error keeps the route visible (shows the attempted hop)',
+      (tester) async {
+    await tester.pumpWidget(_wrap(
+      const SizedBox(
+        width: 360,
+        height: 320,
+        child: AtlanhixGlobeView(
+          source: _tehran,
+          destination: _london,
+          state: GlobeVisualState.error,
+          error: true,
+          initialYaw: 0.7,
+        ),
+      ),
+    ));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(
+        tester
+            .state<AtlanhixGlobeViewState>(find.byType(AtlanhixGlobeView))
+            .routeProgress,
+        greaterThan(0.9),
+        reason: 'a failed connect should still show where it was headed');
+  });
+
+  testWidgets('animation rate is frame-rate independent (30 Hz vs 120 Hz)',
+      (tester) async {
+    // Regression guard for v0.5.6 §globe-fix. The tick used to hardcode
+    // `dt = 1/60`, so every rate below was per-FRAME: on a 120 Hz phone the
+    // route drew at double speed and on a throttled 30 Hz one at half. This
+    // pumps the SAME wall-clock window at two refresh rates and asserts
+    // they land in the same place.
+    Widget build(GlobeVisualState st) => _wrap(
+          SizedBox(
+            width: 360,
+            height: 320,
+            child: AtlanhixGlobeView(
+              source: _tehran,
+              destination: _london,
+              state: st,
+              initialYaw: 0.7,
+            ),
+          ),
+        );
+
+    Future<double> progressAfter(int fps) async {
+      await tester.pumpWidget(build(GlobeVisualState.connected));
+      final st =
+          tester.state<AtlanhixGlobeViewState>(find.byType(AtlanhixGlobeView));
+      const window = Duration(milliseconds: 3000);
+      final frames = fps * 40;
+      final step =
+          Duration(microseconds: (window.inMicroseconds / frames).round());
+      for (var i = 0; i < frames; i++) {
+        await tester.pump(step);
+      }
+      return st.routeProgress;
+    }
+
+    final at30 = await progressAfter(30);
+    final at120 = await progressAfter(120);
+    expect((at30 - at120).abs(), lessThan(0.08),
+        reason: 'route progress must not depend on refresh rate '
+            '(30 Hz gave $at30, 120 Hz gave $at120)');
+  });
+
+  testWidgets('route progress never overshoots its 0..1 range',
+      (tester) async {
+    // Regression guard: the exponential-approach rewrite initially pushed
+    // routeT to 1.044 and left it oscillating around 1 forever.
+    await tester.pumpWidget(_wrap(
+      const SizedBox(
+        width: 360,
+        height: 320,
+        child: AtlanhixGlobeView(
+          source: _tehran,
+          destination: _london,
+          state: GlobeVisualState.connected,
+          initialYaw: 0.7,
+        ),
+      ),
+    ));
+    final st =
+        tester.state<AtlanhixGlobeViewState>(find.byType(AtlanhixGlobeView));
+    var sawOvershoot = false;
+    var previous = st.routeProgress;
+    for (var i = 0; i < 60; i++) {
+      await tester.pump(const Duration(milliseconds: 32));
+      final now = st.routeProgress;
+      expect(now, inInclusiveRange(0.0, 1.0),
+          reason: 'routeProgress must stay within 0..1');
+      if (now < previous - 1e-9 && previous >= 1.0) sawOvershoot = true;
+      previous = now;
+    }
+    expect(sawOvershoot, isFalse,
+        reason: 'progress must approach 1 monotonically, never fall back');
+    expect(previous, greaterThan(0.99), reason: 'and it should have arrived');
+  });
+
+  testWidgets('shader clock is monotonic and never reads the wall clock',
+      (tester) async {
+    await tester.pumpWidget(_wrap(
+      const SizedBox(
+        width: 360,
+        height: 320,
+        child: AtlanhixGlobeView(
+          source: _tehran,
+          destination: _london,
+          state: GlobeVisualState.connected,
+          initialYaw: 0.7,
+        ),
+      ),
+    ));
+    final st =
+        tester.state<AtlanhixGlobeViewState>(find.byType(AtlanhixGlobeView));
+    var previous = st.shaderTime;
+    expect(previous, greaterThanOrEqualTo(0));
+    for (var i = 0; i < 40; i++) {
+      await tester.pump(const Duration(milliseconds: 32));
+      final now = st.shaderTime;
+      // Monotonically non-decreasing, bounded, and nowhere near a
+      // wall-clock value (which would be ~1.7e9 seconds since epoch).
+      expect(now, greaterThanOrEqualTo(previous));
+      expect(now, lessThan(st.shaderTimeWrap));
+      expect(now, lessThan(1e6));
+      previous = now;
+    }
+    expect(previous, greaterThan(0),
+        reason: 'the shader clock must actually advance');
+  });
+
   testWidgets('config toggles disable route/orbit without errors',
       (tester) async {
     await tester.pumpWidget(_wrap(

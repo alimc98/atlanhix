@@ -27,6 +27,16 @@ class _RoutingEditorScreenState extends State<RoutingEditorScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs = TabController(length: 4, vsync: this);
 
+  // v0.5.6 §leak-fix: the TabController was never disposed. This State is
+  // created once per push of /routing AND lives inside the shell's
+  // IndexedStack, so the controller (and its animation/ticker listeners)
+  // outlived the screen.
+  @override
+  void dispose() {
+    _tabs.dispose();
+    super.dispose();
+  }
+
   Future<void> _persist() async {
     await widget.routingRepo.save(widget.routing);
     widget.onChanged();
@@ -160,7 +170,7 @@ class _ModeTab extends StatelessWidget {
       );
 }
 
-class _DomainListTab extends StatelessWidget {
+class _DomainListTab extends StatefulWidget {
   _DomainListTab({
     required this.title,
     required this.hint,
@@ -177,7 +187,28 @@ class _DomainListTab extends StatelessWidget {
   final String Function(String) normalize;
   final Future<void> Function() onChanged;
 
+  @override
+  State<_DomainListTab> createState() => _DomainListTabState();
+}
+
+class _DomainListTabState extends State<_DomainListTab> {
+  String get title => widget.title;
+  String get hint => widget.hint;
+  List<String> get entries => widget.entries;
+  String? Function(String) get validator => widget.validator;
+  String Function(String) get normalize => widget.normalize;
+  Future<void> Function() get onChanged => widget.onChanged;
+
+  // v0.5.6 §leak-fix: was a `final TextEditingController` field on a
+  // STATELESS widget — a fresh controller per rebuild, structurally
+  // impossible to dispose. Now one instance owned by a State.
   final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   void _add(BuildContext context) {
     final raw = _controller.text.trim();
@@ -272,13 +303,31 @@ class _AdvancedTab extends StatelessWidget {
       );
 }
 
-class _CidrEditor extends StatelessWidget {
+class _CidrEditor extends StatefulWidget {
   _CidrEditor({required this.title, required this.entries, required this.onChanged});
   final String title;
   final List<String> entries;
   final Future<void> Function() onChanged;
 
+  @override
+  State<_CidrEditor> createState() => _CidrEditorState();
+}
+
+class _CidrEditorState extends State<_CidrEditor> {
+  String get title => widget.title;
+  List<String> get entries => widget.entries;
+  Future<void> Function() get onChanged => widget.onChanged;
+
+  // v0.5.6 §leak-fix: this was a `final TextEditingController` field on a
+  // STATELESS widget — a fresh controller on every rebuild, structurally
+  // impossible to dispose. Now a single instance owned by a State.
   final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   void _add(BuildContext context) {
     final raw = _controller.text.trim();

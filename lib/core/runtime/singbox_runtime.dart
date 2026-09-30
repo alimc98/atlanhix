@@ -58,6 +58,11 @@ class SingBoxRuntime implements CoreRuntime {
   StreamController<CoreExitEvent>? _exitEvents;
   final _stderrRing = <String>[];
 
+  /// v0.5.6 §leak-fix: held so [collectLogs] can cancel the previous pair
+  /// (see [_disposeLogSubs]).
+  StreamSubscription<String>? _stderrSub;
+  StreamSubscription<String>? _stdoutSub;
+
   Stream<CoreExitEvent> get onExit =>
       (_exitEvents ??= StreamController<CoreExitEvent>.broadcast()).stream;
 
@@ -313,18 +318,32 @@ class SingBoxRuntime implements CoreRuntime {
   void collectLogs() {
     final p = _process;
     if (p == null) return;
+    // v0.5.6 §leak-fix: cancel the previous pair. `collectLogs()` runs on
+    // every connect AND on every fragment-ladder AUTO rung (up to 4× per
+    // connect); the subscriptions used to be discarded, so each run left a
+    // live pair retaining the ManagedProcess, its controllers and — via the
+    // closure's capture of `this` — the whole runtime.
+    _disposeLogSubs();
     _stderrRing.clear();
     _stdoutRing.clear();
-    p.stderrStream.listen((line) {
+    _stderrSub = p.stderrStream.listen((line) {
       _stderrRing.add(line);
       if (_stderrRing.length > 40) _stderrRing.removeAt(0);
       Logger.instance.debug('sing-box', line);
     });
-    p.stdoutStream.listen((line) {
+    _stdoutSub = p.stdoutStream.listen((line) {
       _stdoutRing.add(line);
       if (_stdoutRing.length > 40) _stdoutRing.removeAt(0);
       Logger.instance.debug('sing-box', line);
     });
+  }
+
+  /// Release the stderr/stdout collectors. Safe to call repeatedly.
+  void _disposeLogSubs() {
+    _stderrSub?.cancel();
+    _stdoutSub?.cancel();
+    _stderrSub = null;
+    _stdoutSub = null;
   }
 
   /// Phase 5: hot switch inside the running selector — no restart.
@@ -378,6 +397,8 @@ class SingBoxRuntime implements CoreRuntime {
   Future<void> stop() async {
     _status = RuntimeStatus.stopping;
     _trafficTimer?.cancel();
+    // v0.5.6 §leak-fix: drop the log collectors before the process dies.
+    _disposeLogSubs();
     final p = _process;
     _process = null;
     if (p != null) await p.stop();

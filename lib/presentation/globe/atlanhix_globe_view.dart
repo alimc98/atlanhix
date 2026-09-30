@@ -158,6 +158,32 @@ class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
   Duration _accum = Duration.zero;
   double get _minFrameMs => 1000 / widget.config.maxFps;
 
+  // ── Monotonic shader clock (seconds) ──────────────────────────────────
+  // Drives the planet shader's purely decorative sparkle channels (star
+  // twinkle, city-light shimmer, error breath).
+  //
+  // v0.5.6 §globe-fix: this used to be fed straight from the wall clock —
+  // `(DateTime.now().millisecondsSinceEpoch % 100000) / 1000` — which was
+  // wrong three ways: it JUMPED BACKWARDS whenever the OS corrected the
+  // clock or the device suspended, it POPPED every 100 s as the modulo
+  // wrapped mid-twinkle, and it made every painted frame
+  // non-deterministic (unusable in golden/widget tests). Accumulating dt
+  // is smooth and monotonic, pauses along with the ticker when the app is
+  // backgrounded, and [kShaderTimeWrap] only exists to keep float32
+  // precision tight inside the shader — a wrap on a twinkle term is
+  // imperceptible, unlike the old 100 s wall-clock pop.
+  static const double kShaderTimeWrap = 1000.0;
+  double _shaderTime = 0;
+
+  /// Monotonic shader clock in seconds (see [_shaderTime]). Exposed so a
+  /// test can prove the painter never samples the wall clock again.
+  double get shaderTime => _shaderTime;
+  double get shaderTimeWrap => kShaderTimeWrap;
+
+  /// Route draw progress, 0..1. Exposed so a test can assert the state
+  /// machine really retracts the arc — not merely that nothing threw.
+  double get routeProgress => _routeT;
+
   late final _ThrottledListenable _throttle =
       _ThrottledListenable(_ctrl, _minFrameMs);
 
@@ -176,9 +202,17 @@ class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
     _loadAssets();
   }
 
+  /// v0.5.6 §globe-fix: `disconnecting` used to count as "route visible",
+  /// so the teardown kept drawing the full-strength arc while the tunnel
+  /// was already going down. The spec for DISCONNECTING is "packet
+  /// animation stops, route gradually fades, destination highlight fades" —
+  /// so the route now retracts during teardown and only holds while there
+  /// is something real to show. `error` deliberately KEEPS the route: a
+  /// failed connect still shows where it was trying to reach.
   bool get _routeVisible =>
       widget.destination != null &&
-      widget.state != GlobeVisualState.idle;
+      widget.state != GlobeVisualState.idle &&
+      widget.state != GlobeVisualState.disconnecting;
 
   Future<void> _loadAssets() async {
     // v0.5.5 §user-fix: the TWO assets load INDEPENDENTLY now. The old
@@ -245,7 +279,12 @@ class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
       _ctrl.stop();
+      // v0.5.6 §globe-fix: drop the dt baseline too. Otherwise the first
+      // frame after resume has to absorb the entire backgrounded interval
+      // and fast-forwards rotation/packets (clamped, but it still lurches).
+      _lastTickAt = null;
     } else if (state == AppLifecycleState.resumed && mounted) {
+      _lastTickAt = null;
       // TickerMode gate: only resume when the widget tree allows it.
       // (value getter on the listenable — v3.35+ deprecates getNotifier,
       // but the pattern below reads through it without the deprecated
@@ -255,17 +294,83 @@ class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
     }
   }
 
+  // v0.5.6 §globe-fix: last frame timestamp, used to derive a real `dt`.
+  // The tick used to hardcode `dt = 1/60`, which silently rewrote the
+  // animation speed on any device that is NOT 60 Hz (a 120 Hz phone ran
+  // the globe at double speed, a 30 Hz throttled one at half) — and the
+  // route-draw/fade constants were per-FRAME, not per-second, so the same
+  // connect took different amounts of wall-clock time everywhere.
+  DateTime? _lastTickAt;
+
+  /// Seconds elapsed since the previous frame, clamped so a long stall
+  /// (GC pause, a blocked frame) cannot teleport the animation forward.
+  ///
+  /// v0.5.6 §globe-fix: the source is deliberately the TICKER's frame
+  /// delta, not `DateTime.now()`. Two reasons:
+  ///   * the ticker is already gated by TickerMode and stopped on
+  ///     background, so resuming starts from a clean baseline instead of
+  ///     absorbing the whole backgrounded interval as one huge dt;
+  ///   * under `flutter_test` the fake clock drives the ticker, so
+  ///     `pump()` advances the animation deterministically — a wall-clock
+  ///     read here advanced ~0 per test frame and the globe never moved,
+  ///     which is exactly what broke the first attempt at this fix.
+  /// Falls back to 60 Hz before the first tick.
+  double _deltaSeconds() {
+    final elapsed = _ctrl.lastElapsedDuration;
+    final now = DateTime.now();
+    final prev = _lastTickAt;
+    _lastTickAt = now;
+    if (prev == null) return 1 / 60.0;
+    final wall = now.difference(prev).inMicroseconds / 1e6;
+    // Prefer the ticker delta; fall back to wall time when it is absent
+    // (very first frame after a resume).
+    final raw = (elapsed != null && elapsed > Duration.zero)
+        ? elapsed.inMicroseconds / 1e6
+        : wall;
+    if (raw <= 0) return 1 / 60.0;
+    // 100 ms ≈ a heavy jank frame; beyond that we deliberately drop the
+    // excess rather than jumping, so a 3-second stall doesn't fast-forward
+    // the packet flow and the rotation.
+    return raw.clamp(0.0, 0.1);
+  }
+
+  /// Frame-rate-independent exponential approach of [value] toward [target]
+  /// at [rate] (per second), clamped so it can never overshoot. `rate` is
+  /// converted from the historical per-frame coefficient as `rate60 * 60`.
+  static double _approachStep(double value, double target, double rate,
+      double dt) {
+    final remaining = target - value;
+    final step = (1 - math.exp(-rate * dt)) * remaining;
+    return step.clamp(
+        remaining < 0 ? remaining : 0.0, remaining > 0 ? remaining : 0.0);
+  }
+
   void _tick() {
     // Fast animations (route draw, destination morph, gesture inertia)
     // advance every tick; STEADY rotation repaints are throttled below.
-    final dt = 1 / 60.0; // controller tick ≈ frame
+    final dt = _deltaSeconds();
 
     // Route draw progress (ease-out on the way in, slower fade out).
-    final speed = _routeTarget > _routeT ? 0.035 : 0.012;
-    _routeT += (_routeTarget - _routeT).clamp(-speed, speed);
+    // v0.5.6 §globe-fix: these were per-FRAME steps, so the draw took
+    // ~0.9 s at 60 Hz but ~2.9 s at 30 Hz. Now expressed per second:
+    // draw 0.035*60 ≈ 2.1/s, fade 0.012*60 ≈ 0.72/s (unchanged feel at
+    // 60 Hz, correct everywhere else). `1 - exp(-rate*dt)` is the
+    // frame-rate-independent form of the linear approach.
+    // Draw is faster than fade.
+    final rate = _routeTarget > _routeT ? 2.1 : 0.72;
+    // v0.5.6 §globe-fix: `_approachStep` CLAMPS to the remaining distance.
+    // The raw exponential form overshoots (routeT measured 1.044) and then
+    // oscillates around the target forever, because the direction flips the
+    // instant it passes. Clamping keeps it monotone and lets the epsilon
+    // below park it exactly on target.
+    _routeT += _approachStep(_routeT, _routeTarget, rate, dt);
+    if ((_routeTarget - _routeT).abs() < 0.001) _routeT = _routeTarget;
     // Anchor dots: source first, destination staggered after.
-    _sourceA += ((_routeT > 0.02 ? 1 : 0) - _sourceA).clamp(-0.06, 0.06);
-    _destA += ((_routeT > 0.30 ? 1 : 0) - _destA).clamp(-0.06, 0.06);
+    const anchorRate = 3.6; // 0.06 per frame at 60 Hz → per second
+    _sourceA += _approachStep(
+        _sourceA, _routeT > 0.02 ? 1.0 : 0.0, anchorRate, dt);
+    _destA += _approachStep(
+        _destA, _routeT > 0.30 ? 1.0 : 0.0, anchorRate, dt);
 
     // Destination morph.
     if (_destMorph < 1) {
@@ -274,10 +379,15 @@ class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
 
     // Gestures/inertia.
     if (!_dragging) {
-      _yaw += _yawVelocity;
-      _pitch = (_pitch + _tiltVelocity).clamp(-0.9, 0.9);
-      _yawVelocity *= 0.94;
-      _tiltVelocity *= 0.90;
+      // v0.5.6 §globe-fix: velocities were stored per drag EVENT and then
+      // decayed by a fixed 0.94 per frame — so flick speed depended on how
+      // many pointer events the OS coalesced (a slow drag could out-fling a
+      // fast one), and the decay ran at the display's frame rate. Now the
+      // drag records rad/s and the decay is per-second.
+      _yaw += _yawVelocity * dt;
+      _pitch = (_pitch + _tiltVelocity * dt).clamp(-0.9, 0.9);
+      _yawVelocity *= math.exp(-3.6 * dt); // 0.94^(1/60) per second
+      _tiltVelocity *= math.exp(-6.3 * dt); // 0.90^(1/60) per second
       // Auto rotation resumes as inertia dies.
       if (widget.config.autoRotate && _yawVelocity.abs() < 0.0015) {
         _yaw += widget.config.rotationSpeed * dt;
@@ -285,7 +395,7 @@ class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
     }
     // Gentle pitch spring back toward the resting tilt.
     if (!_dragging) {
-      _pitch += (0.30 - _pitch) * 0.005;
+      _pitch += (0.30 - _pitch) * (1 - math.exp(-0.3 * dt));
     }
 
     // Focus pull toward the arc's midpoint once the route is mostly drawn.
@@ -312,15 +422,25 @@ class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
         _focusYaw = _yaw + dy;
         _focusPitch = fp;
       } else {
-        _focusYaw = fy + (_focusYaw - fy) * 0; // keep short-way base
+        // v0.5.6 §globe-fix: the old line was `fy + (_focusYaw - fy) * 0`,
+        // a no-op that read like a smoothing factor but discarded it —
+        // it evaluated to plain `fy` and threw away the short-way base
+        // established above. Holding the captured base is the intent.
         _focusPitch = fp;
       }
-      _yaw += (_focusYaw - _yaw) * 0.02;
-      _pitch += (_focusPitch - _pitch) * 0.02;
+      // v0.5.6 §globe-fix: 0.02/frame was frame-rate dependent — the camera
+      // snapped to focus twice as fast on a 120 Hz screen. 0.02*60 ≈ 1.2/s
+      // keeps the same 60 Hz feel.
+      final focus = 1 - math.exp(-1.2 * dt);
+      _yaw += (_focusYaw - _yaw) * focus;
+      _pitch += (_focusPitch - _pitch) * focus;
     }
 
-    // Packet/pulse phase (only meaningful when connected).
+    // Packet/pulse phase (only meaningful when connected): one full
+    // source→destination traverse every 4 s, in real seconds.
     _phase = (_phase + dt / 4.0) % 1.0;
+    // Shader clock (see [_shaderTime]): monotonic and bounded.
+    _shaderTime = (_shaderTime + dt) % kShaderTimeWrap;
 
     _accum += const Duration(milliseconds: 16);
     if (_accum.inMilliseconds >= _minFrameMs) {
@@ -331,10 +451,12 @@ class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
 
   // ── Gestures ────────────────────────────────────────────────────────
   Offset? _lastDrag;
+  DateTime? _lastDragAt;
   void _onDragStart(DragStartDetails d) {
     if (!widget.config.interactive) return;
     _dragging = true;
     _lastDrag = d.localPosition;
+    _lastDragAt = null; // first update establishes the interval baseline
     _hasFocus = false;
   }
 
@@ -345,13 +467,30 @@ class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
     _lastDrag = d.localPosition;
     _yaw -= dx * 0.006;
     _pitch = (_pitch + dy * 0.003).clamp(-0.9, 0.9);
-    _yawVelocity = -dx * 0.006;
-    _tiltVelocity = dy * 0.003;
+    // v0.5.6 §globe-fix: store velocity in rad/SECOND, not rad-per-event.
+    // `_onDragUpdate` is driven by pointer events whose coalescing the OS
+    // controls, so a slow drag could previously fling harder than a fast
+    // one (and a fast one barely at all). Dividing by the real elapsed
+    // time makes the throw proportional to how fast the finger actually
+    // moved; a zero-length interval falls back to the event value.
+    // v0.5.6 §globe-fix: convert the per-event delta into rad/SECOND using
+    // real elapsed time, so a throw matches how fast the finger moved.
+    // Clamped to [1/240 s, 100 ms] so a burst of coalesced events (or a
+    // zero-length interval) cannot divide into an absurd fling velocity.
+    final now = DateTime.now();
+    final dt = _lastDragAt == null
+        ? 1 / 60.0
+        : (now.difference(_lastDragAt!).inMicroseconds / 1e6)
+            .clamp(1 / 240.0, 0.1);
+    _lastDragAt = now;
+    _yawVelocity = -dx * 0.006 / dt;
+    _tiltVelocity = dy * 0.003 / dt;
   }
 
   void _onDragEnd(DragEndDetails d) {
     _dragging = false;
     _lastDrag = null;
+    _lastDragAt = null;
     // Inertia comes from the velocities already set; auto-rotation resumes
     // when they decay below the threshold in _tick.
   }
@@ -362,6 +501,14 @@ class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
     _ctrl.removeListener(_tick);
     _throttle.dispose();
     _ctrl.dispose();
+    // v0.5.6 §globe-fix: release the GPU program. `FragmentShader` holds a
+    // native GL program; it was never disposed, so every rebuild that
+    // swapped this widget out (tab change, node morph rebuild) leaked one.
+    // The land-mask image is NOT disposed here — `landMaskImage()` caches a
+    // single shared instance for the whole app, so disposing it would break
+    // every other globe on screen.
+    _shader?.dispose();
+    _shader = null;
     super.dispose();
   }
 
@@ -455,7 +602,7 @@ class _GlobeScenePainter extends CustomPainter {
           (s.widget.config.showAtmosphere ? 1 : 0.35);
       sh.setFloat(0, size.width);
       sh.setFloat(1, size.height);
-      sh.setFloat(2, s._phase * 0 + (DateTime.now().millisecondsSinceEpoch % 100000) / 1000.0);
+      sh.setFloat(2, s._shaderTime); // uTime: monotonic, not wall-clock
       sh.setFloat(3, s._yaw);
       sh.setFloat(4, s._pitch);
       sh.setFloat(5, atmos);
@@ -589,8 +736,16 @@ class _GlobeScenePainter extends CustomPainter {
     final (vx, vy, vz) = globeVec(loc.lat, loc.lon);
     final p = _project(vx, vy, vz, 1.012, cx, cy, r);
     if (p == null || p.$2 < -0.05) return;
-    final color =
-        isSource ? ext.success : (state.widget.error ? ext.error : ext.textPrimary);
+    // v0.5.6 §globe-fix: the source pin was `ext.success` (a saturated mint
+    // green), which fought the brand sheet — the spec calls for black /
+    // deep navy / cool gray / white with at most a whisper of cyan, and
+    // explicitly rules out "green VPN-style UI". Both pins now read as
+    // cool white; the destination keeps a slightly larger halo and the
+    // error tint when the tunnel failed, so the two ends stay
+    // distinguishable without introducing a second hue.
+    final color = state.widget.error && !isSource
+        ? ext.error
+        : (isSource ? ext.textSecondary : ext.textPrimary);
     final phase = state._phase;
     final pulse = isSource
         ? 1.0

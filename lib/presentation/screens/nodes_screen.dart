@@ -44,13 +44,20 @@ class _NodesScreenState extends State<NodesScreen> {
   StreamSubscription<void>? _selectionSub;
   StreamSubscription<HealthRecord>? _healthSub;
   StreamSubscription<void>? _smartSub;
+  /// v0.5.6 §leak-fix: the repository's change stream (process-lifetime
+  /// broadcast controller) — stored so [dispose] can release it.
+  StreamSubscription<List<ProxyProfile>>? _profilesSub;
   bool _healthCoalesce = false;
 
   @override
   void initState() {
     super.initState();
     _profiles = widget.deps.profiles.all;
-    widget.deps.profiles.changes.listen((p) {
+    // v0.5.6 §leak-fix: stored so it can be cancelled. `profiles.changes` is
+    // a broadcast controller on a process-lifetime repository, and the
+    // disposal block below already cancelled the other three subscriptions —
+    // this one was simply missed.
+    _profilesSub = widget.deps.profiles.changes.listen((p) {
       if (mounted) setState(() => _profiles = p);
     });
     // v0.4.9 §user-fix (ping column never moved): Smart Switch was the ONLY
@@ -102,6 +109,7 @@ class _NodesScreenState extends State<NodesScreen> {
     _selectionSub?.cancel();
     _healthSub?.cancel();
     _smartSub?.cancel();
+    _profilesSub?.cancel();
     super.dispose();
   }
 
@@ -695,8 +703,15 @@ class _NodesScreenState extends State<NodesScreen> {
     } catch (_) {}
     text = text.trim();
     if (text.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(l.importFailed)));
+      // v0.5.6 §crash-fix: `Clipboard.getData` is a platform-channel round
+      // trip, so this is a real async gap. The two guards below (lines 705
+      // / 711) already knew that; this branch was missed. Without the
+      // check, navigating away mid-read makes `ScaffoldMessenger.of`
+      // throw "Looking up a deactivated widget's ancestor is unsafe".
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(l.importFailed)));
+      }
       return;
     }
     try {

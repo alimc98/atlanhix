@@ -36,6 +36,11 @@ abstract class ExternalDaemonRuntime implements CoreRuntime {
   final List<String> _stderrRing = <String>[];
   StreamController<CoreExitEvent>? _exitEvents;
 
+  /// v0.5.6 §leak-fix: held so the collectors can be cancelled. See
+  /// [_disposeLogSubs].
+  StreamSubscription<String>? _stderrSub;
+  StreamSubscription<String>? _stdoutSub;
+
   Stream<CoreExitEvent> get onExit =>
       (_exitEvents ??= StreamController<CoreExitEvent>.broadcast()).stream;
 
@@ -141,14 +146,28 @@ abstract class ExternalDaemonRuntime implements CoreRuntime {
   void _collectLogs() {
     final p = _process;
     if (p == null) return;
+    // v0.5.6 §leak-fix: cancel the PREVIOUS pair first. These two
+    // subscriptions were never stored, so every start() / restart() /
+    // recoverEngine() stacked another live pair forever, retaining the
+    // ManagedProcess, its two StreamControllers, and the closures (which
+    // capture `this` → the whole runtime).
+    _disposeLogSubs();
     _stderrRing.clear();
-    p.stderrStream.listen((line) {
+    _stderrSub = p.stderrStream.listen((line) {
       _stderrRing.add(line);
       if (_stderrRing.length > 40) _stderrRing.removeAt(0);
       Logger.instance.debug(binaryKind.name, line);
     });
-    p.stdoutStream
-        .listen((line) => Logger.instance.debug(binaryKind.name, line));
+    _stdoutSub =
+        p.stdoutStream.listen((line) => Logger.instance.debug(binaryKind.name, line));
+  }
+
+  /// Release the stderr/stdout collectors. Safe to call repeatedly.
+  void _disposeLogSubs() {
+    _stderrSub?.cancel();
+    _stdoutSub?.cancel();
+    _stderrSub = null;
+    _stdoutSub = null;
   }
 
   String _stderrTail() => _stderrRing.take(12).join('\n');
@@ -158,6 +177,8 @@ abstract class ExternalDaemonRuntime implements CoreRuntime {
     _status = RuntimeStatus.stopping;
     final p = _process;
     _process = null;
+    // v0.5.6 §leak-fix: stop collecting before the process goes away.
+    _disposeLogSubs();
     if (p != null) await p.stop();
     _status = RuntimeStatus.stopped;
   }

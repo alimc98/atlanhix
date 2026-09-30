@@ -1,8 +1,8 @@
 // Re-exports so the main test files import one helper module.
 export 'package:nexus/core/core_detector.dart'
     show CoreDetector, CoreKind, CoreBinaryKind;
-export 'package:nexus/core/health/latency_tester.dart'
-    show HealthStore, LatencyTester;
+export 'package:nexus/core/health/latency_tester.dart' show LatencyTester;
+export 'package:nexus/core/health/test_scheduler.dart' show HealthStore;
 export 'package:nexus/data/app_storage.dart' show JsonStore;
 export 'package:nexus/data/profile_repository.dart' show ProfileRepository;
 export 'package:nexus/data/secure_vault.dart' show InMemoryVault;

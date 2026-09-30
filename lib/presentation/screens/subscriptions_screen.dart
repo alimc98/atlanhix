@@ -110,8 +110,17 @@ class SubscriptionsScreen extends StatelessWidget {
     } catch (_) {}
     text = text.trim();
     if (text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(l.importFailed)));
+      // v0.5.6 §crash-fix: real async gap (Clipboard.getData is a platform
+      // channel round trip) and the guards below already account for it —
+      // this branch was the one that didn't. Worse than the equivalent in
+      // nodes_screen: the `context` here is the StreamBuilder BUILDER's
+      // context (see the call site), which is deactivated whenever the
+      // stream rebuilds into a different branch, so this is not a narrow
+      // window.
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(l.importFailed)));
+      }
       return;
     }
     try {

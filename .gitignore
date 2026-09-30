@@ -31,3 +31,12 @@ linux/flutter/ephemeral/
 
 # Engine binaries are user/builder-provided (see BUILD.md) — never committed.
 cores/
+
+# v0.5.6 repo-hygiene: GENERATED planet-shader preview artifacts. Both are
+# build outputs of the tracked scripts in this directory and far too big to
+# version (planet_preview.html ~700 kB self-contained WebGL2 bundle;
+# land_mask.json ~700 kB base64 pixel dump). Regenerate with:
+#   node tools/bake_land_mask.js        (writes land_mask.json)
+#   node tools/build_planet_preview.js  (writes planet_preview.html)
+/tools/planet_preview.html
+/tools/land_mask.json

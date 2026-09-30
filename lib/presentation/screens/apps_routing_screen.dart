@@ -30,6 +30,14 @@ class AppsRoutingScreen extends StatefulWidget {
   State<AppsRoutingScreen> createState() => _AppsRoutingScreenState();
 }
 
+/// First grapheme of an app label, uppercased — or '?' when the label is
+/// null/empty. Never throws: `''.characters.first` would raise RangeError.
+String _avatarInitial(String? name) {
+  final trimmed = (name ?? '').trim();
+  if (trimmed.isEmpty) return '?';
+  return trimmed.characters.first.toUpperCase();
+}
+
 class _AppsRoutingScreenState extends State<AppsRoutingScreen> {
   List<Map<String, dynamic>> _apps = [];
   bool _loading = true;
@@ -160,14 +168,15 @@ class _AppsRoutingScreenState extends State<AppsRoutingScreen> {
                                   : AppRouteState.def;
                           return ListTile(
                             leading: CircleAvatar(
-                              child: Text(
-                                (a['name'] as String? ?? '?')
-                                        .characters
-                                        .first
-                                        .toString()
-                                        .toUpperCase() ??
-                                    '?',
-                              ),
+                              // v0.5.6 §crash-fix: the `?? '?'` was placed
+                              // AFTER `.characters.first`, so it was dead
+                              // (`toUpperCase()` is non-nullable) AND an
+                              // EMPTY app label threw RangeError inside the
+                              // ListView item builder — a blank label is
+                              // reachable (managed/OEM work profiles).
+                              // The fallback now guards the string BEFORE
+                              // indexing it, and an empty one yields '?'.
+                              child: Text(_avatarInitial(a['name'] as String?)),
                             ),
                             title: Text(a['name'] as String? ?? pkg),
                             subtitle: Text(

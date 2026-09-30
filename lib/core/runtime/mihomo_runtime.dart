@@ -47,6 +47,10 @@ class MihomoRuntime {
   StreamController<CoreExitEvent>? _exitEvents;
   final _stderrRing = <String>[];
 
+  /// v0.5.6 §leak-fix: held so [_collectLogs]/[stop] can release them.
+  StreamSubscription<String>? _stdoutSub;
+  StreamSubscription<String>? _stderrSub;
+
   RuntimeStatus get status => _status;
   int? get lastPid => _process?.pid;
   CoreExitEvent? get lastExit => _lastExit;
@@ -131,22 +135,34 @@ class MihomoRuntime {
 
   /// Poll `GET /version` until the external controller answers.
   Future<bool> _waitApiReady({required Duration timeout}) async {
+    // v0.5.6 §leak-fix: this throwaway probe client lazily builds an
+    // HttpClient, and it was never disposed on ANY path (early `return
+    // true`, `return false` on timeout, or the `stop()` failure branch) —
+    // one orphan HttpClient per mihomo start.
     final probe = ClashApiClient(port: apiPort, secret: apiSecret);
-    final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
-      if (_process == null || !_process!.isRunning) return false;
-      try {
-        if (await probe.isAlive()) return true;
-      } catch (_) {/* not up yet */}
-      await Future<void>.delayed(const Duration(milliseconds: 250));
+    try {
+      final deadline = DateTime.now().add(timeout);
+      while (DateTime.now().isBefore(deadline)) {
+        if (_process == null || !_process!.isRunning) return false;
+        try {
+          if (await probe.isAlive()) return true;
+        } catch (_) {/* not up yet */}
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+      return false;
+    } finally {
+      probe.dispose();
     }
-    return false;
   }
 
   Future<void> stop() async {
     final p = _process;
     _process = null;
+    // v0.5.6 §leak-fix: `_api` owns an HttpClient that was never closed
+    // when `stop()` nulled the field.
+    _api?.dispose();
     _api = null;
+    _disposeLogSubs();
     if (p == null) {
       _status = RuntimeStatus.stopped;
       return;
@@ -158,11 +174,25 @@ class MihomoRuntime {
   }
 
   void _collectLogs() {
-    _process!.stdoutStream.listen((l) {}, onDone: () {});
-    _process!.stderrStream.listen((l) {
+    // v0.5.6 §leak-fix: cancel the previous pair (and dispose the previous
+    // `_api`) — the collectors were discarded, so every start() stacked a
+    // live pair holding the ManagedProcess and its controllers alive.
+    _disposeLogSubs();
+    final p = _process;
+    if (p == null) return;
+    _stdoutSub = p.stdoutStream.listen((l) {}, onDone: () {});
+    _stderrSub = p.stderrStream.listen((l) {
       _stderrRing.add(l);
       if (_stderrRing.length > 50) _stderrRing.removeAt(0);
     }, onDone: () {});
+  }
+
+  /// Release the stdout/stderr collectors. Safe to call repeatedly.
+  void _disposeLogSubs() {
+    _stdoutSub?.cancel();
+    _stderrSub?.cancel();
+    _stdoutSub = null;
+    _stderrSub = null;
   }
 
   String _stderrTail() => _stderrRing.join('\n').trim();
