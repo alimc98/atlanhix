@@ -578,41 +578,49 @@ class _DashboardScreenState extends State<DashboardScreen>
                     // v0.5.2 §user: the HERO GLOBE moved to the APP BACKDROP
                     // (shell-level, visible through every screen). The hero
                     // keeps the geo chips + graph over the shared artwork.
-                    // ── GEO ROUTE chip (top-right, mirror of the traffic
-                    // pill): where am I → where is the exit.
-                    // v0.5.2 §user: DURING the pre-connect ladder the chip
-                    // also carries the live per-node count — the last node
-                    // tested and its ping ride under the Iran → Romania
-                    // route line ("Bucharest connecting… · تست ۳/۱۱ · ۱۲۰ ms").
-                    // Shown while the ladder is COUNTING (any phase — the
-                    // sweep runs before/along the tunnel handshake); the
-                    // finish sentinel fades it back out.
-                    Positioned(
-                      top: 10,
-                      right: 4,
-                      child: _GeoRouteChip(
-                        label: _geoChipLabel(l),
-                        ladderText: _ladder.id != LadderProgress.idle.id &&
-                                !_ladder.isFinish &&
-                                _ladder.total > 0
-                            ? _ladderText(l)
-                            : null,
-                      ),
-                    ),
-                    // ── TOTAL TRAFFIC pill (mockup top-left): cumulative
-                    // session usage over the icon, current down+up speed
-                    // under it. Glass pill, rides the artwork.
-                    // v0.5.3 §fix (user report: the two pills COLLIDED on
-                    // narrow phones — both were hard-anchored with no width
-                    // budget): the traffic pill is width-CAPPED (44%) and
-                    // the route chip gets the remaining room; on narrow
-                    // screens the traffic pill also drops to top:6 so the
-                    // two never interleave (each clips its own text).
+                    // ── HERO TOP CHIPS ROW (v0.5.5 §user-fix: "GEO ROUTE
+                    // هنوز با TOTAL TRAFFIC برخورد دارد"). v0.5.3 gave each
+                    // chip its own maxWidth budget, but two independent
+                    // budgets on two Stack anchors can still SUM past the
+                    // hero on narrow/RTL screens — Flutter then overlaps
+                    // them. They now share ONE LayoutBuilder row: TOTAL
+                    // TRAFFIC hugs its content, GEO ROUTE gets ALL the
+                    // remaining width and ellipsizes inside it. Same row →
+                    // geometrically impossible to collide, at any width,
+                    // any locale, with the ladder line visible or not.
+                    // LTR-pinned: both labels are Latin; the mockup wants
+                    // traffic top-left / route top-right in fa too.
                     Positioned(
                       top: 6,
                       left: 4,
-                      child: _TotalTrafficPill(
-                          downBps: _down.last, upBps: _up.last),
+                      right: 4,
+                      child: Directionality(
+                        textDirection: TextDirection.ltr,
+                        child: LayoutBuilder(builder: (context, cons) {
+                          return Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _TotalTrafficPill(
+                                  downBps: _down.last, upBps: _up.last),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Align(
+                                  alignment: Alignment.centerRight,
+                                  child: _GeoRouteChip(
+                                    label: _geoChipLabel(l),
+                                    ladderText: _ladder.id !=
+                                                LadderProgress.idle.id &&
+                                            !_ladder.isFinish &&
+                                            _ladder.total > 0
+                                        ? _ladderText(l)
+                                        : null,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        }),
+                      ),
                     ),
                     // ── THE TRAFFIC GRAPH floats over the LOWER HALF of
                     // the moon (mockup: waves sit on the artwork, bottom
@@ -798,16 +806,10 @@ class _DashboardScreenState extends State<DashboardScreen>
               // and QUICK ACTIONS row are gone — node identity now lives in
               // the Nodes tab, and the power pill above is the single CTA.
               const SizedBox(height: 16),
-              // v0.4.4 mockup: RECOMMENDED NODES — top 3 by measured
-              // latency (never made up); tap selects AND connects.
-              _sectionCard(
-                context,
-                title: l.recommendedNodes,
-                child: _RecommendedNodes(deps: widget.deps, phase: _phase,
-                    selectedId: (_onAndroid
-                        ? widget.deps.vpnSession.selectedNode?.id
-                        : null)),
-              ),
+              // v0.5.5 §user: RECOMMENDED NODES removed from the DASHBOARD
+              // (the hero + power pill are the whole story here; node
+              // identity/selection lives in the Nodes tab). The section
+              // card wrapper stays for the remaining sections.
               const SizedBox(height: 32),
               // v0.4.9 §user: the FAST/SECURE/FREEDOM brand card is REMOVED
               // from the dashboard tail (the hero artwork carries the brand
@@ -818,187 +820,11 @@ class _DashboardScreenState extends State<DashboardScreen>
       ),
     );
   }
-
-  Widget _sectionCard(BuildContext context,
-      {required String title, required Widget child}) {
-    final c = ThemeExt.of(context);
-    return Container(
-      padding: const EdgeInsets.all(NexusSpacing.lg),
-      decoration: BoxDecoration(
-        color: c.surface,
-        borderRadius: BorderRadius.circular(NexusSpacing.radiusCard),
-        border: Border.all(color: c.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(Localizations.localeOf(context).languageCode == 'fa'
-              ? title
-              : title.toUpperCase(),
-              style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 12),
-          child,
-        ],
-      ),
-    );
-  }
 }
 
-/// RECOMMENDED NODES rows: REAL measured latency only — nodes never
-/// probed sort last. (v0.4.7 §user: the old QUICK SETTINGS pills and
-/// their doc comment were removed with the section itself.)
-class _RecommendedNodes extends StatelessWidget {
-  const _RecommendedNodes(
-      {required this.deps, required this.phase, this.selectedId});
-
-  final AppDependencies deps;
-  final ConnectionPhase phase;
-  final String? selectedId;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = ThemeExt.of(context);
-    final l = AppLocalizations.of(context)!;
-    final nodes = deps.profiles.all.where((p) => p.port > 0).toList();
-    if (nodes.isEmpty) {
-      return Text(l.noNodes,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: c.textMuted));
-    }
-    final ranked = [...nodes]..sort((a, b) {
-      final la = deps.healthStore.statsOf(a.id)?.lastLatencyMs ?? (1 << 30);
-      final lb = deps.healthStore.statsOf(b.id)?.lastLatencyMs ?? (1 << 30);
-      return la.compareTo(lb);
-    });
-    final top = ranked.take(3).toList();
-    final connected = phase == ConnectionPhase.connected;
-    return Column(
-      children: [
-        for (final (i, p) in top.indexed) ...[
-          if (i > 0) const SizedBox(height: 8),
-          _row(context, p, connected && p.id == selectedId,
-              () => _pick(context, p)),
-        ],
-      ],
-    );
-  }
-
-  Future<void> _pick(BuildContext context, ProxyProfile p) async {
-    // Select immediately (UI ticks at once), then connect.
-    if (deps.vpnSession.controller.isAndroid) {
-      if (!AndroidNodeSupport.isRunnable(p)) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(
-                '${p.name}: ${AndroidNodeSupport.notRunnableReason(p) ?? 'cannot run on this device'}')));
-        return;
-      }
-      deps.vpnSession.selectNode(p);
-      final ok = await deps.vpnSession.connect();
-      if (!ok && context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(AndroidNodeSupport.connectErrorHint(
-                    deps.vpnSession.lastError) ??
-                'Connection failed')));
-      }
-    } else {
-      await deps.connection.connect(p);
-    }
-  }
-
-  Widget _row(BuildContext context, ProxyProfile p, bool isConnected,
-      VoidCallback onTap) {
-    final c = ThemeExt.of(context);
-    final l = AppLocalizations.of(context)!;
-    final stats = deps.healthStore.statsOf(p.id);
-    final lat = stats?.lastLatencyMs;
-    final latColor = lat == null
-        ? c.textMuted
-        : lat < 300
-            ? c.success
-            : lat < 900
-                ? c.warning
-                : c.error;
-    return Material(
-      color: Colors.transparent,
-      borderRadius: BorderRadius.circular(NexusSpacing.radiusInput),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(NexusSpacing.radiusInput),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-          child: Row(
-            children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  color: c.success.withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: c.success.withValues(alpha: 0.4)),
-                ),
-                child: Icon(Icons.bolt, size: 18, color: c.success),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(p.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyMedium
-                            ?.copyWith(fontWeight: FontWeight.w600)),
-                    Text(
-                      isConnected ? l.connected : l.tapToConnect,
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodySmall
-                          ?.copyWith(
-                              color: isConnected ? c.success : c.textMuted,
-                              letterSpacing: 0.4),
-                    ),
-                  ],
-                ),
-              ),
-              if (isConnected)
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: c.accent.withValues(alpha: 0.2),
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: c.accent),
-                  ),
-                  child: Text(l.connected.toUpperCase(),
-                      style: Theme.of(context)
-                          .textTheme
-                          .labelSmall
-                          ?.copyWith(
-                              color: c.accent, fontWeight: FontWeight.w700)),
-                )
-              else if (lat != null)
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: c.border),
-                  ),
-                  child: Text('$lat ms',
-                      style: Theme.of(context)
-                          .textTheme
-                          .labelSmall
-                          ?.copyWith(color: latColor)),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
+/// v0.5.5 §user: `_RecommendedNodes` was REMOVED with its dashboard
+/// section ("recommended node از داشبورد حذف شود"). The Nodes tab is the
+/// single place for node selection; nothing else referenced the class.
 /// v0.4.7 §brand (sheet v2) — one of the three hero stat tiles
 /// (Download GB/s · ms · uptime): hairline rounded tile, small muted icon
 /// + label over a large value, exactly like the mockup's stat cards.
@@ -1069,14 +895,10 @@ class _TotalTrafficPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = ThemeExt.of(context);
-    // v0.5.3 §fix (pill collision): hard width budget from the ACTUAL hero
-    // width — 40% here + 4px left inset leaves the GEO ROUTE chip (54% cap
-    // on its own) guaranteed non-overlapping room even at 320 dp. Texts
-    // ellipsize inside instead of pushing the pill wider.
-    final heroW = MediaQuery.sizeOf(context).width;
-    final maxW = (heroW * 0.40).clamp(150.0, 240.0);
+    // v0.5.5 §fix: the chips share the hero's top row — the caller's
+    // LayoutBuilder owns collision-freedom now. This pill just hugs its
+    // content; the speed line ellipsizes if it ever gets cramped.
     return Container(
-      constraints: BoxConstraints(maxWidth: maxW),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
         color: c.surface.withValues(alpha: 0.62),
@@ -1142,12 +964,11 @@ class _GeoRouteChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = ThemeExt.of(context);
-    // v0.5.3 §fix (pill collision): 54% width cap mirrors the traffic
-    // pill's 40% — together they can never overlap the hero.
-    final heroW = MediaQuery.sizeOf(context).width;
-    final maxW = (heroW * 0.54).clamp(170.0, 300.0);
+    // v0.5.5 §fix: width comes from the hero's shared top row (Expanded →
+    // tight bounded width). The chip fills that width, keeps its content
+    // hugging the right edge and ellipsizes — no private budget that can
+    // collide with the traffic pill anymore.
     return Container(
-      constraints: BoxConstraints(maxWidth: maxW),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
         color: c.surface.withValues(alpha: 0.62),

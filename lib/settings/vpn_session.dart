@@ -538,26 +538,40 @@ class VpnSession {
   /// node → finish; see [LadderProgress]). The dashboard hero reads THIS
   /// while connecting: "testing 5/11… 180 ms" instead of a bare
   /// "Connecting…". Background rescans/rechecks stay silent (announce-only
-  /// runs report), and a run that died to the 9 s cap still closes itself.
+  /// runs report), and a run that died to the wait cap still closes itself.
   Stream<LadderProgress> get smartLadderProgress => _smart.progress;
 
   /// v0.5.2 §user-fix ("بار اول وصل نمیشه، بار دوم درسته") — THE PRE-CONNECT
   /// LADDER. When Smart Switch is ON and the user has no explicit pick, the
-  /// connect FIRST measures the whole runnable pool with REAL delay tests
-  /// (one transient-engine boot) and connects to the FASTEST healthy node.
-  /// Bounded by [SmartSwitch.initialSweep]'s maxWait — a slow engine boot
-  /// degrades to the health-store pick, never hangs the connect.
-  Future<void> _preConnectLadder(String trace) async {
+  /// connect measures the runnable pool with REAL delay tests and connects
+  /// to the fastest healthy node.
+  ///
+  /// v0.5.5 §user ("کانکت دیر وصل میشه"): the ladder no longer BLOCKS the
+  /// handshake. It hands over the moment a first healthy node exists
+  /// (or after the 3.5 s cap) — the tunnel starts WHILE the rest of the
+  /// pool is still measuring; the armed switch keeps optimizing after
+  /// connect and migrates if a faster node lands later. Returns the node
+  /// to dial (null → the caller falls back to the health-store pick).
+  Future<ProxyProfile?> _preConnectLadder(String trace) async {
     final candidates = SmartSwitch.candidatesOf(deps.profiles.all);
-    if (candidates.isEmpty) return;
+    if (candidates.isEmpty) return null;
     Logger.instance.info('smart-switch',
         '$trace SMART_LADDER pre-connect sweep over ${candidates.length} node(s)');
-    await _smart.initialSweep(candidates);
-    final pick = _smart.best;
-    if (pick != null) {
+    ProxyProfile? pick;
+    await _smart.initialSweep(candidates, earlyPick: (p) {
+      pick = p;
       Logger.instance.info('smart-switch',
-          '$trace SMART_LADDER winner=${pick.name} lat=${deps.healthStore.statsOf(pick.id)?.lastLatencyMs ?? '?'}ms');
+          '$trace SMART_LADDER early-pick=${p.name} '
+          'lat=${deps.healthStore.statsOf(p.id)?.lastLatencyMs ?? '?'}ms — handshake starts, sweep continues');
+    });
+    // A fresh local: flow analysis cannot promote [pick] (assigned inside
+    // the earlyPick closure), so the log below needs a promoted copy.
+    final ProxyProfile? winner = pick ?? _smart.best;
+    if (winner != null) {
+      Logger.instance.info('smart-switch',
+          '$trace SMART_LADDER dial=${winner.name} lat=${deps.healthStore.statsOf(winner.id)?.lastLatencyMs ?? '?'}ms');
     }
+    return winner;
   }
 
   /// The core that will actually run the connection on this device — from
@@ -649,6 +663,11 @@ class VpnSession {
     final trace = '[ATX-DART ${DateTime.now().millisecondsSinceEpoch % 10000}]';
     Logger.instance.info('vpn-session', '$trace CONNECT_REQUEST');
     lastError = null;
+    // v0.5.5 §user: INSTANT visual response — the phase flips to starting
+    // on the tap itself (spinner + "Connecting…" + globe wakes up), never
+    // waiting for the ladder or the permission flow. The later stages
+    // overwrite the phase as they run.
+    controller.markStarting();
     // v0.5.0 §boot: secrets resolve POST-PAINT now. A connect fired before
     // the deferred pass finished would build a config from `@vault:` token
     // strings — gate here: normally a no-op (resolution finished during the
@@ -683,17 +702,29 @@ class VpnSession {
     }
 
     // ── 2. AUTO-SELECT among ANDROID-RUNNABLE nodes only. ──
-    // v0.5.2 §user: with the switch ON, the ladder RUNS FIRST (real delay
-    // per candidate) and the fastest healthy node connects. With it OFF,
-    // the classic health-store pick applies.
+    // v0.5.2 §user: with the switch ON, the ladder runs and the fastest
+    // healthy node connects. With it OFF, the classic health-store pick
+    // applies.
+    // v0.5.5 §user: the ladder is BUDGETED — early handover on the first
+    // healthy measurement (or 3.5 s), then the tunnel boots while the
+    // sweep keeps measuring. The armed switch migrates the tunnel later
+    // if a materially better node shows up.
     if (smartSwitch) {
-      await _preConnectLadder(trace);
+      ProxyProfile? ladderPick = await _preConnectLadder(trace);
+      if (ladderPick != null) {
+        selectedNode = ladderPick;
+        persistState();
+        _selectionEvents.add(null); // the globe pin + hero move NOW
+      }
     }
     // The tunnel boot veto goes up REGARDLESS of the ladder outcome — from
     // here until the tunnel verdict no probe-engine start may fight the
     // VPN engine for cache.db (v0.5.2 keeps the v0.5.0 veto discipline).
     ProbeEngine.instance.setTunnelBootHold(true);
-    final best = _bestNode();
+    // v0.5.5 §user: the EXPLICIT ladder pick dials AS-IS — re-ranking
+    // through _bestNode() here could undo the early handover (a landed
+    // measurement may not be in the store yet when _bestNode scores it).
+    final best = selectedNode ?? _bestNode();
     if (best == null) {
       lastError = 'NO_RUNNABLE_NODE';
       Logger.instance.error('vpn-session',

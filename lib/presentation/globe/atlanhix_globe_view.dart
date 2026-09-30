@@ -145,6 +145,14 @@ class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
   ui.FragmentShader? _shader;
   ui.Image? _landMask;
 
+  /// v0.5.5 §user-fix: the mask is baked ONCE and kept EVEN when the
+  /// shader asset fails — the CPU fallback paints REAL CONTINENTS from
+  /// it instead of a featureless gradient ball. (The old catch threw the
+  /// bake away with the program, which is how "the globe never came / was
+  /// too pale" looked on devices whose shader compile failed.)
+  ui.Image? get landMask => _landMask ?? _landMaskOnly;
+  ui.Image? _landMaskOnly;
+
   // Steady repaint throttle + route/packet phase advanced per tick.
   double _phase = 0; // 0..1 packets + pulses driver
   Duration _accum = Duration.zero;
@@ -173,20 +181,31 @@ class AtlanhixGlobeViewState extends State<AtlanhixGlobeView>
       widget.state != GlobeVisualState.idle;
 
   Future<void> _loadAssets() async {
+    // v0.5.5 §user-fix: the TWO assets load INDEPENDENTLY now. The old
+    // single try/catch made a shader-compile failure discard the baked
+    // land mask too — the fallback then painted a blank gradient orb
+    // ("همیشه نمی‌آید، اگر هم بیاید خیلی کم‌رنگ است").
+    ui.Image? mask;
+    try {
+      mask = await landMaskImage();
+    } catch (_) {
+      mask = null; // bake failure is survivable — gradient fallback
+    }
     try {
       final program =
           await ui.FragmentProgram.fromAsset(widget.config.shaderAsset);
-      final mask = await landMaskImage();
       if (!mounted) return;
       setState(() {
         _shader = program.fragmentShader();
         _landMask = mask;
       });
     } catch (_) {
-      // CPU fallback keeps the visuals alive (test VMs, old GPUs).
+      // CPU fallback keeps the visuals alive (test VMs, old GPUs) — now
+      // with real continents via [landMask].
       if (!mounted) return;
       setState(() {
         _landMask = null;
+        _landMaskOnly = mask;
       });
     }
   }
@@ -423,10 +442,13 @@ class _GlobeScenePainter extends CustomPainter {
     final s = state;
     final cx = size.width / 2;
     final cy = size.height * 0.46;
-    final r = math.min(size.shortestSide * 0.46, size.height * 0.42);
+    // v0.5.5 §user-fix ("کره بزرگ‌تر"): the reference sheet's MAIN VIEW
+    // fills most of the frame height — 0.46/0.42 of the short side left
+    // the planet a small coin in a big empty hero.
+    final r = math.min(size.shortestSide * 0.60, size.height * 0.60);
 
     // ── 1) The planet body ────────────────────────────────────────────
-    final mask = s._landMask;
+    final mask = s.landMask;
     if (s._shader != null && mask != null) {
       final sh = s._shader!;
       final atmos = _atmosTarget(s.widget.state) *
@@ -623,8 +645,10 @@ class _GlobeScenePainter extends CustomPainter {
     );
   }
 
-  /// CPU fallback planet (shader unavailable): layered radial gradients +
-  /// rim — the SAME composition language, cheaper.
+  /// CPU fallback planet (shader unavailable): REAL CONTINENTS from the
+  /// baked land mask (v0.5.5 §user-fix — the old version was three limp
+  /// radial gradients, which is exactly the "pale ghost ball" users
+  /// reported), plus the rim sweep and the night-lights channel.
   void _paintFallbackPlanet(
       Canvas canvas, Size size, double cx, double cy, double r) {
     final atmos = _atmosTarget(state.widget.state);
@@ -634,39 +658,121 @@ class _GlobeScenePainter extends CustomPainter {
       r * 1.35,
       Paint()
         ..shader = ui.Gradient.radial(Offset(cx, cy), r * 1.35, [
-          ext.textPrimary.withValues(alpha: 0.10 * atmos),
-          ext.textPrimary.withValues(alpha: 0.02 * atmos),
+          ext.textPrimary.withValues(alpha: 0.16 * atmos),
+          ext.textPrimary.withValues(alpha: 0.03 * atmos),
           const Color(0x00000000),
-        ], [0.72, 0.88, 1.0]),
+        ], [0.70, 0.88, 1.0]),
     );
-    // Body.
-    canvas.drawCircle(
-      Offset(cx, cy),
-      r,
-      Paint()
-        ..shader = ui.Gradient.radial(
-          Offset(cx - r * 0.35, cy - r * 0.4),
-          r * 1.7,
-          [
-            const Color(0xFF1A2028),
-            const Color(0xFF0C0F14),
-            const Color(0xFF05070A),
-          ],
-          [0.0, 0.55, 1.0],
-        ),
-    );
-    // Rim light (upper-left → lower-right sweep).
+    final mask = state.landMask;
+
+    // ── Continents (mask clip): REAL land shapes scrolling with yaw ──
+    // The equirectangular mask wraps horizontally; shifting its source
+    // rect by the yaw fraction scrolls the continents through the disc —
+    // a cheap hemisphere projection that reads as a ROTATING planet.
+    if (mask != null) {
+      final bodyRect = Rect.fromCircle(center: Offset(cx, cy), radius: r);
+      final mw = mask.width.toDouble();
+      final mh = mask.height.toDouble();
+      // Longitude scroll (wraps) + a small latitude offset from pitch.
+      final lonShift =
+          ((state._yaw / (2 * math.pi)) % 1.0) * mw;
+      final latShift = (state._pitch / math.pi) * mh * 0.5;
+      // White continent cutout: alpha ← mask R channel (ColorFilter
+      // matrix — paint.color alone never tints a drawImage). The 0.42
+      // coefficient folds the layer opacity into the matrix (Paint has
+      // no standalone alpha setter for this shape).
+      const landFilter = ColorFilter.matrix(<double>[
+        0, 0, 0, 0, 1, // R' = 1 (white)
+        0, 0, 0, 0, 1, // G' = 1
+        0, 0, 0, 0, 1, // B' = 1
+        0.42, 0, 0, 0, 0, // A' = mask R × 0.42
+      ]);
+      // Warm night-lights cutout: alpha ← mask G channel.
+      const lightFilter = ColorFilter.matrix(<double>[
+        0, 0, 0, 0, 1.00, // warm white R
+        0, 0, 0, 0, 0.88, // G
+        0, 0, 0, 0, 0.62, // B
+        0, 0.30, 0, 0, 0, // A' = mask G × 0.30
+      ]);
+      void drawWrapped(Paint paint) {
+        final x0 = lonShift;
+        final src1 = Rect.fromLTWH(x0, 0, mw - x0, mh);
+        final src2 = Rect.fromLTWH(0, 0, x0, mh);
+        final dstW = bodyRect.width * ((mw - x0) / mw);
+        final dy = latShift;
+        canvas.drawImageRect(
+            mask,
+            src1,
+            Rect.fromLTRB(bodyRect.left, bodyRect.top + dy,
+                bodyRect.left + dstW, bodyRect.bottom + dy),
+            paint);
+        canvas.drawImageRect(
+            mask,
+            src2,
+            Rect.fromLTRB(bodyRect.left + dstW, bodyRect.top + dy,
+                bodyRect.right, bodyRect.bottom + dy),
+            paint);
+      }
+
+      canvas.save();
+      canvas.clipPath(Path()..addOval(bodyRect));
+      drawWrapped(Paint()
+        ..filterQuality = FilterQuality.low
+        ..colorFilter = landFilter);
+      drawWrapped(Paint()
+        ..filterQuality = FilterQuality.low
+        ..colorFilter = lightFilter
+        ..blendMode = BlendMode.plus);
+      // Night wash: keep the disc DARK like the reference — the lower-
+      // right hemisphere sinks to near-black, the upper-left (under the
+      // key light) stays readable.
+      canvas.drawCircle(
+        Offset(cx, cy),
+        r,
+        Paint()
+          ..shader = ui.Gradient.radial(
+            Offset(cx - r * 0.45, cy - r * 0.45),
+            r * 2.1,
+            [
+              const Color(0x00000000),
+              const Color(0xD8030508),
+              const Color(0xF0020407),
+            ],
+            [0.0, 0.55, 1.0],
+          ),
+      );
+      canvas.restore();
+    } else {
+      // Body.
+      canvas.drawCircle(
+        Offset(cx, cy),
+        r,
+        Paint()
+          ..shader = ui.Gradient.radial(
+            Offset(cx - r * 0.35, cy - r * 0.4),
+            r * 1.7,
+            [
+              const Color(0xFF1A2028),
+              const Color(0xFF0C0F14),
+              const Color(0xFF05070A),
+            ],
+            [0.0, 0.55, 1.0],
+          ),
+      );
+    }
+    // Rim light (upper-left → lower-right sweep) — STRONGER now: this is
+    // the reference's signature white crescent.
     canvas.drawCircle(
       Offset(cx, cy),
       r - 0.6,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2
+        ..strokeWidth = 1.6
         ..shader = ui.Gradient.sweep(
           Offset(cx, cy),
           [
-            Colors.white.withValues(alpha: 0.55 * atmos),
-            Colors.white.withValues(alpha: 0.06),
+            Colors.white.withValues(alpha: 0.85 * atmos),
+            Colors.white.withValues(alpha: 0.10),
             Colors.white.withValues(alpha: 0.0),
           ],
           [0.0, 0.25, 1.0],

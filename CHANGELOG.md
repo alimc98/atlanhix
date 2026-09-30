@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.5.5 — the planet that actually renders + instant-connect ladder
+
+### The globe (user report: "همیشه نمی‌آید، اگر هم بیاید خیلی کم‌رنگ است")
+
+- **ROOT CAUSE — shader never compiled**: `planet.frag` declared
+  `#version 460 core` (desktop GLSL). Flutter's FragmentProgram only
+  accepts ES 3.20 — every device failed the compile, fell into the CPU
+  catch and threw the baked land mask away with it. Now `#version 320 es`:
+  the GPU planet is real on device.
+- **Reference look** (dark rocky planet sheet): hard WHITE rim light
+  anchored upper-left (a second rim-key lobe, not just a uniform edge),
+  domain-warped fbm relief with raked bump shading, brighter warm
+  night-lights, inner atmosphere ring + tighter halo, planet 30% larger
+  in frame.
+- **No more double-dimming**: the backdrop's Opacity(0.5) wrapper is gone
+  and the top vignette eased from 0.86 to 0.42 — the rim-lit limb shows
+  through the hero.
+- **Fallback planet upgraded**: keeps the baked land mask even when the
+  shader fails; real continents scroll with yaw (ColorFilter cutouts from
+  the mask's land/lights channels), stronger rim sweep.
+
+### The connect speed (user report: "کانکت دیر وصل می‌شود")
+
+- **Instant phase**: the controller flips to STARTING on the tap itself —
+  spinner, "Connecting…" and the globe wake up immediately.
+- **Early handover ladder**: the pre-connect sweep no longer blocks the
+  handshake. The first healthy measurement (or a healthy node already in
+  the health store) hands the node to the tunnel start immediately; the
+  hard budget dropped from 9 s to 3.5 s. The sweep keeps measuring in the
+  background and the armed Smart Switch migrates when a materially faster
+  node lands (margin logic untouched).
+- The dial lands on the EXACT ladder pick — no re-ranking that could
+  undo the early handover. Manual node selection semantics unchanged.
+
+### The dashboard
+
+- **GEO ROUTE × TOTAL TRAFFIC collision — fixed for good**: the two chips
+  now share ONE hero-top row (LayoutBuilder); GEO ROUTE gets exactly the
+  width left over. Two independent budgets can never sum past the hero
+  again.
+- **Recommended Nodes section removed from the dashboard** (user request);
+  node selection lives in the Nodes tab.
+
 ## v0.5.4 — the signature 3D globe (GPU planet + live connection route)
 
 ### The planet

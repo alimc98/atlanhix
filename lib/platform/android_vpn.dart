@@ -95,6 +95,16 @@ class AndroidVpnController {
     _mirrorToNotification(p, detail);
   }
 
+  /// v0.5.5 §user ("تا کانکت رو می‌زنی باید سریع بره روی تست کانفیگ‌ها"):
+  /// the UI-visible STARTING phase used to wait for the pre-connect
+  /// ladder, so the tap felt dead for seconds. [markStarting] flips the
+  /// phase the INSTANT the user taps (guarded against a non-idle phase),
+  /// and the ladder/UI machine races behind it.
+  void markStarting({String? detail}) {
+    if (isBusy || isConnected) return;
+    _set(AndroidVpnPhase.starting, detail: detail ?? 'user tapped connect');
+  }
+
   /// v0.5.0 §user-fix ("notification not synced with the real VPN state"):
   /// the native state machine NEVER reaches CONNECTED on its own — Dart
   /// flips after a REAL probe through the tunnel (§5) — so the foreground

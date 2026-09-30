@@ -1,6 +1,19 @@
-#version 460 core
+#version 320 es
 
-// ATLANHIX PLANET — cinematic dark-planet shader (reference: brand sheet).
+// ATLANHIX PLANET — cinematic dark-planet shader (reference: brand sheet
+// "MAIN VIEW"). v0.5.5 §user-fix: the file previously declared
+// `#version 460 core` — desktop GLSL, which Flutter's FragmentProgram
+// REJECTS (it compiles ES 3.20); every device fell into the CPU-fallback
+// catch and the planet either never appeared or rendered ghost-pale
+// under the backdrop's old 0.5 opacity. This file now compiles FOR REAL
+// and the look targets the reference sheet directly:
+//
+//   * strong WHITE rim light anchored to the UPPER-LEFT limb,
+//   * rocky fbm relief with visible dark-terrain texture,
+//   * warm night-side city lights that actually glow,
+//   * a tight bright limb ring + soft cool halo (atmosphere),
+//   * the planet LARGE in frame, most of the disc in night.
+//
 // One fullscreen quad per frame; ALL surface detail is procedural so the
 // asset budget stays zero-texture and mobile-friendly.
 //
@@ -9,6 +22,8 @@
 // uError (0/1) and uLit (light direction in VIEW space).
 #include <flutter/runtime_effect.glsl>
 
+// NOTE: sampler uniforms MUST be declared after every numeric uniform
+// (Flutter fragment-shader indexing rule) — uLand is intentionally last.
 uniform vec2 iResolution;
 uniform float uTime;
 uniform float uYaw;   // planet yaw (radians)
@@ -16,8 +31,6 @@ uniform float uPitch; // camera tilt (radians)
 uniform float uAtmos;      // 0..1 atmosphere/rim intensity
 uniform float uError;      // 0 normal, 1 error tint
 uniform vec2 uLit;         // light direction (view space xy)
-// NOTE: sampler uniforms MUST be declared after every numeric uniform
-// (Flutter fragment-shader indexing rule) — uLand is intentionally last.
 uniform sampler2D uLand;   // r = land, g = night-lights, b = spare
 
 out vec4 fragColor;
@@ -61,7 +74,7 @@ float lightsSample(vec2 uv) {
 void main() {
   vec2 fc = FlutterFragCoord().xy;
   // Planet center: slightly below mid-height (art composition).
-  float R = min(iResolution.x * 0.46, iResolution.y * 0.42);
+  float R = min(iResolution.x * 0.52, iResolution.y * 0.50);
   vec2 center = vec2(iResolution.x * 0.5, iResolution.y * 0.46);
   vec2 p = fc - center;
   float r = length(p);
@@ -104,41 +117,64 @@ void main() {
   float lights = lightsSample(uv);
 
   // ── Procedural rocky relief (the dark terrain) ──────────────────────
-  float f1 = fbm(uv * vec2(9.0, 5.0) + vec2(3.1, 7.7));
-  float f2 = fbm(uv * vec2(22.0, 11.0) + vec2(13.7, 1.9));
-  float relief = f1 * 0.65 + f2 * 0.35;
+  // v0.5.5: domain-warped fbm — the reference's craggy continents read as
+  // big rock masses, not flat noise. relief is the macro shape; detail
+  // adds the fine grain the close-up sheet shows.
+  vec2 wuv = uv + vec2(fbm(uv * vec2(6.0, 3.0)) - 0.5) * 0.045;
+  float f1 = fbm(wuv * vec2(7.0, 4.0) + vec2(3.1, 7.7));
+  float f2 = fbm(wuv * vec2(19.0, 10.0) + vec2(13.7, 1.9));
+  float f3 = fbm(wuv * vec2(46.0, 24.0) + vec2(27.3, 9.1));
+  float relief = f1 * 0.55 + f2 * 0.30 + f3 * 0.15;
 
   // ── Lighting ────────────────────────────────────────────────────────
-  // Light dir from uLit (view space); default upper-left-front.
-  vec3 L = normalize(vec3(uLit, 0.55));
+  // Key light from uLit (view space); default UPPER-LEFT-front, matching
+  // the reference sheet's hard limb light position.
+  vec3 L = normalize(vec3(uLit, 0.45));
   float diff = max(dot(n, L), 0.0);
   // Terminator: pow keeps most of the disc dark (night side dominant).
-  float day = pow(diff, 1.35);
+  float day = pow(diff, 1.25);
   // Rim: grazing angles glow cool-white (the reference's limb light).
   float rim = pow(1.0 - max(dot(n, vec3(0, 0, 1)), 0.0), 2.6);
+  // KEY RIM (v0.5.5): a SECOND rim lobe biased to the light side — the
+  // hard white crescent hugging the upper-left limb in the sheet. A plain
+  // uniform rim ring reads as an outline; this reads as a LIGHT.
+  float rimKey = pow(max(dot(n, L), 0.0), 3.5) *
+      pow(1.0 - max(dot(n, vec3(0, 0, 1)), 0.0), 1.6);
+  // Terrain shading: cheap normal perturbation from the relief field so
+  // the light rakes across the rock (the close-up's craters/ridges).
+  vec3 bumpN = normalize(n + vec3(
+      (fbm(wuv * vec2(24.0, 12.0) + vec2(5.2, 1.3)) - 0.5) * 0.55,
+      (fbm(wuv * vec2(24.0, 12.0) + vec2(9.8, 4.4)) - 0.5) * 0.55,
+      0.0));
+  float bumpDiff = max(dot(bumpN, L), 0.0);
 
   // ── Surface shading ─────────────────────────────────────────────────
-  vec3 deepNavy = vec3(0.024, 0.031, 0.042);   // #06080B
-  vec3 charcoal = vec3(0.066, 0.078, 0.092);   // #11141A-ish
-  vec3 rockHi = vec3(0.345, 0.376, 0.42);      // #57606B
-  vec3 ink = vec3(0.039, 0.043, 0.051);        // #0A0B0D
+  vec3 deepNavy = vec3(0.020, 0.026, 0.036);   // near-black ocean floor
+  vec3 charcoal = vec3(0.062, 0.073, 0.088);   // #101318-ish rock  vec3 rockHi = vec3(0.400, 0.435, 0.485);   // lit rock crest
+  vec3 ink = vec3(0.034, 0.038, 0.046);
 
   vec3 col = mix(deepNavy, charcoal, relief);
-  col = mix(col, rockHi * 0.55, land * 0.35 * day);
-  // Ocean vs land albedo: land slightly lighter on the day side.
-  col += rockHi * 0.22 * land * day;
-  col += vec3(0.9, 0.93, 1.0) * rim * (0.55 + 0.45 * uAtmos) * 0.85;
-  col += charcoal * day * 0.35;
-  // Night-side city lights (from the baked mask) — warm-cold mix, subtle.
-  float lightsPulse = lights * (0.65 + 0.35 * sin(uTime * 0.7 + uv.x * 40.0));
-  col += vec3(0.92, 0.90, 0.80) * lightsPulse * (1.0 - day) * 0.85;
-  col = mix(col, ink, 0.18); // cinematic crush
+  // Raked-light terrain: the bump term sculpts the day/terminator band.
+  col += rockHi * (bumpDiff - diff * 0.55) * 0.38;
+  // Land albedo lift on the day side.
+  col += rockHi * 0.30 * land * day;
+  // KEY RIM — the signature white crescent (upper-left), stronger than
+  // the old 0.85 mix: this is the line the reference sheet lives by.
+  col += vec3(1.0, 1.0, 1.0) * rimKey * (0.70 + 0.45 * uAtmos) * 1.25;
+  // Soft full-limb rim underneath (cool, slight blue).
+  col += vec3(0.80, 0.86, 0.96) * rim * (0.50 + 0.45 * uAtmos) * 0.85;
+  col += charcoal * day * 0.40;
+  // Night-side city lights (from the baked mask) — brighter and warmer
+  // than v0.5.4; the sheet's dark hemisphere is dotted with visible gold.
+  float lightsPulse = lights * (0.80 + 0.20 * sin(uTime * 0.7 + uv.x * 40.0));
+  col += vec3(1.00, 0.93, 0.74) * lightsPulse * (1.0 - day) * 1.55;
+  // Faint rock texture on the night side so it is not a flat silhouette.
+  col += vec3(0.05, 0.055, 0.065) * relief * (1.0 - day) * 0.55;
+  col = mix(col, ink, 0.14); // cinematic crush (lighter than v0.5.4)
 
   // ── Land dot grid (hairline ink dots over the lit mask) ─────────────
   float dotGrid = 0.0;
   if (land > 0.5) {
-    // Local planar grid on the sphere, dot cells sized by zoom-invariant
-    // frequency so they read as the point cloud even at rest.
     vec2 g = fract(uv * vec2(180.0, 90.0)) - 0.5;
     dotGrid = smoothstep(0.18, 0.06, length(g)) * 0.55;
   }
@@ -147,9 +183,14 @@ void main() {
   // ── Atmosphere: limb ring + soft halo just outside the disc ────────
   vec3 atmos = vec3(0.0);
   // Outer halo (adds glow on empty pixels too — keep when disc==0).
-  float halo = exp(-max(r - R, 0.0) / (R * 0.16)) * (0.30 + 0.55 * uAtmos);
+  // v0.5.5: tighter core, longer tail — reads as a glow, not a fog bank.
+  float halo = exp(-max(r - R, 0.0) / (R * 0.13)) * (0.35 + 0.60 * uAtmos);
   vec3 haloCol = vec3(0.62, 0.68, 0.78);
-  atmos += haloCol * halo * 0.9;
+  atmos += haloCol * halo * 1.05;
+  // Inner atmosphere ring: light-scatter hugging the limb from inside.
+  float inner = smoothstep(R * 0.86, R, r) *
+      (0.20 + 0.55 * uAtmos) * (0.35 + 0.65 * day);
+  atmos += vec3(0.70, 0.76, 0.86) * inner * disc;
 
   // ── Error tint: a slow red breath on the rim, nothing garish ───────
   float errBreath = uError * (0.5 + 0.5 * sin(uTime * 2.2));

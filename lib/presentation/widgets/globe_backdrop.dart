@@ -83,20 +83,21 @@ class GlobeBackdrop extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           ColoredBox(color: Theme.of(context).scaffoldBackgroundColor),
-          // The 3D planet: lower half (reference composition), tinted by
-          // state through the view's own atmosphere/rim machine.
+          // The 3D planet: lower half (reference composition), FULL
+          // brightness. v0.5.5 §user-fix ("خیلی محو است"): the old
+          // Opacity(0.5) wrapper dimmed every pixel the shader wrote —
+          // combined with the top vignette the planet read as a ghost.
+          // The view already composes its own state-driven intensity;
+          // no second dimming pass lives here anymore.
           Positioned(
             left: -80,
             right: -80,
             bottom: -120,
             height: MediaQuery.sizeOf(context).height * 0.85,
-            child: Opacity(
-              opacity: 0.5,
-              child: AtlanhixGlobeView(
-                source: src,
-                destination: dst,
-                state: _visualState,
-              ),
+            child: AtlanhixGlobeView(
+              source: src,
+              destination: dst,
+              state: _visualState,
             ),
           ),
           // Connection wash: the green breath on connect (kept from the
@@ -116,8 +117,11 @@ class GlobeBackdrop extends StatelessWidget {
                 ),
               ),
             ),
-          // Readability vignette: the top half stays near-solid background
-          // so lists/cards render over it cleanly.
+          // Readability vignette: the TOP EDGE stays solid enough for
+          // list/card text, but v0.5.5 §user-fix dials the old 0.86
+          // near-total wash down to 0.42 — the planet's upper limb (the
+          // reference's rim-lit crescent) now shows through the hero
+          // instead of being erased at the mid-line.
           DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -126,7 +130,7 @@ class GlobeBackdrop extends StatelessWidget {
                 colors: [
                   Theme.of(context)
                       .scaffoldBackgroundColor
-                      .withValues(alpha: 0.86),
+                      .withValues(alpha: 0.42),
                   Theme.of(context)
                       .scaffoldBackgroundColor
                       .withValues(alpha: 0.0),

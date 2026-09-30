@@ -239,23 +239,106 @@ class SmartSwitch {
     });
   }
 
-  /// v0.5.2 §user — PRE-CONNECT LADDER: measures the WHOLE runnable pool
-  /// with REAL delay tests (batch provider, one engine boot) and sets
-  /// [best] to the fastest healthy node. The future completes when the
-  /// first trustworthy measurement set is in (or after [maxWait] — never
-  /// hangs the connect); VpnSession awaits it when smart mode is ON, so
-  /// the FIRST connect picks the lowest-latency config, not a blind guess.
+  /// v0.5.2 §user — PRE-CONNECT LADDER: measures the runnable pool with
+  /// REAL delay tests (batch provider, one engine boot) and sets [best]
+  /// to the fastest healthy node.
+  ///
+  /// v0.5.5 §user ("تا کانکت رو می‌زنی باید سریع بره روی تست کانفیگ‌ها و
+  /// بعد وصل شه"): the ladder used to block the connect until the WHOLE
+  /// batch settled (up to 9 s) — the tunnel handshake only started AFTER
+  /// the last node answered. Now:
+  ///   * [maxWait] defaults to 3.5 s — the connect's TOTAL ladder budget.
+  ///     Every measurement still lands in the health store and the armed
+  ///     switch keeps optimizing after the tunnel is up (migration);
+  ///   * the future returns EARLY the moment a first healthy node exists
+  ///     ([earlyPick] channel) — the handshake starts while the rest of
+  ///     the pool is still measuring.
+  /// The full measurement set always finishes in the background; only the
+  /// connect's WAIT is bounded.
   Future<void> initialSweep(
     List<ProxyProfile> candidates, {
-    Duration maxWait = const Duration(seconds: 9),
+    Duration maxWait = const Duration(milliseconds: 3500),
+    void Function(ProxyProfile node)? earlyPick,
   }) async {
     _candidates = candidates;
     // v0.5.2 §user: announced runs feed the hero's live count. If a sweep
     // is ALREADY in flight (resume re-arm racing the connect tap) this
     // call no-ops inside [_sweep] and the in-flight run's own count keeps
     // showing — honest, never a reset-to-zero mid-run.
-    await _sweep(candidates, announce: true)
-        .timeout(maxWait, onTimeout: () {});
+    final sweep = _sweep(candidates, announce: true);
+    if (earlyPick == null) {
+      await sweep.timeout(maxWait, onTimeout: () {});
+      return;
+    }
+    // ── Early handover: first healthy node wins the tunnel start. ──
+    // The future COMPLETES at the handover — the sweep keeps measuring in
+    // the background (hero count, fresh pings, post-connect migration);
+    // the caller starts the handshake right away. Three wake sources:
+    //   1. a healthy node ALREADY in the store (previous session) — instant,
+    //   2. the first landed measurement with a real ms (per-node channel;
+    //      health.record only lands AFTER the whole batch, so the fresh
+    //      ms IS the health evidence here — ms>0, a failed probe is 0),
+    //   3. maxWait — the connect is never held longer than the budget.
+    var picked = false;
+    void handOver(ProxyProfile p) {
+      if (picked) return;
+      picked = true;
+      earlyPick(p);
+    }
+
+    final cached = _bestHealthy(candidates);
+    if (cached != null) {
+      best ??= cached; // the incumbent for the post-connect hysteresis
+      handOver(cached);
+      return; // sweep continues unawaited
+    }
+    final done = Completer<void>();
+    late final StreamSubscription<void> sub;
+    sub = _progress.stream.listen((e) {
+      if (picked || done.isCompleted) return;
+      final name = e.lastName;
+      final ms = e.lastMs ?? 0;
+      if (name == null || e.isFinish || ms <= 0) return;
+      for (final p in candidates) {
+        if (p.name == name) {
+          // Seed the incumbent directly (NOT via _changed — the session's
+          // migration path must not fire mid-connect); the post-connect
+          // _evaluate then applies its margin logic normally.
+          best = p;
+          handOver(p);
+          if (!done.isCompleted) done.complete();
+          break;
+        }
+      }
+    });
+    try {
+      await Future.any([done.future, sweep.timeout(maxWait)]);
+      // Sweep closed (or cap hit) without an early pick: hand over the
+      // ladder's conclusion — may be null; the caller then falls back to
+      // the health-store pick.
+      final b = best;
+      if (!picked && b != null) handOver(b);
+    } on TimeoutException {
+      // The cap fired mid-sweep: leave the sweep running, honor the budget.
+    } finally {
+      await sub.cancel();
+    }
+  }
+
+  /// Fastest HEALTHY candidate from the current store, or null.
+  ProxyProfile? _bestHealthy(List<ProxyProfile> candidates) {
+    ProxyProfile? winner;
+    var bestLat = 1 << 30;
+    for (final p in candidates) {
+      final s = health.statsOf(p.id);
+      if (s == null || s.state != NodeHealth.healthy) continue;
+      final lat = s.lastLatencyMs ?? s.avgLatencyMs;
+      if (lat != null && lat < bestLat) {
+        bestLat = lat;
+        winner = p;
+      }
+    }
+    return winner;
   }
 
   Future<void> _sweep(List<ProxyProfile> candidates,
