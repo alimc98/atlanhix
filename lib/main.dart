@@ -1,5 +1,6 @@
 ﻿import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform, Process;
 import 'dart:ui' show PlatformDispatcher;
 
 import 'package:crypto/crypto.dart' as crypto;
@@ -328,15 +329,69 @@ class _AtlanhixAppState extends State<AtlanhixApp>
         ],
       ),
     );
-    if (go == true && mounted) {
-      // v0.4.7 §user: open the release URL via the platform channel
-      // (ACTION_VIEW) — no url_launcher dependency needed.
-      try {
-        await const MethodChannel('dev.atlanhix/vpn')
-            .invokeMethod('openUrl', {'url': info.url});
-      } catch (e) {
-        Logger.instance.warn('update', 'openUrl failed: $e');
+    if (go != true || !mounted) return;
+    // v0.4.7 §user: open the release URL via the platform channel
+    // (ACTION_VIEW) — no url_launcher dependency needed.
+    //
+    // v0.5.6 §update-fix ("وقتی دانلود رو میزنی هیچی نمیشه" — pressing
+    // Download does nothing): `openUrl` is implemented ONLY by the Android
+    // host (AtlanhixVpnChannel). On Windows and Linux the call throws
+    // MissingPluginException, which the old catch swallowed into a log line
+    // — so the dialog silently did nothing at all on desktop. Now: try the
+    // native channel, fall back to `Process.run` of the platform opener,
+    // and if even that fails SHOW the user the URL instead of failing
+    // silently.
+    final opened = await _openExternalUrl(info.url);
+    if (!opened && mounted) {
+      // v0.5.6: localize through the MaterialApp context (the State's own
+      // context sits above LocalizationsScope — `of()` there is null, which
+      // is why this dialog used to bail).
+      final l = AppLocalizations.of(navCtx);
+      final fa = Localizations.localeOf(navCtx).languageCode == 'fa';
+      final messenger = ScaffoldMessenger.maybeOf(navCtx);
+      messenger?.showSnackBar(SnackBar(
+        duration: const Duration(seconds: 12),
+        content: Text(
+          fa
+              ? 'مرورگر باز نشد. آدرس نسخه جدید: ${info.url}'
+              : 'Could not open a browser. New version URL: ${info.url}',
+        ),
+        action: SnackBarAction(
+          label: fa ? 'کپی' : (l?.download ?? 'Copy'),
+          onPressed: () =>
+              unawaited(Clipboard.setData(ClipboardData(text: info.url))),
+        ),
+      ));
+    }
+  }
+
+  /// Returns true when the URL was handed to an external opener.
+  Future<bool> _openExternalUrl(String url) async {
+    if (url.isEmpty) return false;
+    try {
+      await const MethodChannel('dev.atlanhix/vpn')
+          .invokeMethod('openUrl', {'url': url});
+      return true;
+    } catch (e) {
+      Logger.instance.info('update', 'native openUrl unavailable: $e');
+    }
+    // Desktop fallback: the platform's own opener. `start` on Windows needs
+    // the empty-string title argument before the URL or it treats the URL
+    // as a window title; xdg-open covers Linux.
+    try {
+      if (Platform.isWindows) {
+        await Process.run('cmd', ['/c', 'start', '', url]);
+      } else if (Platform.isLinux) {
+        await Process.run('xdg-open', [url]);
+      } else if (Platform.isMacOS) {
+        await Process.run('open', [url]);
+      } else {
+        return false;
       }
+      return true;
+    } catch (e) {
+      Logger.instance.warn('update', 'desktop openUrl failed: $e');
+      return false;
     }
   }
 

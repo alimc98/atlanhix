@@ -92,6 +92,70 @@ class ConnectionController {
   /// detector; optional so existing test constructors keep compiling.
   final AppSettings? _settings;
 
+  /// v0.5.6 §connect-fix: the URL the tunnel-VERIFICATION probe fetches.
+  ///
+  /// BUG (user report: "وقتی کانکت میزنی فقط میچرخه و وصل نمیشه، به هیچ
+  /// کانفیگی وصل نمیشه" — connect spins forever, NO config ever connects):
+  /// every verification call was hardcoded to
+  /// `https://www.gstatic.com/generate_204` — 5 sites here plus the Android
+  /// one in vpn_session.dart. That URL is Google-hosted, and the app's
+  /// whole audience is a filtered network where it is routinely blocked or
+  /// intercepted. When the probe target is unreachable, `testHttpViaSocksProxy`
+  /// returns ok=false for a node whose tunnel is actually PERFECT — and the
+  /// connect path then throws ProbeError and tears the tunnel down. The
+  /// symptom is identical for every config, which is exactly what was
+  /// reported: the tunnel comes up, the probe fails on an unreachable
+  /// canary, the session is destroyed.
+  ///
+  /// The fix is to honour the user's Settings → Delay test URL (which
+  /// already exists and already drives the node-list tester and Smart
+  /// Switch — so a user who set a reachable URL was still failed here),
+  /// and to fall back through several independent canaries instead of
+  /// trusting one.
+  String get _probeUrl =>
+      _settings?.effectiveDelayTestUrl ??
+      AppSettings.defaultDelayTestUrl;
+
+  /// Canaries tried, in order, when verifying a tunnel. A 204 from ANY of
+  /// them proves the tunnel carries real traffic. Deliberately spread
+  /// across providers and networks so one blocked host cannot fail every
+  /// node at once. Public because the Android session verifies through the
+  /// same list.
+  static const probeFallbacks = <String>[
+    // Cloudflare — reachable on most filtered networks (and the same
+    // provider the app already trusts for DNS).
+    'https://cp.cloudflare.com/generate_204',
+    // gstatic: keep LAST. It is the historical default and works on many
+    // networks, but it is the one most likely to be blocked, so it must
+    // never be the only canary.
+    'https://www.gstatic.com/generate_204',
+  ];
+
+  /// Verification probe with fallback: returns the FIRST successful
+  /// canary result, or the last failure if every canary fails (so the
+  /// error the user sees still names a real cause).
+  Future<ProbeResult> _probeTunnel(String host, int port,
+      {Duration? timeout}) async {
+    ProbeResult? last;
+    for (final url in [_probeUrl, ...probeFallbacks]) {
+      final r = await tester.testHttpViaSocksProxy(
+        host,
+        port,
+        url,
+        timeout: timeout ?? const Duration(seconds: 6),
+      );
+      if (r.ok) {
+        if (url != _probeUrl) {
+          Logger.instance.info('connection',
+              'tunnel probe: primary canary failed, $url succeeded');
+        }
+        return r;
+      }
+      last ??= r;
+    }
+    return last!;
+  }
+
   final ProfileRepository repository;
   final HealthStore healthStore;
   final LatencyTester tester;
@@ -301,12 +365,8 @@ class ConnectionController {
       final probePort = decision.core == CoreKind.mihomo
           ? cores.mihomo.mixedPort
           : cores.front.mixedPort;
-      final probe = await tester.testHttpViaSocksProxy(
-        '127.0.0.1',
-        probePort,
-        'https://www.gstatic.com/generate_204',
-        timeout: const Duration(seconds: 6),
-      );
+      // v0.5.6 §connect-fix: canary fallback (see _probeTunnel).
+      final probe = await _probeTunnel('127.0.0.1', probePort);
       // v0.4.6 §user-3: the FIRST rung's probe is a real attempt too —
       // otherwise every rung the ladder started with would show a dishonest
       // 0-attempt (or worse: an untouched 100%) in the per-sub stats.
@@ -470,12 +530,8 @@ class ConnectionController {
               'FRAGMENT_AUTO rung start failed: ${_friendlyStartFailure(start)}');
           continue; // try the next rung
         }
-        final probe = await tester.testHttpViaSocksProxy(
-          '127.0.0.1',
-          cores.front.mixedPort,
-          'https://www.gstatic.com/generate_204',
-          timeout: const Duration(seconds: 6),
-        );
+        final probe =
+            await _probeTunnel('127.0.0.1', cores.front.mixedPort);
         // v0.4.6 §user-3: every real probe is an attempt — pass or fail.
         if (rung != null) {
           await cores.fragmentLadder?.recordRungAttempt(
@@ -629,12 +685,9 @@ class ConnectionController {
   }
 
   Future<bool> _verifyActive(ProxyProfile profile, {CoreKind? core}) async {
-    final probe = await tester.testHttpViaSocksProxy(
-      '127.0.0.1',
-      cores.front.mixedPort,
-      'https://www.gstatic.com/generate_204',
-      timeout: const Duration(seconds: 6),
-    );
+    // v0.5.6 §connect-fix: canary fallback (see _probeTunnel).
+    final probe =
+        await _probeTunnel('127.0.0.1', cores.front.mixedPort);
     if (!probe.ok) {
       _setState(ConnectionStateSnapshot(
         phase: _state.phase,
@@ -695,10 +748,8 @@ class ConnectionController {
           _state.phase != ConnectionPhase.degraded) {
         return;
       }
-      final probe = await tester.testHttpViaSocksProxy(
-          '127.0.0.1', cores.front.mixedPort,
-          'https://www.gstatic.com/generate_204',
-          timeout: const Duration(seconds: 6));
+      final probe =
+          await _probeTunnel('127.0.0.1', cores.front.mixedPort);
       if (probe.ok) {
         _consecutiveVerifyFailures = 0;
         healthStore.record(HealthRecord(
@@ -814,10 +865,8 @@ class ConnectionController {
       final recovered = await cores
           .recoverFront(all: repository.all, routing: routing, dns: dns);
       if (recovered) {
-        final probe = await tester.testHttpViaSocksProxy(
-            '127.0.0.1', cores.front.mixedPort,
-            'https://www.gstatic.com/generate_204',
-            timeout: const Duration(seconds: 6));
+        final probe =
+            await _probeTunnel('127.0.0.1', cores.front.mixedPort);
         if (probe.ok) {
           _setState(ConnectionStateSnapshot(
               phase: ConnectionPhase.connected,

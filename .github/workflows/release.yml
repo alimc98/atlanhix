@@ -121,14 +121,30 @@ jobs:
           Expand-Archive xr.zip -DestinationPath xr -Force
           $xrExe = Get-ChildItem xr -Recurse -Filter xray.exe | Select-Object -First 1
           Copy-Item $xrExe.FullName cores/windows-x64/xray.exe
-          # v0.5.3: mihomo (Clash.Meta) — the third standalone engine. The
-          # release asset is a bare .gz of the exe; gunzip to mihomo.exe.
-          Invoke-WebRequest -Uri 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.31/mihomo-windows-amd64-v1.19.31.gz' -OutFile mh.gz
-          $inStream = [System.IO.File]::OpenRead("$PWD/mh.gz")
-          $outStream = [System.IO.File]::Create("$PWD/cores/windows-x64/mihomo.exe")
-          $gzip = New-Object System.IO.Compression.GZipStream($inStream, [System.IO.Compression.CompressionMode]::Decompress)
-          $gzip.CopyTo($outStream)
-          $gzip.Dispose(); $outStream.Dispose(); $inStream.Dispose()
+          # v0.5.3: mihomo (Clash.Meta) — the third standalone engine.
+          #
+          # v0.5.6 §ci-fix: this step is what killed the Windows job on
+          # v0.5.4, v0.5.5 and v0.5.6 — the pinned asset
+          # `mihomo-windows-amd64-v1.19.31.gz` returns 404, because MetaCubeX
+          # ships .zip archives (and only started tagging v1.19.32 here), not
+          # a bare .gz. The whole release failed at this one step while
+          # Android succeeded, so the APKs published but the Windows zip
+          # never did. Now: resolve the latest release's asset by NAME
+          # pattern instead of pinning a URL, so a new upstream tag cannot
+          # break the build again.
+          $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/MetaCubeX/mihomo/releases/latest' -Headers @{ 'User-Agent' = 'atlanhix-release' }
+          $asset = $rel.assets |
+            Where-Object { $_.name -match '^mihomo-windows-amd64-v\d+-v\d+\.\d+\.\d+\.zip$' } |
+            Select-Object -First 1
+          if (-not $asset) { throw "no mihomo windows-amd64 asset in $($rel.tag_name)" }
+          Write-Output "mihomo $($rel.tag_name) -> $($asset.name)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile mh.zip
+          New-Item -ItemType Directory -Force -Path mh | Out-Null
+          Expand-Archive mh.zip -DestinationPath mh -Force
+          # Archive layouts vary (some nest a version dir) — search, don't guess.
+          $mhExe = Get-ChildItem mh -Recurse -Filter mihomo.exe | Select-Object -First 1
+          if (-not $mhExe) { throw 'mihomo.exe not found inside the release archive' }
+          Copy-Item $mhExe.FullName cores/windows-x64/mihomo.exe
           Get-ChildItem cores/windows-x64
 
       - name: Stage + zip

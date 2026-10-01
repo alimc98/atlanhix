@@ -53,10 +53,24 @@ class ClipboardImportService {
     final t = text.trim();
     if (t.isEmpty) return ClipboardPayloadKind.none;
     if (t.startsWith('http://') || t.startsWith('https://')) {
-      // A subscription URL is a bare single http(s) link.
-      if (Uri.tryParse(t)?.host.isNotEmpty ?? false) {
+      // v0.5.6 §clipboard-fix (user report: "هر چیزی توی کلیپ‌بورد باشه رو
+      // می‌خواد add subscribe کنه در صورتی که اصلاً سابی نیست" — ANYTHING in
+      // the clipboard gets offered as a subscription).
+      //
+      // The old test was "is this a single http(s) link with a host?" — which
+      // is true of every URL ever copied: a news article, a Telegram invite,
+      // a GitHub link, a YouTube video. The clipboard is read on EVERY app
+      // resume, so the user was nagged about whatever they last copied.
+      //
+      // A subscription URL is now required to LOOK like one: a bare URL with
+      // no path noise, no fragment, and the token patterns every real
+      // provider uses (`/sub`, `/subscribe`, `/api/v1/client/subscribe`,
+      // `token=`, `uuid=`…). A link that fails this test is simply not a
+      // subscription, and is no longer offered at all.
+      if (_looksLikeSubscriptionUrl(t)) {
         return ClipboardPayloadKind.subscriptionUrl;
       }
+      return ClipboardPayloadKind.none;
     }
     if (_subUri.hasMatch(t)) return ClipboardPayloadKind.shareLinks;
     // Multi-line uri lists / base64 blobs are worth importing as nodes too —
@@ -69,6 +83,67 @@ class ClipboardImportService {
       } catch (_) {}
     }
     return ClipboardPayloadKind.none;
+  }
+
+  /// Path fragments every real subscription provider uses.
+  static final _subPathHints = RegExp(
+    r'(^|/)(sub|subscribe|subscription|api/v\d+/client/subscribe|'
+    r'client/subscribe|panel/api/v\d+/(sub|client/subscribe))\b',
+    caseSensitive: false,
+  );
+
+  /// Query keys carrying the subscription token.
+  ///
+  /// v0.5.6: matched against [Uri.query], which does NOT include the leading
+  /// `?` — the first version anchored on `[?&]` and therefore never matched
+  /// any real `?token=` URL.
+  static final _subQueryHints =
+      RegExp(r'(^|[?&])(token|uuid|sub|key|api_?key|secret)=', caseSensitive: false);
+
+  /// Hosts that are unambiguously NOT a proxy subscription.
+  ///
+  /// v0.5.6 §clipboard-fix: matched against the FULL host, not just a
+  /// `www.`-prefixed form — the first version missed bare `t.me` and
+  /// `youtu.be`, which are exactly the two links people copy most often.
+  static final _notSubscriptionHosts = RegExp(
+    r'^(www\.)?'
+    r'(github\.com|githubusercontent\.com|gitlab\.com|'
+    r'telegram\.me|t\.me|whatsapp\.com|twitter\.com|x\.com|facebook\.com|'
+    r'instagram\.com|reddit\.com|youtube\.com|youtu\.be|'
+    r'google\.[a-z.]+|mail\.google\.com|drive\.google\.com|docs\.google\.com|'
+    r'wikipedia\.org|linkedin\.com|medium\.com|stackoverflow\.com)$',
+    caseSensitive: false,
+  );
+
+  /// True only when the URL is shaped like a provider subscription link.
+  ///
+  /// v0.5.6 §clipboard-fix: deliberately conservative — a false negative
+  /// costs the user one manual paste, while a false positive nags them on
+  /// every resume for a link that was never a subscription.
+  static bool _looksLikeSubscriptionUrl(String raw) {
+    final uri = Uri.tryParse(raw);
+    if (uri == null || (uri.host.isEmpty)) return false;
+    if (_notSubscriptionHosts.hasMatch(uri.host)) return false;
+    // A fragment is never used by subscription endpoints and is a strong
+    // signal this is an ordinary web link (youtube/telegram share links).
+    if (uri.fragment.isNotEmpty) return false;
+    // A subscription URL is a BARE link — it must not be embedded in a
+    // sentence. Reject whitespace / multi-line before the hint checks, so
+    // a `?token=` inside prose is not mistaken for a real endpoint.
+    if (raw.contains(RegExp(r'\s'))) return false;
+    if (_subPathHints.hasMatch(uri.path)) return true;
+    if (_subQueryHints.hasMatch(uri.query)) return true;
+    // No path and no query at all: a bare origin is not a subscription.
+    if (uri.path.isEmpty || uri.path == '/') return false;
+    // A deep, single-segment path with no extension and no obvious page
+    // marker is the other common provider shape (/xxxxxxxxxxxxxxxx).
+    final segs = uri.pathSegments.where((s) => s.isNotEmpty).toList();
+    if (segs.length == 1) {
+      final only = segs.first;
+      final looksLikePage = only.contains('.') && only.length < 12;
+      if (!looksLikePage && only.length >= 8) return true;
+    }
+    return false;
   }
 
   /// Reads the clipboard once and returns the import action, or null when

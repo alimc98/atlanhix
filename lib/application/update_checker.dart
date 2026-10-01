@@ -1,14 +1,21 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:http/http.dart' as http;
 
 import '../core/logger.dart';
 import '../core/net/clean_dns_client.dart';
 
-/// The version this binary was built from (pubspec `version:`) — the
-/// updater compares the latest GitHub tag against it. Compiled-in constant
-/// avoids a package_info dependency for a single int triple.
-const String kAppVersion = '0.5.1+8';
+/// The version this binary was built from (mirrors pubspec `version:`).
+///
+/// v0.5.6 §update-fix: this was a HAND-MAINTAINED constant that had drifted
+/// to `0.5.1+8` while pubspec was already at 0.5.5 — so the checker compared
+/// every release against a stale version and ALWAYS reported an update,
+/// forever ("همش پیام آپدیت میده" — it keeps telling me there is an update).
+///
+/// `pubspec.yaml` remains the single source of truth; this literal must be
+/// bumped with it. That invariant is now ENFORCED by
+/// `test/app_version_consistency_test.dart`, which fails the build when the
+/// two disagree — which is how the drift stayed invisible for five releases.
+const String kAppVersion = '0.5.7+13';
 
 /// v0.4.7 §user — the release update checker.
 ///

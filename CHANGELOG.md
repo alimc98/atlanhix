@@ -1,5 +1,91 @@
 # Changelog
 
+## v0.5.7 — connect never succeeds, update never works, clipboard nags
+
+Three user-reported bugs. The first two had been shipped broken for several
+releases; the third is new.
+
+### 1. Connect spins forever and never connects (the serious one)
+
+> «وقتي كانكت ميكني فقط ميچرخه و وصل نميشه، به هيچ كانفيگي وصل نميشه»
+
+**Root cause: the tunnel-verification probe had a single hardcoded canary.**
+Every "did the tunnel actually work?" check requested
+`https://www.gstatic.com/generate_204` — six call sites (five in
+`connection_controller.dart`, one in `vpn_session.dart`). That is a
+Google-hosted URL, and the app's audience is on networks where it is
+routinely blocked or intercepted.
+
+The consequence is exactly what was reported. The tunnel comes up fine, the
+probe fetches an unreachable canary, `testHttpViaSocksProxy` returns
+`ok: false`, and `connect()` throws `ProbeError` and tears the whole session
+down. It fails **identically for every config**, because the failure has
+nothing to do with the config — only with the canary. Hence "no config
+connects".
+
+Fixes:
+- The probe now honours **Settings → Delay test URL** first. That setting
+  already drove the node-list tester and Smart Switch, so a user who had
+  already set a reachable URL was still failed at the final gate.
+- On failure it falls back through independent canaries
+  (`cp.cloudflare.com`, then gstatic **last**) and passes if any answers.
+  One blocked host can no longer fail every node at once.
+- The same fallback now applies to the monitor, the switch re-verify, the
+  crash-recovery verify, the fragment-ladder re-probes, and the Android
+  3-attempt warm-up loop.
+
+### 2. Update prompts forever, and Download does nothing
+
+> «نسخه برنامه بروز نميشه و الان كه نسخه جديد روي گيت هاب اومده همش پيام
+> آپديت ميده و وقتي دانلود رو ميزني هيچي نميشه»
+
+Two independent defects.
+
+- **`kAppVersion` had drifted to `0.5.1+8`** while pubspec was at 0.5.5. The
+  checker compared every GitHub tag against a version no shipped binary
+  ever had, so it reported an update on **every launch, forever**. Corrected
+  to 0.5.7+13, and a new test (`app_version_consistency_test.dart`) now
+  **fails the build** if the constant and pubspec ever disagree again —
+  that drift is what let this survive five releases unnoticed.
+- **Download did nothing on desktop.** The button called `openUrl` on the
+  `dev.atlanhix/vpn` channel, which is implemented *only* by the Android
+  host. On Windows/Linux that threw `MissingPluginException`, swallowed
+  into a log line. Now: native channel → `Process.run` of the platform
+  opener (`start` / `xdg-open` / `open`) → and if even that fails, a
+  snackbar shows the URL with a copy button instead of doing nothing.
+
+Also fixed here: the **Windows zip was failing CI on every release since
+v0.5.4**. The workflow pinned
+`mihomo-windows-amd64-v1.19.31.gz`, which 404s — MetaCubeX ships `.zip`
+archives, not a bare `.gz`. The step now resolves the latest release's asset
+by name pattern, so a new upstream tag cannot break the build again.
+
+### 3. Any clipboard content was offered as a subscription
+
+> «هر چيزي توی كليپ بورد باشه رو هي ميخواد add subscribe كنه در صورتي كه
+> اصلا ساب نيست»
+
+The clipboard is read on **every app resume**, and the test for "is this a
+subscription?" was merely *"is it an http(s) link with a host?"* — which is
+true of every URL ever copied. A news article, a Telegram invite, a GitHub
+link: all offered as a subscription.
+
+`classify()` now requires a URL to actually **look like** a subscription:
+a known provider path (`/sub`, `/subscribe`, `/api/v1/client/subscribe`) or
+a token query key (`token=`, `uuid=`), no fragment, no known social/host
+blocklist hit, and — for the opaque-token shape — a bare single-segment
+path. Bare origins and prose-embedded links are rejected. Deliberately
+conservative: a false negative costs one manual paste, a false positive nags
+the user on every resume.
+
+### Verification
+
+`flutter analyze` 0 errors · **422 tests passing** (was 417; +5 new for
+these three bugs) · debug APK builds. **Not verified on a physical device**
+— the connect fix is reasoned from the code and covered by unit tests, but
+whether a given node's tunnel truly carries traffic can only be confirmed on
+a real network.
+
 ## v0.5.6 — leak & crash sweep: the long-session audit
 
 No new features. A full-project review turned up three crash-class defects

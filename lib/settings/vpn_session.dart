@@ -1012,20 +1012,43 @@ class VpnSession {
                   '$trace HEALTH_RETRY attempt=${i + 1}/3 (engine warm-up grace)');
             }
             final port = deps.cores.front.mixedPort;
-            final probe = await deps.tester.testHttpViaSocksProxy(
-              '127.0.0.1',
-              port,
-              'https://www.gstatic.com/generate_204',
-              timeout: const Duration(seconds: 8),
-            );
-            if (probe.ok) {
-              lastLatencyMs = probe.latencyMs;
-              Logger.instance.info('vpn-session',
-                  '$trace HEALTH_CHECK via mixed:$port OK ${probe.latencyMs ?? '?'}ms');
-              return true;
+            // v0.5.6 §connect-fix: the canary was hardcoded to
+            // gstatic generate_204 on ALL THREE retries. That host is
+            // routinely blocked/intercepted on the networks this app
+            // targets, so a healthy tunnel verified as DEAD — every
+            // config failed identically ("spins, never connects"). Try
+            // the user's configured delay-test URL first, then independent
+            // canaries, and only fail when none of them answers.
+            final canaries = <String>[
+              deps.appSettings.effectiveDelayTestUrl,
+              ...ConnectionController.probeFallbacks,
+            ];
+            ProbeResult? last;
+            for (final url in canaries) {
+              final r = await deps.tester.testHttpViaSocksProxy(
+                '127.0.0.1',
+                port,
+                url,
+                timeout: const Duration(seconds: 8),
+              );
+              if (r.ok) {
+                lastLatencyMs = r.latencyMs;
+                Logger.instance.info('vpn-session',
+                    '$trace HEALTH_CHECK via mixed:$port OK ${r.latencyMs ?? '?'}ms canary=$url');
+                return true;
+              }
+              last ??= r;
+              Logger.instance.warn('vpn-session',
+                  '$trace HEALTH_CHECK try=${i + 1}/3 kind=${r.errorKind} canary=$url detail=${r.detail != null ? Logger.redact(r.detail!) : '-'}');
             }
+            // v0.5.6: every canary failed this round — log the aggregate
+            // verdict (the per-canary lines above already named each URL)
+            // and let the outer retry loop try again after the warm-up
+            // grace period.
             Logger.instance.warn('vpn-session',
-                '$trace HEALTH_CHECK try=${i + 1}/3 kind=${probe.errorKind} detail=${probe.detail != null ? Logger.redact(probe.detail!) : '-'}');
+                '$trace HEALTH_CHECK try=${i + 1}/3 all canaries failed '
+                '(${canaries.length} tried) kind=${last?.errorKind} '
+                'detail=${last?.detail != null ? Logger.redact(last!.detail!) : '-'}');
           }
           return false;
         },
@@ -1403,23 +1426,34 @@ class VpnSession {
   /// proxy-greeting rejection vs CONNECT error vs DNS/TLS/HTTP failure.
   Future<bool> _probeThroughTunnel(String trace) async {
     final port = deps.cores.front.mixedPort;
-    final probe = await deps.tester.testHttpViaSocksProxy(
-      '127.0.0.1',
-      port,
-      'https://www.gstatic.com/generate_204',
-      timeout: const Duration(seconds: 8),
-    );
-    if (probe.ok) {
-      // v0.4.4 §user-2: the health probe IS a latency measurement — publish
-      // it so the dashboard LATENCY tile shows a real number on-device.
-      lastLatencyMs = probe.latencyMs;
-      Logger.instance.info('vpn-session',
-          '$trace HEALTH_CHECK via mixed:$port OK ${probe.latencyMs ?? '?'}ms');
-    } else {
-      Logger.instance.error('vpn-session',
-          '$trace FAILED stage=HEALTH_CHECK via mixed:$port kind=${probe.errorKind} detail=${probe.detail != null ? Logger.redact(probe.detail!) : '-'}');
+    // v0.5.6 §connect-fix: this is the WARP-watchdog's health probe — it
+    // also had the single hardcoded gstatic canary, so on a filtered network
+    // it judged a perfectly healthy tunnel dead. Same fallback as connect().
+    ProbeResult? last;
+    for (final url in <String>[
+      deps.appSettings.effectiveDelayTestUrl,
+      ...ConnectionController.probeFallbacks,
+    ]) {
+      final r = await deps.tester.testHttpViaSocksProxy(
+        '127.0.0.1',
+        port,
+        url,
+        timeout: const Duration(seconds: 8),
+      );
+      if (r.ok) {
+        lastLatencyMs = r.latencyMs;
+        return true;
+      }
+      last ??= r;
+      Logger.instance.warn('vpn-session',
+          '$trace HEALTH canary=$url failed kind=${r.errorKind}');
     }
-    return probe.ok;
+    // Every canary failed — report the aggregate verdict.
+    Logger.instance.error('vpn-session',
+        '$trace FAILED stage=HEALTH_CHECK via mixed:$port '
+        'kind=${last?.errorKind} '
+        'detail=${last?.detail != null ? Logger.redact(last!.detail!) : '-'}');
+    return false;
   }
 
   /// v0.4.6 §user — fragment AUTO escalation ladder (Android). With the
