@@ -134,29 +134,32 @@ class ConnectionController {
     'https://www.gstatic.com/generate_204',
   ];
 
-  /// Verification probe with fallback: returns the FIRST successful
-  /// canary result, or the last failure if every canary fails (so the
-  /// error the user sees still names a real cause).
+  /// Verification probe with fallback. v0.6.0 §first-connect-fix (desktop
+  /// parity with VpnSession's probeTunnel): the canaries used to run SERIAL
+  /// — 4 × 6 s = 24 s worst case for a cold engine (or a node whose upstream
+  /// takes a moment to dial) before the verdict. They now race IN PARALLEL:
+  /// the worst-case round costs the SLOWEST canary (6 s), the first success
+  /// still wins, and the error the user sees keeps the last real failure.
   Future<ProbeResult> _probeTunnel(String host, int port,
       {Duration? timeout}) async {
-    ProbeResult? last;
-    for (final url in [_probeUrl, ...probeFallbacks]) {
-      final r = await tester.testHttpViaSocksProxy(
-        host,
-        port,
-        url,
-        timeout: timeout ?? const Duration(seconds: 6),
-      );
-      if (r.ok) {
-        if (url != _probeUrl) {
+    final effective = timeout ?? const Duration(seconds: 6);
+    final urls = [_probeUrl, ...probeFallbacks];
+    final results = await Future.wait([
+      for (final url in urls)
+        tester
+            .testHttpViaSocksProxy(host, port, url, timeout: effective)
+            .then((r) => MapEntry(url, r)),
+    ]);
+    for (final e in results) {
+      if (e.value.ok) {
+        if (e.key != _probeUrl) {
           Logger.instance.info('connection',
-              'tunnel probe: primary canary failed, $url succeeded');
+              'tunnel probe: primary canary failed, ${e.key} succeeded');
         }
-        return r;
+        return e.value;
       }
-      last ??= r;
     }
-    return last!;
+    return results.last.value;
   }
 
   final ProfileRepository repository;

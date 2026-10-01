@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/logger.dart';
@@ -15,7 +16,7 @@ import '../core/net/clean_dns_client.dart';
 /// bumped with it. That invariant is now ENFORCED by
 /// `test/app_version_consistency_test.dart`, which fails the build when the
 /// two disagree — which is how the drift stayed invisible for five releases.
-const String kAppVersion = '0.6.0+16';
+const String kAppVersion = '0.6.1+17';
 
 /// v0.4.7 §user — the release update checker.
 ///
@@ -59,13 +60,22 @@ class UpdateChecker {
       final current = _parseVersion(currentVersion);
       if (latest == null || current == null) return null;
       if (!_isNewer(latest, current)) return null;
-      // Prefer the .apk asset; fall back to the release page.
+      // Prefer the platform's own installer asset; fall back to the release
+      // page. v0.6.0 §desktop-update: Windows picks the release ZIP
+      // (Atlanhix-v*-windows-x64.zip — engines ride inside, so an unzip
+      // over the old install upgrades in place), Android keeps the .apk.
+      final isWindows =
+          !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
+      final wantedSuffix = isWindows ? '.zip' : '.apk';
+      final wantedPrefix = isWindows ? 'atlanhix-' : '';
       String url = (j['html_url'] as String?) ?? repoApi;
       final assets = (j['assets'] as List?) ?? const [];
       for (final a in assets) {
         final name = ((a as Map)['name'] as String?)?.toLowerCase() ?? '';
         final link = a['browser_download_url'] as String?;
-        if (link != null && name.endsWith('.apk')) {
+        if (link != null &&
+            name.endsWith(wantedSuffix) &&
+            name.startsWith(wantedPrefix)) {
           url = link;
           break;
         }
@@ -74,6 +84,7 @@ class UpdateChecker {
         version: tag,
         url: url,
         notes: (j['body'] as String?) ?? '',
+        assetKind: isWindows ? UpdateAssetKind.windowsZip : UpdateAssetKind.apk,
       );
     } catch (e) {
       Logger.instance.info('update', 'check failed: $e');
@@ -104,10 +115,25 @@ class UpdateChecker {
   }
 }
 
+/// The kind of release asset the checker picked for this platform.
+enum UpdateAssetKind { apk, windowsZip }
+
 class UpdateInfo {
-  UpdateInfo({required this.version, required this.url, required this.notes});
+  UpdateInfo({
+    required this.version,
+    required this.url,
+    required this.notes,
+    this.assetKind = UpdateAssetKind.apk,
+  });
 
   final String version;
   final String url;
   final String notes;
+
+  /// v0.6.0 §desktop-update: what the UI should do with [url] — an Android
+  /// APK goes through the in-app DownloadManager + installer; a Windows zip
+  /// is downloaded into the user's Downloads folder and offered as an
+  /// unzip-in-place upgrade (the bundle carries its own cores dir, so the
+  /// release zip IS the installer).
+  final UpdateAssetKind assetKind;
 }

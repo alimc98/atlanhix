@@ -9,8 +9,10 @@ import 'package:flutter/services.dart';
 
 import 'application/clipboard_import_service.dart';
 import 'application/dependencies.dart';
-import 'application/in_app_updater.dart';
-import 'application/update_checker.dart';
+import 'application/in_app_updater.dart'
+    show DesktopUpdateDownloader, InAppUpdater;
+import 'application/update_checker.dart'
+    show UpdateAssetKind, UpdateChecker, kAppVersion;
 import 'core/engine_availability.dart';
 import 'core/logger.dart';
 import 'localization/generated/app_localizations.dart';
@@ -375,6 +377,65 @@ class _AtlanhixAppState extends State<AtlanhixApp>
           }),
         );
       }
+      return;
+    }
+    // v0.6.0 §desktop-update (Windows parity of the in-app update): the
+    // release ZIP downloads INSIDE the app into Downloads (progress shown),
+    // then an explorer window opens on the file — one unzip over the old
+    // install finishes the upgrade (the zip carries its own cores/). No
+    // manual GitHub visit, matching the Android flow's spirit on a platform
+    // without a package installer.
+    if (info.assetKind == UpdateAssetKind.windowsZip && Platform.isWindows) {
+      final dl = DesktopUpdateDownloader();
+      var percent = 0;
+      var failed = false;
+      if (mounted && navCtx.mounted) {
+        final done = showDialog<void>(
+          context: navCtx,
+          barrierDismissible: false,
+          builder: (ctx) => StatefulBuilder(builder: (ctx, setDlg) {
+            return AlertDialog(
+              title: Text('Atlanhix ${info.version}'),
+              content: StatefulBuilder(builder: (ctx, setP) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(failed
+                        ? 'Download failed — check your connection.'
+                        : 'Downloading update… $percent%'),
+                    const SizedBox(height: 16),
+                    if (!failed) LinearProgressIndicator(value: percent / 100),
+                  ],
+                );
+              }),
+            );
+          }),
+        );
+        // Drive the download; the dialog reflects progress via setState
+        // captured above. The downloader runs regardless of dialog state.
+        unawaited(() async {
+          final path = await dl.downloadZip(
+            url: info.url,
+            version: info.version,
+            onProgress: (p) => percent = p,
+          );
+          if (path == null) {
+            failed = true;
+          } else if (mounted) {
+            await dl.revealInExplorer(path);
+          }
+          if (navCtx.mounted) {
+            final nav = Navigator.of(navCtx);
+            if (nav.canPop()) nav.pop();
+          }
+        }());
+        await done;
+        return;
+      }
+      // No navigator yet — download anyway, reveal when done.
+      final path = await dl.downloadZip(
+          url: info.url, version: info.version);
+      if (path != null) await dl.revealInExplorer(path);
       return;
     }
     // v0.4.7 §user: open the release URL via the platform channel
