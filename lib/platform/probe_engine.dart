@@ -86,14 +86,21 @@ class ProbeEngine {
   /// every start attempt here answers honestly null — the sweep reports
   /// engine-off and falls through to the TCP fallback; the NEXT sweep
   /// boots the engine if it is still wanted.
-  bool _tunnelBootHold = false;
+  // v0.5.9 §retarget: REF-COUNTED (was a plain bool). A retarget redial
+  // takes its own hold while the superseded flow is still unwinding; the
+  // plain bool let the old flow's release drop the redial's protection
+  // mid-boot (two libbox instances fighting over cache.db again).
+  int _tunnelBootHoldDepth = 0;
+
+  bool get _tunnelBootHold => _tunnelBootHoldDepth > 0;
 
   /// Connect path: [hold] = "a tunnel boot is in flight — no probe engine
   /// starts"; false releases the hold (tunnel up or dead — a sweep may
   /// boot the engine again).
   void setTunnelBootHold(bool hold) {
-    _tunnelBootHold = hold;
-    if (hold) {
+    _tunnelBootHoldDepth += hold ? 1 : -1;
+    if (_tunnelBootHoldDepth < 0) _tunnelBootHoldDepth = 0;
+    if (_tunnelBootHold) {
       _idleStop?.cancel();
       _idleStop = null;
     }

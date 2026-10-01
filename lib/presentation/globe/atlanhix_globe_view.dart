@@ -592,7 +592,15 @@ class _GlobeScenePainter extends CustomPainter {
     // v0.5.5 §user-fix ("کره بزرگ‌تر"): the reference sheet's MAIN VIEW
     // fills most of the frame height — 0.46/0.42 of the short side left
     // the planet a small coin in a big empty hero.
-    final r = math.min(size.shortestSide * 0.60, size.height * 0.60);
+    // v0.5.9 §calibration-fix ("خط وصل‌کننده کالیبره نیست"): this radius
+    // MUST be the shader's disc radius EXACTLY — planet.frag computes
+    // `R = min(iResolution.x * 0.52, iResolution.y * 0.50)` (see the
+    // shader main()). The old `min(shortestSide * 0.60, height * 0.60)`
+    // was up to ~20% larger, so the route arc, its endpoints and the
+    // anchor pins orbited OUTSIDE the planet. The shader quad covers the
+    // whole canvas, so its pixel-space math maps 1:1 onto this painter's
+    // logical coordinates (same size, same center).
+    final r = math.min(size.width * 0.52, size.height * 0.50);
 
     // ── 1) The planet body ────────────────────────────────────────────
     final mask = s.landMask;

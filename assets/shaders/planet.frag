@@ -231,11 +231,23 @@ void main() {
   // Night-side city lights — the baked G channel holds SCATTERED golden
   // dots (coastal-weighted, see land_mask.dart). Add a per-dot shimmer;
   // no thresholding needed anymore — the mask IS the city structure.
-  float lightsPulse = lights * (0.85 + 0.15 * sin(uTime * 0.7 + uv.x * 40.0));
-  col += vec3(1.00, 0.90, 0.68) * lightsPulse * (1.0 - day) * 1.30;
+  // v0.5.9 §dark-fix ("کره توی نسخه دارک اصلا واضح نیست"): the app runs
+  // DARK-FIRST (background #0A0B0E vs the planet's near-black base — the
+  // disc blends INTO the page). The old 1.30 gain left the dots at ~15%
+  // luminance after the crush below; 2.4× with a higher floor keeps the
+  // night side ALIVE — visible cities + readable terrain against the
+  // page black, while the lit crescent stays the brightest element.
+  float lightsPulse = lights * (0.55 + 0.45 * sin(uTime * 0.7 + uv.x * 40.0));
+  col += vec3(1.00, 0.90, 0.68) * lightsPulse * (1.0 - day) * 2.40;
   // Faint rock texture on the night side so it is not a flat silhouette.
-  col += vec3(0.042, 0.047, 0.056) * relief * (1.0 - day) * 0.50;
-  col = mix(col, ink, 0.22); // cinematic crush — the sheet's deep blacks
+  // v0.5.9 §dark-fix: doubled — with the old 0.50 the unlit hemisphere
+  // read as a flat black hole even where continents crossed it.
+  col += vec3(0.042, 0.047, 0.056) * relief * (1.0 - day) * 0.95;
+  // v0.5.9 §dark-fix: the crush went 0.22 → 0.10. The heavy mix pulled
+  // EVERYTHING (terrain, lights, the terminator gradient) toward flat
+  // ink — on a dark page that is self-erasure. 0.10 keeps cinematic
+  // blacks in the oceans without swallowing the night-side detail.
+  col = mix(col, ink, 0.10); // cinematic crush — the sheet's deep blacks
 
   // ── Land dot grid ───────────────────────────────────────────────────
   // v0.5.6 §globe-fix: this grid was a leftover from the point-cloud era

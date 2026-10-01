@@ -51,6 +51,8 @@ class MihomoConfigGenerator {
       if (mp != null) proxies.add(mp);
     }
     final names = [for (final pr in proxies) pr['name'] as String];
+    // v0.5.9 §mihomo-fix: the group ordering below boots the selector on
+    // the requested node (a Clash select defaults to its first member).
     return {
       // ── Inbounds: one mixed listener (HTTP+SOCKS). TUN is NOT enabled in
       // the child-process topology — the front tunnel (libbox) owns the TUN;
@@ -79,17 +81,26 @@ class MihomoConfigGenerator {
         {
           'name': 'ATX',
           'type': 'select',
-          'proxies': ['ATX-AUTO', ...names],
+          // v0.5.9 §mihomo-fix: the REQUESTED node first — a Clash select
+          // group defaults to its FIRST member (absent a saved selection),
+          // so the engine boots dialed as-requested; Smart Switch still
+          // owns live migration through the same selector.
+          'proxies': [
+            if (names.contains(selectedId)) selectedId,
+            'ATX-AUTO',
+            ...names.where((n) => n != selectedId),
+          ],
         },
         if (names.isNotEmpty)
           {
             // url-test group = the ladder INSIDE mihomo. The app's own
             // SmartSwitch still drives migration via the selector (ATX);
-            // this group is the standalone-mode fallback.
+            // this group is the standalone-mode fallback. Plain http —
+            // same methodology as the app's own default probe (v0.5.9).
             'name': 'ATX-AUTO',
             'type': 'url-test',
             'proxies': names,
-            'url': 'https://www.gstatic.com/generate_204',
+            'url': 'http://www.gstatic.com/generate_204',
             'interval': 300,
             'tolerance': 80,
           },
@@ -110,12 +121,136 @@ class MihomoConfigGenerator {
 
   /// One [ProxyProfile] → one mihomo proxy map (null = unsupported here —
   /// the engine-gate upstream already filtered; this is defense in depth).
+  ///
+  /// v0.5.9 §mihomo-fix ("هسته mihomo به همه کانفیگ‌ها وصل نمیشه"): this
+  /// translator previously admitted only vless/vmess/trojan/ss. Every
+  /// hysteria2 / tuic / anytls / shadowtls / socks / http profile was
+  /// silently DROPPED from the generated config — mihomo then served a
+  /// selector that did not contain the selected node, or an empty ATX
+  /// group, and the connect died for exactly those node types. mihomo
+  /// (Clash.Meta) speaks ALL of them natively; the Dart→mihomo field
+  /// mapping for each lives in the per-protocol builders below.
   Map<String, dynamic>? proxyOf(ProxyProfile p) => switch (p.protocol) {
         ProxyProtocol.vless => _vless(p),
         ProxyProtocol.vmess => _vmess(p),
         ProxyProtocol.trojan => _trojan(p),
         ProxyProtocol.shadowsocks => _ss(p),
+        ProxyProtocol.hysteria2 => _hysteria2(p),
+        ProxyProtocol.hysteria => _hysteria(p),
+        ProxyProtocol.tuic => _tuic(p),
+        ProxyProtocol.anytls => _anytls(p),
+        ProxyProtocol.shadowtls => _shadowtls(p),
+        ProxyProtocol.socks => _socksHttp(p, 'socks5'),
+        ProxyProtocol.http => _socksHttp(p, 'http'),
         _ => null,
+      };
+
+  // ── v0.5.9 §mihomo-fix: the previously-missing protocol translators ──
+  // (mihomo/Clash.Meta field names per wiki.metacubex.one; QUIC-family
+  // outbounds must carry skip-cert-verify passthrough for allowInsecure.)
+
+  Map<String, dynamic> _hysteria2(ProxyProfile p) => {
+        'name': p.name,
+        'type': 'hysteria2',
+        'server': p.server,
+        'port': p.port,
+        'password': p.password,
+        'udp': true,
+        // mihomo wiki: up/down accept ints (Mbps) or "30 Mbps" strings.
+        if (p.hysteriaUpMbps != null) 'up': p.hysteriaUpMbps,
+        if (p.hysteriaDownMbps != null) 'down': p.hysteriaDownMbps,
+        if (p.hysteriaObfsPassword != null) ...{
+          'obfs': 'salamander',
+          'obfs-password': p.hysteriaObfsPassword,
+        },
+        'sni': p.sni ?? p.host ?? p.server,
+        if ((p.fingerprint ?? '').isNotEmpty) 'client-fingerprint': p.fingerprint,
+        if (p.alpn.isNotEmpty) 'alpn': p.alpn,
+        if (p.allowInsecure) 'skip-cert-verify': true,
+      };
+
+  Map<String, dynamic> _hysteria(ProxyProfile p) => {
+        'name': p.name,
+        'type': 'hysteria',
+        'server': p.server,
+        'port': p.port,
+        'auth-str': p.password,
+        'protocol': 'udp',
+        'up': p.hysteriaUpMbps ?? 50,
+        'down': p.hysteriaDownMbps ?? 100,
+        'udp': true,
+        'sni': p.sni ?? p.host ?? p.server,
+        if ((p.fingerprint ?? '').isNotEmpty) 'client-fingerprint': p.fingerprint,
+        if (p.alpn.isNotEmpty) 'alpn': p.alpn,
+        if (p.allowInsecure) 'skip-cert-verify': true,
+      };
+
+  /// TUIC v4 vs v5 (mihomo wiki): v4 carries ONLY `token`; v5 carries
+  /// uuid + password. Mixing both shapes breaks the config — the profile
+  /// decides: a uuid present ⇒ v5, otherwise the token speaks for v4.
+  Map<String, dynamic> _tuic(ProxyProfile p) => {
+        'name': p.name,
+        'type': 'tuic',
+        'server': p.server,
+        'port': p.port,
+        if ((p.tuicUuid ?? '').isNotEmpty) ...{
+          'uuid': p.tuicUuid,
+          if ((p.tuicToken ?? '').isNotEmpty) 'password': p.tuicToken,
+        } else
+          'token': p.tuicToken ?? p.password,
+        'udp': true,
+        'congestion-controller': p.rawParams['congestion_control'] ?? 'bbr',
+        'udp-relay-mode': p.rawParams['udp_relay_mode'] ?? 'native',
+        'sni': p.sni ?? p.host ?? p.server,
+        if ((p.fingerprint ?? '').isNotEmpty)
+          'client-fingerprint': p.fingerprint,
+        if (p.alpn.isNotEmpty) 'alpn': p.alpn,
+        if (p.allowInsecure) 'skip-cert-verify': true,
+      };
+
+  Map<String, dynamic> _anytls(ProxyProfile p) => {
+        'name': p.name,
+        'type': 'anytls',
+        'server': p.server,
+        'port': p.port,
+        'password': p.password,
+        'udp': true,
+        'sni': p.sni ?? p.host ?? p.server,
+        if ((p.fingerprint ?? '').isNotEmpty) 'client-fingerprint': p.fingerprint,
+        if (p.allowInsecure) 'skip-cert-verify': true,
+      };
+
+  /// mihomo has NO standalone `type: shadowtls` CLIENT proxy (wiki: only
+  /// a server-side listener) — ShadowTLS rides as a PLUGIN on a
+  /// shadowsocks proxy. Emitting an unknown type would fail the WHOLE
+  /// config parse, killing every mihomo node with it; the ss+plugin shape
+  /// is mihomo's supported spelling of the same server.
+  Map<String, dynamic> _shadowtls(ProxyProfile p) => {
+        'name': p.name,
+        'type': 'ss',
+        'server': p.server,
+        'port': p.port,
+        'cipher': (p.ssMethod != null && p.ssMethod!.isNotEmpty)
+            ? p.ssMethod
+            : 'aes-128-gcm',
+        'password': p.password,
+        'udp': true,
+        'plugin': 'shadow-tls',
+        'plugin-opts': {
+          'version': int.tryParse(p.rawParams['version'] ?? '3') ?? 3,
+          'password': p.password,
+          if ((p.host ?? p.sni ?? '').isNotEmpty) 'host': p.host ?? p.sni,
+        },
+      };
+
+  Map<String, dynamic> _socksHttp(ProxyProfile p, String type) => {
+        'name': p.name,
+        'type': type,
+        'server': p.server,
+        'port': p.port,
+        if (p.uuid != null || p.password != null) 'username': p.uuid ?? '',
+        if (p.password != null) 'password': p.password,
+        if (p.security == Security.tls) 'tls': true,
       };
 
   Map<String, dynamic>? _vless(ProxyProfile p) {

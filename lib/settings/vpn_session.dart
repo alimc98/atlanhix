@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
@@ -26,6 +27,23 @@ import '../platform/android_vpn.dart';
 import '../platform/probe_engine.dart';
 import '../application/connection_controller.dart';
 import '../application/dependencies.dart';
+
+/// v0.5.9 §retarget: one running connect attempt. Lives at library scope
+/// so [VpnSession] can hold it as a field type; carries only the flag the
+/// retarget handshake mutates.
+class _ConnectAttempt {
+  _ConnectAttempt();
+
+  /// Set when a newer tap redirects this attempt to a different node; the
+  /// running flow then yields its verdict to the redial.
+  ///
+  /// v0.5.9 §retarget: ownership is BY IDENTITY — every redial registers a
+  /// FRESH attempt, so a superseded flow (and its in-flight tunnel probe)
+  /// detects it by `!identical(_runningAttempt, mine)` and aborts. The slot
+  /// may briefly outlive its flow (freed by the dial's finally / overwritten
+  /// at the next connect); consumers gate on in-flight phase, not on null.
+  bool redirected = false;
+}
 
 /// v0.4.1 §2/§5/§31 — the Android VPN session orchestrator.
 ///
@@ -160,6 +178,14 @@ class VpnSession {
 
   /// Local SOCKS port of the running :xray upstream (0 = not running).
   int _xrayUpstreamPort = 0;
+
+  /// v0.5.9 §retarget: the node the CURRENT connect attempt should dial —
+  /// set by [selectNode] (a mid-flight tap) and by connect() itself.
+  ProxyProfile? _connectTarget;
+
+  /// One running connect attempt — the retarget handshake between
+  /// connect()/selectNode() and [_connectProfile].
+  _ConnectAttempt? _runningAttempt;
 
   /// v0.5.3 §mihomo — local mixed port of a RUNNING :mihomo child (0 = not
   /// running). The front config stubs this for mihomo-owned nodes.
@@ -435,8 +461,23 @@ class VpnSession {
   /// Explicitly selects a node for the next connect — called by the UI the
   /// moment the user taps a node card, BEFORE any connect attempt, so the
   /// dashboard reflects the tapped node immediately.
+  ///
+  /// v0.5.9 §retarget: a tap DURING an in-flight connect now WORKS — the
+  /// old behavior only stored the pick (`_connectTarget = p`) and the
+  /// running flow kept booting the OLD node (the tap did nothing until the
+  /// next manual connect). Now a mid-flight tap cancels the running flow
+  /// at the controller gate and REDIALS from [_connectProfile] with the
+  /// new node. `runningAttempt` guards the recursion (the redirect path
+  /// IS the same attempt generation).
   void selectNode(ProxyProfile p) {
+    // v0.5.9 §retarget: a tap on the node ALREADY being dialed must not
+    // cancel+redial it — the running funnel is doing exactly that work.
+    final dialingThis = _connectTarget?.id == p.id;
+    // v0.5.9 §retarget: BOTH roles — `selectedNode` keeps the session's
+    // current pick (UI + persistState + manual hold), `_connectTarget`
+    // steers the dial of an in-flight connect to THIS node.
     selectedNode = p;
+    _connectTarget = p;
     // An explicit tap STEERS away from auto — smart mode resumes only via
     // [enableSmartSwitch] (the Nodes-tab card).
     smartSwitch = false;
@@ -450,6 +491,69 @@ class VpnSession {
         'transport=${p.transport.name} core=${p.effectiveCore.name} (manual hold)');
     _selectionEvents.add(null);
     persistState();
+    // v0.5.9 §retarget — a tap DURING a connect no longer no-ops. The gate
+    // is IN-FLIGHT ONLY (a stale attempt object from an ended flow must not
+    // auto-connect): a tap while idle stays a plain selection, while every
+    // tap during a connect WINS — the freshest target is dialed (a newer
+    // tap also replaces an in-flight redial).
+    final attempt = _runningAttempt;
+    final inFlight = attempt != null &&
+        !attempt.redirected &&
+        (controller.connectRunActive ||
+            controller.phase == AndroidVpnPhase.starting ||
+            controller.phase == AndroidVpnPhase.validating);
+    if (inFlight && !dialingThis) {
+      attempt.redirected = true;
+      Logger.instance.info('vpn-session',
+          '[ATX-DART UI] CONNECT_RETARGET → ${p.name} (mid-flight switch)');
+      unawaited(_redialWith(p));
+    }
+  }
+
+  /// v0.5.9 §retarget: abort the in-flight attempt at the CONTROLLER level
+  /// ([AndroidVpnController.cancelConnect] — the superseded flow exits
+  /// quietly at its next generation check) and REDIAL the new node through
+  /// the same funnel as a normal connect.
+  Future<void> _redialWith(ProxyProfile p) async {
+    // OWN the slot with a FRESH attempt — the superseded flow (and its
+    // in-flight tunnel probe) checks attempt IDENTITY, sees a newer owner
+    // and aborts; a further tap retargets THIS redial the same way. The
+    // swap lands BEFORE cancelConnect so the old probe stops burning
+    // canaries the moment ownership moves.
+    final redial = _ConnectAttempt();
+    _runningAttempt = redial;
+    try {
+      // 1) Cancel the old controller run: its next poll/probe step returns
+      //    false WITHOUT tearing the service down or fighting this redial.
+      controller.cancelConnect();
+      _smart.stop();
+      try {
+        await ProbeEngine.instance.stop();
+      } catch (_) {}
+      // 2) Wait for the old run to leave the gate (bounded — the identity
+      //    check above aborts its probe at the current canary, so this is
+      //    at most one in-flight fetch, not the full retry ladder), then
+      //    land the phase on a benign state so the fresh funnel passes
+      //    [wedgeArmed].
+      for (var i = 0;
+          i < 40 && controller.connectRunActive;
+          i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+      controller.resetToIdle(reason: 'connect retargeted to ${p.name}');
+      // Cosmetic only (v0.5.8 §connect-fix): keep the "Connecting…" pill up
+      // across the handover — the user never asked to disconnect.
+      controller.markStarting(detail: 'retarget redial → ${p.name}');
+      final trace =
+          '[ATX-DART ${DateTime.now().millisecondsSinceEpoch % 10000}]';
+      Logger.instance.info('vpn-session',
+          '$trace RETARGET_REDIAL node=${p.name} proto=${p.protocol.name}');
+      await _connectProfile(p, trace, attempt: redial);
+    } finally {
+      // Only clear when this attempt is still the one running — a newer
+      // redirect may already own the slot.
+      if (identical(_runningAttempt, redial)) _runningAttempt = null;
+    }
   }
 
   /// v0.4.7 §user: re-arms the Smart Switch (Nodes-tab card / Settings).
@@ -672,6 +776,11 @@ class VpnSession {
     // (see AndroidVpnController.wedgeArmed); before that, this line wedged
     // EVERY connect: tap → starting → isBusy guard → silent `false`.
     controller.markStarting(detail: 'session.connect entered');
+    // v0.5.9 §retarget: register THIS attempt and seed the dial target so
+    // a mid-flight selectNode() can redirect it (or supersede it).
+    final attempt = _ConnectAttempt();
+    _runningAttempt = attempt;
+    _connectTarget = node;
     // v0.5.0 §boot: secrets resolve POST-PAINT now. A connect fired before
     // the deferred pass finished would build a config from `@vault:` token
     // strings — gate here: normally a no-op (resolution finished during the
@@ -702,7 +811,7 @@ class VpnSession {
       // family only (redaction discipline; server/host never logged).
       Logger.instance.info('vpn-session',
           '$trace NODE_SELECTED source=explicit node=${explicit.name} proto=${explicit.protocol.name} transport=${explicit.transport.name} core=${explicit.effectiveCore.name}');
-      return _connectProfile(explicit, trace);
+      return _connectProfile(explicit, trace, attempt: attempt);
     }
 
     // ── 2. AUTO-SELECT among ANDROID-RUNNABLE nodes only. ──
@@ -724,29 +833,38 @@ class VpnSession {
     // The tunnel boot veto goes up REGARDLESS of the ladder outcome — from
     // here until the tunnel verdict no probe-engine start may fight the
     // VPN engine for cache.db (v0.5.2 keeps the v0.5.0 veto discipline).
+    // v0.5.9 §retarget: ref-counted hold — the try/finally below pairs this
+    // acquire; _connectProfile takes (and releases) its own on top of it.
     ProbeEngine.instance.setTunnelBootHold(true);
-    // v0.5.5 §user: the EXPLICIT ladder pick dials AS-IS — re-ranking
-    // through _bestNode() here could undo the early handover (a landed
-    // measurement may not be in the store yet when _bestNode scores it).
-    final best = selectedNode ?? _bestNode();
-    if (best == null) {
-      Logger.instance.error('vpn-session',
-          '$trace FAILED stage=NODE_SELECTED error=NO_RUNNABLE_NODE ${_exclusionSummary()}');
-      // v0.5.8 §connect-fix: end the phase (was: `starting` forever).
-      return _failNoProfile(trace, 'NO_RUNNABLE_NODE');
+    try {
+      // v0.5.5 §user: the EXPLICIT ladder pick dials AS-IS — re-ranking
+      // through _bestNode() here could undo the early handover (a landed
+      // measurement may not be in the store yet when _bestNode scores it).
+      final best = selectedNode ?? _bestNode();
+      if (best == null) {
+        Logger.instance.error('vpn-session',
+            '$trace FAILED stage=NODE_SELECTED error=NO_RUNNABLE_NODE ${_exclusionSummary()}');
+        // v0.5.8 §connect-fix: end the phase (was: `starting` forever).
+        return await _failNoProfile(trace, 'NO_RUNNABLE_NODE');
+      }
+      selectedNode = best;
+      persistState();
+      Logger.instance.info('vpn-session',
+          '$trace NODE_SELECTED source=auto node=${best.name} proto=${best.protocol.name} transport=${best.transport.name} core=${best.effectiveCore.name}');
+      // v0.4.7 §user: smart mode is the DEFAULT — with no explicit pick the
+      // ladder starts here and keeps re-testing; tunnel migrates on change.
+      // v0.5.2 §order: the ladder must arm AFTER the tunnel boot completed
+      // (it did inside connect → _connectProfile already holds the boot
+      // veto; arming here is safe) — and best was pre-selected by the
+      // pre-connect ladder's REAL measurements.
+      if (smartSwitch) _armSmart(currentId: best.id);
+      return await _connectProfile(best, trace, attempt: attempt);
+    } finally {
+      // v0.5.9 §retarget: the veto taken above is THIS flow's own — paired
+      // release. (The hold is ref-counted since v0.5.9: a nested retarget
+      // redial takes its own hold and must survive this flow's unwind.)
+      ProbeEngine.instance.setTunnelBootHold(false);
     }
-    selectedNode = best;
-    persistState();
-    Logger.instance.info('vpn-session',
-        '$trace NODE_SELECTED source=auto node=${best.name} proto=${best.protocol.name} transport=${best.transport.name} core=${best.effectiveCore.name}');
-    // v0.4.7 §user: smart mode is the DEFAULT — with no explicit pick the
-    // ladder starts here and keeps re-testing; tunnel migrates on change.
-    // v0.5.2 §order: the ladder must arm AFTER the tunnel boot completed
-    // (it did inside connect → _connectProfile already holds the boot
-    // veto; arming here is safe) — and best was pre-selected by the
-    // pre-connect ladder's REAL measurements.
-    if (smartSwitch) _armSmart(currentId: best.id);
-    return _connectProfile(best, trace);
   }
 
   StreamSubscription<ProxyProfile>? _smartSub;
@@ -831,7 +949,11 @@ class VpnSession {
     try {
       await ProbeEngine.instance.stop();
     } catch (_) {}
-    ProbeEngine.instance.setTunnelBootHold(false);
+    // v0.5.9 §retarget: NO unconditional boot-hold release here — the hold
+    // is ref-counted now and the acquiring flow's finally owns the paired
+    // release. _failNoProfile runs on pre-hold paths (node selection) and
+    // on nested (redial) flows; releasing here would drop ANOTHER flow's
+    // hold mid-boot (two libbox instances over cache.db again).
     controller.resetToIdle(reason: 'connect failed pre-tunnel: $code');
     return false;
   }
@@ -839,7 +961,14 @@ class VpnSession {
   /// The single authoritative engine-start path — every connect (explicit
   /// or auto) funnels through here after node selection, so the single-core
   /// guarantee is enforced in exactly ONE place.
-  Future<bool> _connectProfile(ProxyProfile profile, String trace) async {
+  ///
+  /// v0.5.9 §retarget: [profile] is the ATTEMPT-START suggestion. A
+  /// mid-flight [selectNode] tap updates [_connectTarget] and bumps
+  /// [_connectTargetEpoch]; this flow then stops cleanly (the tap's own
+  /// `_redialWith` runs the funnel again with the NEW node). The caller's
+  /// boolean is honest for the superseded attempt: `false`.
+  Future<bool> _connectProfile(ProxyProfile profile, String trace,
+      {required _ConnectAttempt attempt}) async {
     // v0.4.9 §cache-fix (LIBBOX_START_FAILED: initialize cache-file: timeout
     // on device, 2026-09-25 19:57): the transient probe engine and the VPN
     // engine live in the SAME process (the service has no :process of its
@@ -859,14 +988,33 @@ class VpnSession {
     // allowed from here until the tunnel verdict (CONNECTED or dead).
     ProbeEngine.instance.setTunnelBootHold(true);
     try {
-      final ok = await _connectProfileInner(profile, trace);
+      // v0.5.9 §retarget: a NEWER attempt owns the slot (a tap redialed
+      // mid-flight, or a second connect) — this flow must NOT boot anything
+      // (two funnels would race the engine boot and the config files).
+      if (!identical(_runningAttempt, attempt) || attempt.redirected) {
+        return false;
+      }
+      // v0.5.9 §retarget: dial the LATEST target, not the stale caller
+      // suggestion (a tap landing between connect() and this point wins).
+      final target = _connectTarget ?? profile;
+      if (target.id != profile.id) {
+        Logger.instance.info('vpn-session',
+            '$trace RETARGET dial=${target.name} (was ${profile.name})');
+      }
+      final ok = await _connectProfileInner(target, trace, attempt: attempt);
+      // v0.5.9 §retarget: superseded → this result is not the session's
+      // verdict (the redial in flight owns it now); report honestly.
+      if (!identical(_runningAttempt, attempt) || attempt.redirected) {
+        return false;
+      }
       return ok;
     } finally {
       ProbeEngine.instance.setTunnelBootHold(false);
     }
   }
 
-  Future<bool> _connectProfileInner(ProxyProfile profile, String trace) async {
+  Future<bool> _connectProfileInner(ProxyProfile profile, String trace,
+      {required _ConnectAttempt attempt}) async {
     // ── ENGINE RESOLUTION (v0.4.7 §user device fix) ──
     // Imported/persisted profiles carry core=unknown (only the desktop
     // ConnectionController ran the detector, on its in-memory copy that is
@@ -1030,7 +1178,17 @@ class VpnSession {
       // teardown-for-warmup.
       final ok = await controller.connect(
         probeTunnel: () async {
+          // v0.5.9 §retarget: a superseded flow must not keep burning canary
+          // rounds — the retarget's redial waits for THIS run to exit before
+          // it may dial. Identity (not just the redirected flag): a redial
+          // registers a FRESH attempt, so a stale flow sees a newer owner.
+          bool superseded() {
+            final cur = _runningAttempt;
+            return cur == null || !identical(cur, attempt);
+          }
+
           for (var i = 0; i < 3; i++) {
+            if (superseded()) return false;
             if (i > 0) {
               await Future<void>.delayed(const Duration(milliseconds: 1200));
               Logger.instance.info('vpn-session',
@@ -1050,6 +1208,7 @@ class VpnSession {
             ];
             ProbeResult? last;
             for (final url in canaries) {
+              if (superseded()) return false;
               final r = await deps.tester.testHttpViaSocksProxy(
                 '127.0.0.1',
                 port,

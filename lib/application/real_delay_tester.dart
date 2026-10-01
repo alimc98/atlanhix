@@ -47,7 +47,11 @@ class RealDelayTester {
       transientBatchTest;
 
 
-  String probeUrl = 'https://www.gstatic.com/generate_204';
+  // v0.5.9 §ping-fix: plain-http default — matches the other clients'
+  // ping methodology (an https URL adds a full in-tunnel TLS handshake).
+  // Overridden from settings at bootstrap; this default only guards
+  // constructors that never receive the wiring.
+  String probeUrl = 'http://www.gstatic.com/generate_204';
 
   /// One node's real delay: ms when the tunnel REALLY fetched the URL,
   /// null otherwise (never a TCP-only number).

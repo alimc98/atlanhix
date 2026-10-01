@@ -122,8 +122,11 @@ class ConnectionController {
   /// node at once. Public because the Android session verifies through the
   /// same list.
   static const probeFallbacks = <String>[
-    // Cloudflare — reachable on most filtered networks (and the same
-    // provider the app already trusts for DNS).
+    // Cloudflare over PLAIN http (v0.5.9 §ping-fix): no in-tunnel TLS
+    // handshake → a fast, decisive second opinion; the carrier cannot
+    // hijack it because the fetch happens at the tunnel's foreign exit.
+    'http://cp.cloudflare.com/generate_204',
+    // Cloudflare https — same provider, full-TLS variant.
     'https://cp.cloudflare.com/generate_204',
     // gstatic: keep LAST. It is the historical default and works on many
     // networks, but it is the one most likely to be blocked, so it must

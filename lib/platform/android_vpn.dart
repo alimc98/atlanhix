@@ -130,6 +130,35 @@ class AndroidVpnController {
         detail: reason ?? 'connect flow ended without a verdict');
   }
 
+  /// v0.5.9 §retarget: generation counter for in-flight connects.
+  /// [connect] captures the value at entry; every poll/probe step re-checks
+  /// it and QUITS QUIETLY when a newer connect superseded this one (a
+  /// mid-flight node retarget). The superseded attempt must NOT tear
+  /// anything down — the newer attempt owns the tunnel and the UI.
+  int _connectRun = 0;
+
+  /// True while a connect() body is between entry and exit (ANY exit).
+  /// A successor (the retarget redial) waits for this to go false before
+  /// passing the gate — otherwise the old run's in-flight `_set` could
+  /// re-arm the phases the gate refuses.
+  bool get connectRunActive => _connectRunActive;
+  bool _connectRunActive = false;
+
+  /// True when the CURRENT/last connect run was superseded by
+  /// [cancelConnect]. The session's probe closure polls this between warm-up
+  /// tries so a cancelled flow stops probing immediately.
+  bool get connectSuperseded => _connectRunSuperseded;
+  bool _connectRunSuperseded = false;
+
+  /// v0.5.9 §retarget: abort the in-flight connect WITHOUT tearing the
+  /// native state — the caller (a node retarget, or a disconnect) decides
+  /// what happens to the tunnel next. The aborted connect() exits quietly:
+  /// no `failed` phase, no extra stop() fighting the successor.
+  void cancelConnect() {
+    _connectRun++;
+    _connectRunSuperseded = true;
+  }
+
   /// v0.5.0 §user-fix ("notification not synced with the real VPN state"):
   /// the native state machine NEVER reaches CONNECTED on its own — Dart
   /// flips after a REAL probe through the tunnel (§5) — so the foreground
@@ -334,11 +363,22 @@ class AndroidVpnController {
     // starting → validating), and every path below ends on a terminal.
     if (isConnected || wedgeArmed) return false;
     _proxyMode = proxyMode;
+    // v0.5.9 §retarget: capture this attempt's generation. A bump from
+    // [cancelConnect] (node retarget / disconnect) makes every remaining
+    // step below exit QUIETLY — the successor owns the tunnel and the UI.
+    final run = ++_connectRun;
+    _connectRunSuperseded = false;
+    bool superseded() => run != _connectRun;
+    _connectRunActive = true;
     try {
       // v0.4.4 §user-5: PROXY MODE skips the TUN entirely — no consent
       // dialog (VpnService never calls establish), the engine serves the
       // local mixed port and Android's global http_proxy routes traffic.
       if (!proxyMode && !await requestPermission()) return false;
+      // v0.5.9 §retarget: a permission dialog can sit for MINUTES — a
+      // retarget (or disconnect) during it must abandon this attempt
+      // without touching the native state (the successor decides).
+      if (superseded()) return false;
       _set(AndroidVpnPhase.preparing);
       final generation =
           DateTime.now().microsecondsSinceEpoch.toRadixString(36);
@@ -350,6 +390,10 @@ class AndroidVpnController {
       final deadline = DateTime.now().add(startupTimeout);
       var generationAcked = false;
       while (DateTime.now().isBefore(deadline)) {
+        // v0.5.9 §retarget: superseded → quit QUIETLY. No phase write, no
+        // stop(): the newer attempt owns both, and killing the service here
+        // would murder the successor's fresh tunnel (the retarget redial).
+        if (superseded()) return false;
         final s = await _call('state');
         final native = (s['state'] as String? ?? 'IDLE').toUpperCase();
         // Race fix (audit #3): the start intent is QUEUED on the main
@@ -395,6 +439,9 @@ class AndroidVpnController {
           case 'CONNECTED':
             _set(AndroidVpnPhase.validating);
             final ok = await probeTunnel().timeout(startupTimeout);
+            // v0.5.9 §retarget: the probe can outlive a retarget — never
+            // celebrate or tear down after being superseded.
+            if (superseded()) return false;
             if (ok) {
               if (_proxyMode) {
                 final set = await _call('setProxy', {'port': proxyPort});
@@ -419,6 +466,7 @@ class AndroidVpnController {
         }
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
+      if (superseded()) return false;
       // v0.5.6 §diag-fix: `generationAcked` was assigned but never read —
       // the documented intent (audit #3) was to tell "the native side never
       // adopted OUR start intent" apart from "the engine was merely slow".
@@ -436,6 +484,9 @@ class AndroidVpnController {
       await stop();
       return false;
     } catch (e) {
+      // v0.5.9 §retarget: a superseded attempt also reports nothing — its
+      // verdict belongs to the successor.
+      if (superseded()) return false;
       _set(AndroidVpnPhase.failed, detail: 'connect failed: $e');
       // Device-wedge fix (pipeline audit 2026-09-15): a probe that THROWS
       // (TimeoutException — the probe budget and startup budget were the
@@ -445,6 +496,10 @@ class AndroidVpnController {
       // failed until a force-restart. Always best-effort stop on failure.
       await stop();
       return false;
+    } finally {
+      // v0.5.9 §retarget: the run is leaving the gate either way — a
+      // successor (retarget redial) waiting on [connectRunActive] proceeds.
+      _connectRunActive = false;
     }
   }
 

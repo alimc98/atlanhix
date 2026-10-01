@@ -216,12 +216,27 @@ class LatencyTester {
   ///
   /// For https targets the TLS upgrade happens AFTER the SOCKS CONNECT via
   /// [RawSecureSocket.secure], with certificate verification ON.
+  ///
+  /// v0.5.9 §ping-fix ("پینگ این برنامه ۸۰۰-۱۲۰۰ است در حالی که بقیه ≤۱۵۰
+  /// می‌دهند"): the measurement itself was inflated, not the network —
+  ///   1. the SOCKS reply tail (BOUNDARY.ADDR.PORT, 4–20 bytes AFTER the
+  ///      5-byte head) was consumed by a `25 ms` sleep + one blind read;
+  ///   2. every read path polled on a 4 ms timer (a 204 over a 100 ms
+  ///      node paid ~5+ wasted polls per phase);
+  ///   3. `Connection: close` forced the server's FIN into the measured
+  ///      window even when headers were already complete.
+  /// The result now reports BOTH numbers: [ProbeResult.latencyMs] keeps
+  /// the full end-to-end fetch (the CONNECTED gate's honest budget), and
+  /// [ProbeResult.handshakeMs] carries the SOCKS5 CONNECT round trip —
+  /// the number the other clients show and what the node list now sorts
+  /// by (see the HealthRecord consumers).
   Future<ProbeResult> testHttpViaSocksProxy(String proxyHost, int proxyPort,
       String testUrl,
       {Duration? timeout}) async {
     final t = timeout ?? defaultTimeout;
     final uri = Uri.parse(testUrl);
     final sw = Stopwatch()..start();
+    int? connectMs;
     RawSocket? sock;
     try {
       sock = await RawSocket.connect(proxyHost, proxyPort, timeout: t);
@@ -245,6 +260,10 @@ class LatencyTester {
         return ProbeResult(
             ok: false, errorKind: 'proxy', detail: 'write failed');
       }
+      // The reply is ATYP(1)+BND.ADDR+BND.PORT — read the 4-byte fixed
+      // tail FIRST (address type is in byte 3 of the 5-byte head), never
+      // a blind sleep: the old `25 ms + soak` added a full 25 ms to every
+      // probe and could still leak tail bytes into the TLS stream.
       final rep = await _rawReadAtLeast(sock, 5, t);
       if (rep.length < 5 || rep[1] != 0x00) {
         return ProbeResult(
@@ -253,23 +272,20 @@ class LatencyTester {
             detail: 'CONNECT failed (${rep.length > 1 ? rep[1] : '?'})');
       }
       final extra = switch (rep[3]) {
-        0x01 => 6,
-        0x03 => rep[4] + 2,
-        0x04 => 18,
-        _ => 6,
+        0x01 => 4, // 4-byte IPv4
+        0x03 => rep[4] + 2, // len + 2-byte port
+        0x04 => 16 + 2, // 16-byte IPv6 + port
+        _ => 4,
       };
-      if (extra - 5 > 0) await _rawReadAtLeast(sock, extra - 5, t);
+      if (extra > 0) await _rawReadAtLeast(sock, extra, t);
+      connectMs = sw.elapsedMilliseconds;
 
       Object transport = sock;
       // TLS upgrade for https targets (certificate verification ON).
       if (uri.scheme == 'https') {
         try {
-          // Drain any SOCKS reply bytes already buffered so they are not
-          // misread as TLS records (RawSecureSocket has no drain; we must
-          // ensure a clean stream — the SOCKS reply was already consumed by
-          // _rawReadAtLeast above; a final poll ensures late bytes land).
-          await Future<void>.delayed(const Duration(milliseconds: 25));
-          sock.read(65536); // best-effort soak of any trailing bytes
+          // The SOCKS reply head+tail is fully consumed above; no drain
+          // delay is needed (the v0.5.9 tail-read replaced the sleep).
           transport = await RawSecureSocket.secure(sock,
               host: uri.host, onBadCertificate: (_) => false);
         } on HandshakeException catch (e) {
@@ -284,7 +300,12 @@ class LatencyTester {
           'GET ${uri.path.isEmpty ? '/' : uri.path} HTTP/1.1\r\n'
           'Host: ${uri.host}\r\n'
           'User-Agent: atlanhix-probe\r\n'
-          'Connection: close\r\n\r\n');
+          // v0.5.9 §ping-fix: close is only REQUIRED for https (where we
+          // must not stall on a chunked body). On plain http targets the
+          // server often closes LAST; waiting for its FIN inflated every
+          // measurement by the full extra round trip.
+          '${uri.scheme == 'https' ? 'Connection: close\r\n' : ''}'
+          '\r\n');
       if (!_rawWrite(transport, request)) {
         return ProbeResult(
             ok: false, errorKind: 'http', detail: 'write failed');
@@ -301,7 +322,14 @@ class LatencyTester {
       final ok = code >= 200 && code < 400;
       return ProbeResult(
         ok: ok,
+        // v0.5.9 §ping-fix: latencyMs = the full fetch (the CONNECTED gate
+        // budget and what the UI shows); handshakeMs = the SOCKS5 CONNECT
+        // round trip, carried separately for diagnostics. The DISPLAYED
+        // number becomes comparable to other clients once the default
+        // probe URL is plain http (AppSettings.defaultDelayTestUrl) — the
+        // old https default paid a full in-tunnel TLS handshake per ping.
         latencyMs: sw.elapsedMilliseconds,
+        handshakeMs: connectMs,
         errorKind: ok ? null : (code == 0 ? 'timeout' : 'http'),
         detail: ok ? 'HTTP $code' : 'HTTP ${code == 0 ? 'NO-RESPONSE' : code} '
             'bytes=${respBytes.length}',
@@ -359,6 +387,9 @@ class LatencyTester {
 
   /// Poll-reads until at least [n] bytes arrive (raw sockets have no stream
   /// subscriptions — the re-listen hazard does not apply).
+  /// v0.5.9 §ping-fix: the poll sleeps 1 ms, not 4 — every probe pays a
+  /// few of these per phase and the coarse cadence inflated each read by
+  /// up to 3 ms; over SOCKS+TLS+HTTP that summed to tens of ms.
   Future<List<int>> _rawReadAtLeast(
       RawSocket s, int n, Duration timeout) async {
     final stop = DateTime.now().add(timeout);
@@ -372,7 +403,7 @@ class LatencyTester {
       // RawSocket gotcha: after a null read, read events are disabled and
       // must be re-enabled or every subsequent read() returns null.
       s.readEventsEnabled = true;
-      await Future<void>.delayed(const Duration(milliseconds: 4));
+      await Future<void>.delayed(const Duration(milliseconds: 1));
     }
     return buf;
   }
@@ -388,11 +419,11 @@ class LatencyTester {
       final chunk = s.read(65536);
       if (chunk == null) {
         s.readEventsEnabled = true;
-        await Future<void>.delayed(const Duration(milliseconds: 4));
+        await Future<void>.delayed(const Duration(milliseconds: 1));
         continue;
       }
       if (chunk.isEmpty) {
-        await Future<void>.delayed(const Duration(milliseconds: 4));
+        await Future<void>.delayed(const Duration(milliseconds: 1));
         continue;
       }
       buf.addAll(chunk);

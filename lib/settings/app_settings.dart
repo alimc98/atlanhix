@@ -170,8 +170,16 @@ class AppSettings {
   String delayTestUrl;
 
   /// The probe URL every latency path uses — never empty.
+  /// v0.5.9 §ping-fix: the default moved https → PLAIN http. Other clients
+  /// (v2rayNG et al.) ping with `http://www.gstatic.com/generate_204`; our
+  /// old https default paid a full TLS handshake INSIDE the tunnel on every
+  /// measurement — 3-4 round trips through the node — so the same node read
+  /// ~150 ms elsewhere and 800-1200 ms here. Plain http over the foreign
+  /// exit is un-hijackable-by-carrier (the carrier never sees it) and
+  /// measures like the numbers users compare against. The https canaries
+  /// in ConnectionController.probeFallbacks remain the fallback chain.
   static const String defaultDelayTestUrl =
-      'https://www.gstatic.com/generate_204';
+      'http://www.gstatic.com/generate_204';
   String get effectiveDelayTestUrl =>
       delayTestUrl.trim().isEmpty ? defaultDelayTestUrl : delayTestUrl.trim();
 
