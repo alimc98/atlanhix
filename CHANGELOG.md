@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.6.0 — xhttp روی mihomo، پینگ واقعی، بار اول، آپدیت درون‌اپی
+
+> ۱- توی هسته mihomo کانفیگ xhttp reality به جای xhttp روی tcp می‌رود ·
+> ۲- بار اول کانکت می‌زنیم وصل نمی‌شود، بار دوم وصل می‌شود ·
+> ۳- آپدیت جدید دانلود نمی‌شود — باید داخل خود اپ دانلود و نصب شود ·
+> ۴- فونت total traffic و geo route بزرگ است و کنار هم جا نمی‌شوند ·
+> ۵- هنوز پینگ‌ها بالاست
+
+**۱. xhttp→tcp (ریشه واقعی):** باینری mihomo باندل‌شده اندروید v1.19.31
+است و xhttp را کامل پشتیبانی می‌کند؛ مشکل از پارسر Clash YAML بود —
+`_transport` فقط ws/grpc/h2/httpupgrade را می‌شناخت و `network: xhttp`
+را روی `Transport.tcp` می‌انداخت و کل بلوک `xhttp-opts` (path/host/mode/
+xmux/padding) گم می‌شد. حالا xhttp/splithttp → Transport.xhttp،
+xhttp-opts خوانده می‌شود و همه فیلدها (به‌همراه dialect لینک Xray و
+blob extra=) در rawParams حفظ می‌شود؛ round-trip پارسر→مولد mihomo با
+۸ تست پین شد. (فورک هسته لازم نبود.)
+
+**۲. بار اول وصل نمی‌شود:** بودجه probe تونل با کلاک startup (۱۵s)
+کپ می‌شد در حالی که حلقه warm-up داخلش ۳ راند × ۴ کناری × ۸s (تا ۹۶s)
+طراحی شده بود — موتور سرد که هنوز upstream را dial نکرده وسط راند اول
+کشته می‌شد؛ بار دوم با کش‌های گرم/DNS pin/فرزند زندهٔ mihomo فوری پاس
+می‌شد. حالا کناری‌های هر راند «موازی» می‌چرخند (بدترین راند = ۸s نه
+۳۲s) و probe بودجه مستقل ۳۲s دارد (probeTimeout ≠ startupTimeout).
+
+**۳. آپدیت درون‌اپی:** روی اندروید دیگر مرورگر/گیتهاب در کار نیست —
+کانال `dev.atlanhix/updater` با DownloadManager فایل APK را داخل سندباکس
+اپ دانلود می‌کند (پیشرفت ۰–۱۰۰٪ در دیالوگ) و بعد سیستم اینستالر را روی
+فایلfire می‌کند (FileProvider + ACTION_INSTALL_PACKAGE؛ پرمیشن
+REQUEST_INSTALL_PACKAGES اضافه شد). دسکتاپ همان جریان قبلی بازکردن URL
+را دارد.
+
+**۴. پیل‌های داشبورد:** total traffic و geo route فشرده شدند — پدینگ
+۱۲/۹→۹/۷، آیکون ۱۸→۱۴، لیبل ۹→۸، مقدار ۱۶→۱۳px — تا کنار هم جا شوند.
+
+**۵. پینگ v2rayNG-سبک:** TcpPinger جدید — TCP handshake خام به
+server:port (بدون موتور/تونل/URL). دکمه تست دو فاز شد: فاز ۱ tcping همه
+نودها (سریع، ستون را فوری پر می‌کند)، فاز ۲ تست URL واقعی فقط برای
+نودهای زنده (آمار Smart Switch دست‌نخورده). ستون لیست tcp-first نشان
+می‌دهد؛ آمار URL از TCP ایزوله شد (lastTcpMs جدا در HealthStore —
+نشتی قبلی `latencyMs ?? handshakeMs` حذف شد).
+
 ## v0.5.9 — the five user-reported blockers
 
 > ۱- کره زمین توی نسخه دارک اصلا واضح نیست و خط اتصال کالیبره نیست ·

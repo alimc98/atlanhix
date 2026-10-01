@@ -440,6 +440,16 @@ class _NodesScreenState extends State<NodesScreen> {
   /// exactly the "ping says alive, tunnel dead" bug. Results land in the
   /// shared HealthStore so the latency column, filters, sorting, Smart
   /// Switch and the fragment ladder all read the SAME real numbers.
+  ///
+  /// v0.6.0 §tcping — TWO PHASES now, because the user's "پینگ‌ها هنوز
+  /// بالاست" is about the NUMBER THE COLUMN SHOWS: every other client
+  /// (v2rayNG…) shows the raw TCP handshake to server:port, while a URL
+  /// test through a tunnel stacks TCP+TLS+HTTP round-trips on top. Phase 1
+  /// pings EVERY enabled node directly (fast, engine-free — the number
+  /// lands in `lastTcpMs` and the column shows it immediately); phase 2
+  /// runs the REAL URL sweep for the nodes TCP found alive (Smart Switch
+  /// and the ladder keep consuming real end-to-end numbers — unchanged
+  /// semantics). TCP-dead nodes get one honest failed record.
   bool _sweeping = false;
 
   Future<void> _runRealUrlSweep() async {
@@ -452,20 +462,43 @@ class _NodesScreenState extends State<NodesScreen> {
     if (runnable.isEmpty) return;
     _sweeping = true;
     if (mounted) setState(() {});
-    // v0.5.0 §perf-fix: the WHOLE runnable pool in ONE testBatch call. The
-    // old chunk-of-6 loop re-entered the transient probe engine per chunk:
-    // every chunk with a new node id REBUILT the Box (probeStart is a full
-    // restart) and killed the in-flight measurements — sweeps took forever
-    // and read suspicious numbers. One boot + parallel delay tests now;
-    // 100+ nodes stay polite through the engine's own concurrency.
-    final results = await widget.deps.realDelay.testBatch(runnable);
     final now = DateTime.now();
-    for (final p in runnable) {
+
+    // Phase 1 — RAW TCP ping (display column; never touches the URL stats).
+    try {
+      final tcp = await widget.deps.tcpPinger.pingBatch(runnable);
+      for (final p in runnable) {
+        final r = tcp[p.id];
+        if (r == null) continue;
+        widget.deps.healthStore.record(HealthRecord(
+          profileId: p.id,
+          at: now,
+          ok: r.ok,
+          // latencyMs stays null on purpose: this record must NOT enter
+          // avgLatencyMs/jitter (URL-only streams) — see HealthStore.
+          handshakeMs: r.latencyMs,
+          errorKind: r.ok ? null : 'timeout',
+        ));
+      }
+      if (mounted) setState(() {}); // column repaints with TCP numbers now
+    } catch (_) {/* pinger must never kill the real sweep */}
+
+    // Phase 2 — the REAL end-to-end URL sweep (alive nodes only).
+    final alive = widget.deps.profiles.all
+        .where((p) =>
+            p.enabled &&
+            (!Platform.isAndroid || AndroidNodeSupport.isRunnable(p)))
+        .where((p) =>
+            widget.deps.healthStore.statsOf(p.id)?.lastTcpMs != null ||
+            widget.deps.healthStore.statsOf(p.id)?.state == NodeHealth.unknown)
+        .toList();
+    final results = await widget.deps.realDelay.testBatch(alive);
+    for (final p in alive) {
       final r = results[p.id];
       if (r == null || r.errorKind == 'engine-off') continue;
       widget.deps.healthStore.record(HealthRecord(
         profileId: p.id,
-        at: now,
+        at: DateTime.now(),
         ok: r.ok,
         latencyMs: r.latencyMs,
         errorKind: r.errorKind,
@@ -486,7 +519,8 @@ class _NodesScreenState extends State<NodesScreen> {
       return switch (_filter) {
         _NodeFilter.all => true,
         _NodeFilter.healthy => s?.state == NodeHealth.healthy,
-        _NodeFilter.fast => (s?.lastLatencyMs ?? 9999) < 300,
+        // v0.6.0 §tcping: match the DISPLAYED column (tcp-first).
+        _NodeFilter.fast => (s?.lastTcpMs ?? s?.lastLatencyMs ?? 9999) < 300,
       };
     }).toList()
       ..sort((a, b) {
@@ -496,8 +530,9 @@ class _NodesScreenState extends State<NodesScreen> {
           case 'name':
             return a.name.compareTo(b.name);
           case 'latency':
-            return (sa?.lastLatencyMs ?? 99999)
-                .compareTo(sb?.lastLatencyMs ?? 99999);
+            // v0.6.0 §tcping: sort by the DISPLAYED number (tcp-first).
+            return (sa?.lastTcpMs ?? sa?.lastLatencyMs ?? 99999)
+                .compareTo(sb?.lastTcpMs ?? sb?.lastLatencyMs ?? 99999);
           default:
             return (sb?.successRate ?? 0).compareTo(sa?.successRate ?? 0);
         }
@@ -858,7 +893,11 @@ class NodeTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = ThemeExt.of(context);
     final l = AppLocalizations.of(context)!;
-    final lat = stats?.lastLatencyMs;
+    // v0.6.0 §tcping: the column shows the RAW TCP handshake number when
+    // one exists (the methodology every other client shows) and falls back
+    // to the real URL latency otherwise. Color thresholds apply to whichever
+    // number is displayed.
+    final lat = stats?.lastTcpMs ?? stats?.lastLatencyMs;
     final latColor = lat == null
         ? c.textMuted
         : lat < 300

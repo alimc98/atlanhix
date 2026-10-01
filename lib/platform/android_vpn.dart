@@ -352,7 +352,16 @@ class AndroidVpnController {
     required Future<bool> Function() probeTunnel,
     Duration startupTimeout = const Duration(seconds: 12),
     bool proxyMode = false,
+
+    /// v0.6.0 §first-connect-fix: the tunnel PROBE gets its OWN budget,
+    /// decoupled from the engine-startup budget. The probe retries inside
+    /// warm-up grace rounds (3 × canary batch); capping it with the same
+    /// 15 s clock murdered round one on a cold engine — the first connect
+    /// died and the second (warm) tap connected (user report: "بار اول
+    /// وصل نمیشه، بار دوم درسته"). Defaults to startupTimeout when null.
+    Duration? probeTimeout,
   }) async {
+    final probeBudget = probeTimeout ?? startupTimeout;
     // v0.5.8 §connect-fix: only a session that OWNS the tunnel blocks a
     // new start. The old `if (isBusy) return false` included `starting`,
     // which markStarting() (v0.5.5) sets BEFORE this method runs — so every
@@ -438,7 +447,8 @@ class AndroidVpnController {
           case 'VALIDATING':
           case 'CONNECTED':
             _set(AndroidVpnPhase.validating);
-            final ok = await probeTunnel().timeout(startupTimeout);
+            // v0.6.0 §first-connect-fix: probe budget ≠ startup budget.
+            final ok = await probeTunnel().timeout(probeBudget);
             // v0.5.9 §retarget: the probe can outlive a retarget — never
             // celebrate or tear down after being superseded.
             if (superseded()) return false;

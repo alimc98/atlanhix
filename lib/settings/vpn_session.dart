@@ -1206,37 +1206,46 @@ class VpnSession {
               deps.appSettings.effectiveDelayTestUrl,
               ...ConnectionController.probeFallbacks,
             ];
-            ProbeResult? last;
-            for (final url in canaries) {
-              if (superseded()) return false;
-              final r = await deps.tester.testHttpViaSocksProxy(
-                '127.0.0.1',
-                port,
-                url,
-                timeout: const Duration(seconds: 8),
-              );
-              if (r.ok) {
-                lastLatencyMs = r.latencyMs;
-                Logger.instance.info('vpn-session',
-                    '$trace HEALTH_CHECK via mixed:$port OK ${r.latencyMs ?? '?'}ms canary=$url');
-                return true;
-              }
-              last ??= r;
-              Logger.instance.warn('vpn-session',
-                  '$trace HEALTH_CHECK try=${i + 1}/3 kind=${r.errorKind} canary=$url detail=${r.detail != null ? Logger.redact(r.detail!) : '-'}');
+            // v0.6.0 §first-connect-fix: the canaries used to run SERIAL
+            // (4 × 8 s = 32 s per round) while the whole probe was capped
+            // by an outer 15 s timeout — a cold engine that had not yet
+            // dialled its upstream could not even finish ROUND ONE, the
+            // attempt was torn down, and the SECOND tap (warm caches, DNS
+            // pin, already-running :mihomo/:xray child) connected. That
+            // was the user's "بار اول وصل نمیشه، بار دوم درسته". Two fixes:
+            // the canaries race IN PARALLEL (worst-case round = the
+            // slowest canary, 8 s — not the sum), and the outer probe
+            // budget is now larger than the honest worst case of all
+            // three rounds (see controller probeTimeout).
+            final batch = await Future.wait([
+              for (final url in canaries)
+                deps.tester
+                    .testHttpViaSocksProxy('127.0.0.1', port, url,
+                        timeout: const Duration(seconds: 8))
+                    .then((r) => MapEntry(url, r)),
+            ]);
+            if (superseded()) return false;
+            final hit = batch.where((e) => e.value.ok).toList();
+            if (hit.isNotEmpty) {
+              final r = hit.first.value;
+              lastLatencyMs = r.latencyMs;
+              Logger.instance.info('vpn-session',
+                  '$trace HEALTH_CHECK via mixed:$port OK ${r.latencyMs ?? '?'}ms canary=${hit.first.key}');
+              return true;
             }
-            // v0.5.6: every canary failed this round — log the aggregate
-            // verdict (the per-canary lines above already named each URL)
-            // and let the outer retry loop try again after the warm-up
-            // grace period.
             Logger.instance.warn('vpn-session',
-                '$trace HEALTH_CHECK try=${i + 1}/3 all canaries failed '
-                '(${canaries.length} tried) kind=${last?.errorKind} '
-                'detail=${last?.detail != null ? Logger.redact(last!.detail!) : '-'}');
+                '$trace HEALTH_CHECK try=${i + 1}/3 all ${batch.length} canaries failed '
+                'kinds=${batch.map((e) => e.value.errorKind ?? '?').join(',')}');
           }
           return false;
         },
         startupTimeout: Duration(seconds: deps.appSettings.connectionTimeoutSeconds),
+        // v0.6.0 §first-connect-fix: the probe may legitimately spend its
+        // own budget — 3 warm-up rounds × (8 s canary batch + 1.2 s gap).
+        // Capping it with the startup clock killed round one on cold
+        // engines and produced the first-connect failure the user kept
+        // reporting.
+        probeTimeout: const Duration(seconds: 32),
         proxyMode: deps.appSettings.proxyMode,
       );
       Logger.instance.info(

@@ -49,6 +49,14 @@ class NodeHealthStats {
   });
 
   int? lastLatencyMs;
+
+  /// v0.6.0 §tcping: the RAW TCP-handshake ping to server:port (v2rayNG
+  /// methodology) — display-only. Never fed by URL probes (they carry
+  /// latencyMs alongside handshakeMs) and never consumed by Smart Switch
+  /// (which reads [lastLatencyMs], the REAL end-to-end number). The node
+  /// list shows this when present so the column reads like every other
+  /// client instead of the multi-round-trip in-tunnel URL delay.
+  int? lastTcpMs;
   int? avgLatencyMs;
   int? jitterMs;
   double successRate;

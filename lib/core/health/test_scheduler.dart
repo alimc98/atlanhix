@@ -94,7 +94,16 @@ class HealthStore {
       s
         ..consecutiveFailures = 0
         ..lastSuccess = r.at
-        ..lastLatencyMs = r.latencyMs ?? r.handshakeMs;
+        // v0.6.0 §tcping: lastLatencyMs is the REAL end-to-end (URL) stream
+        // ONLY. The old `?? r.handshakeMs` fold leaked raw TCP-probe numbers
+        // into the URL stream Smart Switch ranks on — a 50 ms Iran-internal
+        // SYN-ACK could outrank a node whose tunnel actually moves traffic.
+        ..lastLatencyMs = r.latencyMs;
+      // v0.6.0 §tcping: a TCP-only record (latencyMs null, handshakeMs
+      // set) feeds the DISPLAY column, not the URL latency stream.
+      if (r.latencyMs == null && r.handshakeMs != null) {
+        s.lastTcpMs = r.handshakeMs;
+      }
       if (r.latencyMs != null) {
         s.avgLatencyMs = s.avgLatencyMs == null
             ? r.latencyMs
@@ -245,7 +254,9 @@ class TestScheduler {
       profileId: p.id,
       at: DateTime.now(),
       ok: r.ok,
-      latencyMs: r.latencyMs ?? r.handshakeMs,
+      // v0.6.0 §tcping: stop folding handshakeMs into latencyMs — the raw
+      // TCP probe is a DISPLAY number (lastTcpMs), never a URL latency.
+      latencyMs: r.latencyMs,
       errorKind: r.errorKind,
       handshakeMs: r.handshakeMs,
     );

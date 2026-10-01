@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 
 import 'application/clipboard_import_service.dart';
 import 'application/dependencies.dart';
+import 'application/in_app_updater.dart';
 import 'application/update_checker.dart';
 import 'core/engine_availability.dart';
 import 'core/logger.dart';
@@ -316,7 +317,7 @@ class _AtlanhixAppState extends State<AtlanhixApp>
       builder: (ctx) => AlertDialog(
         title: Text('Update ${info.version}'),
         content: Text(
-            'A newer Atlanhix release (${info.version}) is available. Open the download page?'),
+            'A newer Atlanhix release (${info.version}) is available. Download and install it right inside the app?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -330,6 +331,52 @@ class _AtlanhixAppState extends State<AtlanhixApp>
       ),
     );
     if (go != true || !mounted) return;
+    // v0.6.0 §in-app-update (user request: "وقتی دانلود رو میزنیم همونجا
+    // دانلود کنه توی خود برنامه و بعد اتوماتیک نصبش کنه — اصلا فازِ رفتن
+    // توی مرورگر و دانلود دستی گیت‌هاب نباشه"): on Android the APK is
+    // downloaded by the system DownloadManager INSIDE the app (progress
+    // shown in a dialog) and the system installer is fired automatically on
+    // completion. No browser, no GitHub page, no manual step. Desktop keeps
+    // the old open-URL flow (no APK to sideload there).
+    if (Platform.isAndroid) {
+      final updater = InAppUpdater();
+      var percent = 0;
+      var stage = 'downloading';
+      final accepted = await updater.download(url: info.url, version: info.version);
+      if (!accepted) {
+        // Channel unavailable (desktop shape) or refused — degrade to the
+        // old browser flow rather than leaving the user with nothing.
+        await _openExternalUrl(info.url);
+        return;
+      }
+      if (mounted && navCtx.mounted) {
+        await showDialog<void>(
+          context: navCtx,
+          barrierDismissible: false,
+          builder: (ctx) => StatefulBuilder(builder: (ctx, setDlg) {
+            updater.onProgress = (p) => setDlg(() => percent = p);
+            updater.onStage = (s) => setDlg(() => stage = s);
+            return AlertDialog(
+              title: Text('Atlanhix ${info.version}'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(stage == 'installing'
+                      ? 'Installing the update…'
+                      : stage == 'failed'
+                          ? 'Download failed — check your connection and try again.'
+                          : 'Downloading inside the app… $percent%'),
+                  const SizedBox(height: 16),
+                  if (stage == 'downloading')
+                    LinearProgressIndicator(value: percent / 100),
+                ],
+              ),
+            );
+          }),
+        );
+      }
+      return;
+    }
     // v0.4.7 §user: open the release URL via the platform channel
     // (ACTION_VIEW) — no url_launcher dependency needed.
     //

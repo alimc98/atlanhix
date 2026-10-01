@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v0.6.0 §in-app-update: shares the downloaded update APK with Android's
+     package installer (ACTION_INSTALL_PACKAGE) without making the whole
+     app-private files dir world-readable. Path: files/updates/*.apk. -->
+<paths>
+    <files-path
+        name="update_apks"
+        path="updates/" />
+</paths>

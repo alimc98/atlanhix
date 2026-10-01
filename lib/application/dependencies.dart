@@ -9,6 +9,7 @@ import '../data/repositories.dart';
 import '../data/secure_vault.dart';
 import '../application/connection_controller.dart';
 import '../application/real_delay_tester.dart';
+import '../application/tcp_pinger.dart';
 import '../application/subscription_service.dart';
 import '../core/core_detector.dart';
 import '../core/fragmentation/fragment_ladder_cache.dart';
@@ -269,6 +270,8 @@ class AppDependencies {
                 : ProbeResult(ok: true, latencyMs: ms[p.id]),
         };
       };
+    // v0.6.0 §tcping: pure-Dart TCP handshake pinger (see class doc).
+    deps.tcpPinger = TcpPinger();
     deps.detector = CoreDetector();
     deps.importer = MultiFormatImporter();
 
@@ -457,6 +460,9 @@ class AppDependencies {
   late final MultiFormatImporter importer;
   // v0.4.9 §user: end-to-end URL delay tester for the node list.
   late final RealDelayTester realDelay;
+  // v0.6.0 §tcping: raw TCP-handshake pinger — the v2rayNG-style number
+  // for the node list (companion to the REAL URL sweep, never a replacement).
+  late final TcpPinger tcpPinger;
   late final ConnectionController connection;
   late final SubscriptionService subscriptionService;
   late final WarpRepository warpRepo;

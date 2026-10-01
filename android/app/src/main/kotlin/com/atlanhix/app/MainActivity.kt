@@ -9,12 +9,14 @@ import com.atlanhix.app.vpn.AtlanhixProbeChannel
 import com.atlanhix.app.vpn.AtlanhixVpnChannel
 import com.atlanhix.app.vpn.AtlanhixXrayChannel
 import com.atlanhix.app.vpn.AtlanhixMihomoChannel
+import com.atlanhix.app.vpn.AtlanhixUpdaterChannel
 import com.atlanhix.app.vpn.InstalledAppsSource
 
 class MainActivity : FlutterActivity() {
 
     private var vpnChannel: AtlanhixVpnChannel? = null
     private var vpnMethodSink: MethodChannel.Result? = null
+    private var updaterChannel: AtlanhixUpdaterChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -68,6 +70,25 @@ class MainActivity : FlutterActivity() {
                 }
             }.start()
         }
+        // v0.6.0 §in-app-update: DownloadManager download + system installer
+        // (status() queries may run while the DownloadManager works — the
+        // whole handler is off the main thread like installedApps above).
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            AtlanhixUpdaterChannel.CHANNEL
+        ).setMethodCallHandler { call, result ->
+            Thread {
+                try {
+                    val rawArg: Any? = call.arguments()
+                    val arg: JSONObject? =
+                        if (rawArg == null) null else JSONObject(rawArg.toString())
+                    val resp = updaterChannelOrNew().handle(call.method, arg)
+                    runOnUiThread { result.success(resp.toString()) }
+                } catch (e: Exception) {
+                    runOnUiThread { result.error("updater_channel", e.message, null) }
+                }
+            }.start()
+        }
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             AtlanhixVpnChannel.CHANNEL
@@ -117,6 +138,9 @@ class MainActivity : FlutterActivity() {
 
     private fun vpnChannelOrNew(): AtlanhixVpnChannel =
         vpnChannel ?: AtlanhixVpnChannel(this).also { vpnChannel = it }
+
+    private fun updaterChannelOrNew(): AtlanhixUpdaterChannel =
+        updaterChannel ?: AtlanhixUpdaterChannel(this).also { updaterChannel = it }
 
     private var xrayChannel: AtlanhixXrayChannel? = null
     private fun xrayChannelOrNew(): AtlanhixXrayChannel =

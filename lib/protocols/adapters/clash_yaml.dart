@@ -1,3 +1,5 @@
+import 'dart:convert' show jsonEncode;
+
 import 'package:yaml/yaml.dart';
 import '../../domain/entities/proxy_profile.dart';
 import '../../domain/errors/app_error.dart';
@@ -89,11 +91,12 @@ class ClashYamlParser {
       alterId: int.tryParse('${m['alterId'] ?? 0}') ?? 0,
       encryption: (m['cipher'] ?? 'auto').toString(),
       sni: _sni(m),
-      host: _wsHost(m),
-      path: _wsPath(m),
+      host: _transportHost(m),
+      path: _transportPath(m),
       serviceName: _grpcName(m),
       fingerprint: _fp(m),
       allowInsecure: m['skip-cert-verify'] == true,
+      rawParams: _xhttpParams(m),
       source: ProfileSource.fileImport,
     );
   }
@@ -113,8 +116,8 @@ class ClashYamlParser {
       uuid: (m['uuid'] ?? '').toString(),
       flow: (m['flow'] ?? '') as String?,
       sni: _sni(m),
-      host: _wsHost(m),
-      path: _wsPath(m),
+      host: _transportHost(m),
+      path: _transportPath(m),
       serviceName: _grpcName(m),
       fingerprint: _fp(m),
       allowInsecure: m['skip-cert-verify'] == true,
@@ -122,6 +125,7 @@ class ClashYamlParser {
           reality is Map ? (reality['public-key'] ?? '').toString() : null,
       realityShortId:
           reality is Map ? (reality['short-id'] ?? '').toString() : null,
+      rawParams: _xhttpParams(m),
       source: ProfileSource.fileImport,
     );
   }
@@ -137,11 +141,12 @@ class ClashYamlParser {
       security: Security.tls,
       password: (m['password'] ?? '').toString(),
       sni: _sni(m),
-      host: _wsHost(m),
-      path: _wsPath(m),
+      host: _transportHost(m),
+      path: _transportPath(m),
       serviceName: _grpcName(m),
       allowInsecure: m['skip-cert-verify'] == true,
       alpn: (m['alpn'] as List?)?.map((e) => e.toString()).toList() ?? const [],
+      rawParams: _xhttpParams(m),
       source: ProfileSource.fileImport,
     );
   }
@@ -253,13 +258,88 @@ class ClashYamlParser {
     );
   }
 
+  /// v0.6.0 §xhttp-yaml: `xhttp`/`splithttp` MUST parse to [Transport.xhttp].
+  /// Before this the fallback swallowed them into Transport.tcp — a Clash-
+  /// dialect xhttp node imported from a subscription connected as plain TCP
+  /// (the user-visible "xhttp reality goes over tcp on mihomo" bug). The
+  /// structured path/host now also come from the transport's own opts block
+  /// (xhttp-opts first — ws-opts kept for legacy spellings).
   static Transport _transport(String net) => switch (net) {
         'ws' => Transport.ws,
         'grpc' => Transport.grpc,
         'h2' => Transport.h2,
         'httpupgrade' => Transport.httpupgrade,
+        'xhttp' || 'splithttp' => Transport.xhttp,
         _ => Transport.tcp,
       };
+
+  /// path for the ACTIVE transport: xhttp-opts > ws-opts (older Clash
+  /// writers stored everything under ws-opts regardless of network).
+  static String? _transportPath(Map<String, dynamic> m) {
+    final x = m['xhttp-opts'];
+    if (x is Map) {
+      final v = x['path'];
+      if (v != null && v.toString().isNotEmpty) return v.toString();
+    }
+    return _wsPath(m);
+  }
+
+  static String? _transportHost(Map<String, dynamic> m) {
+    final x = m['xhttp-opts'];
+    if (x is Map) {
+      final v = x['host'];
+      if (v != null && v.toString().isNotEmpty) return v.toString();
+    }
+    return _wsHost(m);
+  }
+
+  /// Flatten the xhttp-opts map into rawParams (string values) so the
+  /// downstream generators (mihomo `xhttp-opts`, Xray settings) can rebuild
+  /// the full transport — mode, padding fields, reuse/download settings…
+  /// all survive the import round-trip.
+  ///
+  /// Three spellings coexist in the wild (mihomo kebab-case, Xray link
+  /// camelCase, the `extra=` JSON blob) — the app's generators read the
+  /// LINK dialect, so every kebab field also lands under its Xray link
+  /// name, and the whole map is mirrored into `extra` (nested maps/lists
+  /// preserved) which both engines merge verbatim.
+  static Map<String, String> _xhttpParams(Map<String, dynamic> m) {
+    final x = m['xhttp-opts'];
+    if (x is! Map) return const {};
+    final out = <String, String>{};
+    final extra = <String, dynamic>{};
+    x.forEach((k, v) {
+      if (v == null) return;
+      out[k.toString()] = v is Map || v is List ? jsonEncode(v) : '$v';
+      extra[k.toString()] = v; // native types inside the extra blob
+    });
+    const camelOf = <String, String>{
+      'reuse-settings': 'xmux',
+      'download-settings': 'downloadSettings',
+      'x-padding-bytes': 'xPaddingBytes',
+      'x-padding-key': 'xPaddingKey',
+      'x-padding-header': 'xPaddingHeader',
+      'x-padding-placement': 'xPaddingPlacement',
+      'x-padding-method': 'xPaddingMethod',
+      'no-grpc-header': 'noGrpcHeader',
+      'sc-max-each-post-bytes': 'scMaxEachPostBytes',
+      'sc-min-posts-interval-ms': 'scMinPostsIntervalMs',
+      'uplink-http-method': 'uplinkHttpMethod',
+      'session-placement': 'sessionPlacement',
+      'session-key': 'sessionKey',
+      'seq-placement': 'seqPlacement',
+      'seq-key': 'seqKey',
+    };
+    camelOf.forEach((kebab, link) {
+      if (!x.containsKey(kebab)) return;
+      final v = x[kebab];
+      if (v == null) return;
+      out[link] = v is Map || v is List ? jsonEncode(v) : '$v';
+      extra[link] = v;
+    });
+    if (extra.isNotEmpty) out['extra'] = jsonEncode(extra);
+    return out;
+  }
 
   static String? _sni(Map<String, dynamic> m) {
     final v = m['servername'] ?? m['sni'];

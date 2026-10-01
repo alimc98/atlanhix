@@ -899,7 +899,11 @@ class _TotalTrafficPill extends StatelessWidget {
     // LayoutBuilder owns collision-freedom now. This pill just hugs its
     // content; the speed line ellipsizes if it ever gets cramped.
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      // v0.6.0 §ui-fit (user: "سایز فونت total traffic و geo route رو کوچیک
+      // کن که کنار هم جا بشن"): the pill compacted — smaller padding, icon
+      // and VALUE font (13px instead of titleMedium's 16) so both pills fit
+      // the hero top row side by side without the route text starving.
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
       decoration: BoxDecoration(
         color: c.surface.withValues(alpha: 0.62),
         borderRadius: BorderRadius.circular(14),
@@ -908,8 +912,8 @@ class _TotalTrafficPill extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.show_chart, size: 18, color: c.textPrimary),
-          const SizedBox(width: 8),
+          Icon(Icons.show_chart, size: 14, color: c.textPrimary),
+          const SizedBox(width: 6),
           Flexible(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -923,8 +927,8 @@ class _TotalTrafficPill extends StatelessWidget {
                       maxLines: 1,
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
                             color: c.textSecondary,
-                            letterSpacing: 1.2,
-                            fontSize: 9,
+                            letterSpacing: 1,
+                            fontSize: 8,
                           )),
                 ),
                 Text(
@@ -935,6 +939,7 @@ class _TotalTrafficPill extends StatelessWidget {
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         color: c.textPrimary,
                         fontWeight: FontWeight.w600,
+                        fontSize: 13,
                       ),
                 ),
               ],
@@ -969,7 +974,9 @@ class _GeoRouteChip extends StatelessWidget {
     // hugging the right edge and ellipsizes — no private budget that can
     // collide with the traffic pill anymore.
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      // v0.6.0 §ui-fit: compacted in lockstep with [_TotalTrafficPill] —
+      // see the note there.
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
       decoration: BoxDecoration(
         color: c.surface.withValues(alpha: 0.62),
         borderRadius: BorderRadius.circular(14),
@@ -978,8 +985,8 @@ class _GeoRouteChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.travel_explore, size: 18, color: c.textPrimary),
-          const SizedBox(width: 8),
+          Icon(Icons.travel_explore, size: 14, color: c.textPrimary),
+          const SizedBox(width: 6),
           Flexible(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -991,8 +998,8 @@ class _GeoRouteChip extends StatelessWidget {
                       maxLines: 1,
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
                             color: c.textSecondary,
-                            letterSpacing: 1.2,
-                            fontSize: 9,
+                            letterSpacing: 1,
+                            fontSize: 8,
                           )),
                 ),
                 Text(
@@ -1002,6 +1009,7 @@ class _GeoRouteChip extends StatelessWidget {
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         color: c.textPrimary,
                         fontWeight: FontWeight.w600,
+                        fontSize: 13,
                       ),
                 ),
                 // v0.5.2 §user — the LIVE ladder line: crossfades in when
