@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.5.8 — the connect gate no longer refuses its own connect
+
+> «وقتي كانكت ميزني فقط ميچرخه و وصل نميشه ،‌به هيچ كانفيگي وصل نميشه»
+
+**Root cause: v0.5.5's tap-feedback phase wedged the connect flow it was
+supposed to speed up.** v0.5.5 added `markStarting()` — the dashboard flips
+to "Connecting…" the instant the user taps, instead of sitting on
+"Disconnected" while the pre-connect ladder measures. But that phase
+(`starting`) was also a member of the controller's `isBusy` set, and the
+controller's own `connect()` opens with `if (isBusy) return false`.
+
+So the actual sequence on every tap was:
+
+1. `VpnSession.connect()` → `controller.markStarting()` → phase = `starting`
+2. `_connectProfile` → … → `controller.connect(...)`
+3. the gate `if (isBusy) return false` sees `starting` → **silent refusal**
+4. the service never starts, no permission dialog, no engine, no probe
+5. the UI spins on `starting` forever — for EVERY config, because no config
+   was ever attempted
+
+This also explains why the v0.5.7 canary fallback did not cure the report:
+that fix (probe honours Settings → Delay test URL, then independent
+Cloudflare/gstatic canaries) lives BELOW the wedge. The probe was never
+reached, so it had no chance to succeed. The two fixes now compose: the
+flow reaches the probe, and the probe judges tunnels honestly.
+
+Fixes:
+- `AndroidVpnController.wedgeArmed` — the phases that genuinely mean "a
+  previous session owns the tunnel" (preparing/validating/reconnecting/
+  stopping). The cosmetic `starting` no longer gates `connect()`; the flow
+  re-lands the phase itself (`preparing → starting → validating → …`).
+- `AndroidVpnController.resetToIdle()` — every pre-tunnel gate failure
+  (`NODE_NOT_RUNNABLE_ON_ANDROID`, `NO_RUNNABLE_NODE`,
+  `CORE_NOT_RUNNABLE_ON_ANDROID`, `XRAY_RUNTIME_UNAVAILABLE`, upstream start
+  failures, config generation failure, unexpected exceptions) now lands a
+  TERMINAL phase instead of leaving the spinner on `starting` forever.
+- Regression pins: `starting` must not arm the gate (controller + session
+  level), the probe must actually run after a tap, a gate failure must end
+  the spinner, and `resetToIdle` must never trample a live session.
+
 ## v0.5.7 — connect never succeeds, update never works, clipboard nags
 
 Three user-reported bugs. The first two had been shipped broken for several

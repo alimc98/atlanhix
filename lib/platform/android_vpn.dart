@@ -85,6 +85,18 @@ class AndroidVpnController {
       phase == AndroidVpnPhase.reconnecting ||
       phase == AndroidVpnPhase.stopping;
 
+  /// v0.5.8 §connect-fix: phases that mean a PREVIOUS session still owns
+  /// the tunnel — the set [connect] refuses to start under. `starting` is
+  /// deliberately EXCLUDED: [markStarting] (v0.5.5) sets it from the UI tap
+  /// BEFORE connect() runs, so gating on it wedged EVERY connect (tap →
+  /// starting → isBusy → guard `return false` → spinner forever, no config
+  /// ever started). connect() itself re-lands the phase (preparing/…).
+  bool get wedgeArmed =>
+      phase == AndroidVpnPhase.preparing ||
+      phase == AndroidVpnPhase.validating ||
+      phase == AndroidVpnPhase.reconnecting ||
+      phase == AndroidVpnPhase.stopping;
+
   void _set(AndroidVpnPhase p, {String? detail, String? errorCode}) {
     phase = p;
     if (detail != null) lastDetail = detail;
@@ -103,6 +115,19 @@ class AndroidVpnController {
   void markStarting({String? detail}) {
     if (isBusy || isConnected) return;
     _set(AndroidVpnPhase.starting, detail: detail ?? 'user tapped connect');
+  }
+
+  /// v0.5.8 §connect-fix: a connect flow that ended WITHOUT reaching a
+  /// terminal phase (an early gate `return false` with the phase still on
+  /// [markStarting]'s `starting`) used to spin the UI forever. Reset to a
+  /// benign non-busy phase; refuses to touch a live (armed/connected) state
+  /// so it can never trample a genuinely running flow. NOTE the guard is
+  /// [wedgeArmed], NOT [isBusy]: `starting` is exactly the stuck cosmetic
+  /// phase this method exists to clear.
+  void resetToIdle({String? reason}) {
+    if (isConnected || wedgeArmed) return;
+    _set(AndroidVpnPhase.stopped,
+        detail: reason ?? 'connect flow ended without a verdict');
   }
 
   /// v0.5.0 §user-fix ("notification not synced with the real VPN state"):
@@ -299,7 +324,15 @@ class AndroidVpnController {
     Duration startupTimeout = const Duration(seconds: 12),
     bool proxyMode = false,
   }) async {
-    if (isBusy) return false;
+    // v0.5.8 §connect-fix: only a session that OWNS the tunnel blocks a
+    // new start. The old `if (isBusy) return false` included `starting`,
+    // which markStarting() (v0.5.5) sets BEFORE this method runs — so every
+    // tap answered false here, the service never started, no probe ran and
+    // the dashboard spun on "connecting" for all configs (user report:
+    // "فقط میچرخه و وصل نمیشه، به هیچ کانفیگی وصل نمیشه"). `starting` is
+    // ADMITTED: this method immediately re-lands the phase (preparing →
+    // starting → validating), and every path below ends on a terminal.
+    if (isConnected || wedgeArmed) return false;
     _proxyMode = proxyMode;
     try {
       // v0.4.4 §user-5: PROXY MODE skips the TUN entirely — no consent

@@ -4,7 +4,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/application/dependencies.dart';
 import 'package:nexus/core/health/latency_tester.dart';
 import 'package:nexus/core/health/test_scheduler.dart';
-import 'package:nexus/domain/entities/health.dart';
 import 'package:nexus/domain/entities/proxy_profile.dart';
 import 'package:nexus/platform/android_vpn.dart';
 import 'package:nexus/settings/app_settings.dart';
@@ -18,6 +17,14 @@ import 'package:nexus/settings/vpn_session.dart';
 ///     the UI never sits on "Disconnected" while the ladder runs;
 ///  3. the ladder wait is hard-capped by [SmartSwitch.initialSweep]'s
 ///     maxWait (a dead/slow provider cannot stall a connect).
+///
+/// v0.5.8 §connect-fix regression pins:
+///  4. markStarting's `starting` phase must NOT gate the controller's own
+///     connect() — before the fix, tap → starting → isBusy guard →
+///     silent `false` → spinner forever on EVERY config (user report:
+///     "فقط میچرخه و وصل نمیشه، به هیچ کانفیگی وصل نمیشه");
+///  5. a connect that ends on a pre-tunnel gate must land the phase on a
+///     terminal state, never leave the spinner up.
 ProxyProfile _node(String id) => ProxyProfile(
       id: id,
       name: 'Node $id',
@@ -104,11 +111,42 @@ void main() {
     final s = VpnSession(deps: deps);
     expect(s.controller.phase, AndroidVpnPhase.idle);
     // No explicit node + no runnable pool in the test harness: the connect
-    // ends with NO_RUNNABLE_NODE — but the PHASE flip happens BEFORE any
-    // await, which is exactly what this test pins.
+    // ends with NO_RUNNABLE_NODE. The PHASE flip still happens BEFORE any
+    // await (pinned below), and v0.5.8 makes the ended flow land a TERMINAL
+    // phase instead of spinning on `starting`.
     unawaited(s.connect());
     expect(s.controller.phase, AndroidVpnPhase.starting,
         reason: 'the UI must see "connecting" the instant the user taps');
+    // v0.5.8 §connect-fix: give the budgeted ladder + gate a beat, then
+    // require a verdict — before the fix this stayed `starting` forever.
+    for (var i = 0;
+        i < 40 && s.controller.phase == AndroidVpnPhase.starting;
+        i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    expect(s.lastError, 'NO_RUNNABLE_NODE',
+        reason: 'the harness pins the no-pool gate itself');
+    expect(s.controller.phase, isNot(AndroidVpnPhase.starting),
+        reason: 'an ended flow must land a terminal phase, not spin forever');
+  });
+
+  test('starting phase (markStarting) does NOT wedge the session flow',
+      () async {
+    // v0.5.8 §connect-fix REGRESSION PIN. The v0.5.5 tap-feedback phase
+    // (`starting`) counted as busy in the controller's own connect() gate,
+    // so every tap answered a silent `false`: the service never started,
+    // no probe ran, and EVERY config spun forever (user report:
+    // "فقط میچرخه و وصل نمیشه، به هیچ کانفیگی وصل نمیشه").
+    final s = VpnSession(deps: deps);
+    s.controller.markStarting();
+    expect(s.controller.wedgeArmed, isFalse,
+        reason: 'a cosmetic starting phase must not ARM the connect gate '
+            '(isBusy still reports starting — that is the UI-facing meaning)');
+    await s.connect();
+    expect(s.lastError, 'NO_RUNNABLE_NODE',
+        reason: 'the flow must REACH the gate (it never did before the fix)');
+    expect(s.controller.phase, isNot(AndroidVpnPhase.starting),
+        reason: 'the ended flow must land a terminal phase');
   });
 
   test('initialSweep never waits past maxWait', () async {

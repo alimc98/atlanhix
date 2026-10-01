@@ -667,7 +667,11 @@ class VpnSession {
     // on the tap itself (spinner + "Connecting…" + globe wakes up), never
     // waiting for the ladder or the permission flow. The later stages
     // overwrite the phase as they run.
-    controller.markStarting();
+    // v0.5.8 §connect-fix: markStarting now sets ONLY a cosmetic phase —
+    // the controller's own connect() gate no longer counts it as busy
+    // (see AndroidVpnController.wedgeArmed); before that, this line wedged
+    // EVERY connect: tap → starting → isBusy guard → silent `false`.
+    controller.markStarting(detail: 'session.connect entered');
     // v0.5.0 §boot: secrets resolve POST-PAINT now. A connect fired before
     // the deferred pass finished would build a config from `@vault:` token
     // strings — gate here: normally a no-op (resolution finished during the
@@ -689,10 +693,10 @@ class VpnSession {
       persistState();
       final why = AndroidNodeSupport.androidExclusionReason(explicit);
       if (why != null) {
-        lastError = 'NODE_NOT_RUNNABLE_ON_ANDROID';
         Logger.instance.error('vpn-session',
             '$trace FAILED stage=NODE_SELECTED node=${explicit.name} proto=${explicit.protocol.name} transport=${explicit.transport.name} core=${explicit.effectiveCore.name} reason=$why');
-        return false;
+        // v0.5.8 §connect-fix: end the phase (was: `starting` forever).
+        return _failNoProfile(trace, 'NODE_NOT_RUNNABLE_ON_ANDROID');
       }
       // Node identity WITHOUT endpoint/credentials: name + protocol/transport
       // family only (redaction discipline; server/host never logged).
@@ -726,10 +730,10 @@ class VpnSession {
     // measurement may not be in the store yet when _bestNode scores it).
     final best = selectedNode ?? _bestNode();
     if (best == null) {
-      lastError = 'NO_RUNNABLE_NODE';
       Logger.instance.error('vpn-session',
           '$trace FAILED stage=NODE_SELECTED error=NO_RUNNABLE_NODE ${_exclusionSummary()}');
-      return false;
+      // v0.5.8 §connect-fix: end the phase (was: `starting` forever).
+      return _failNoProfile(trace, 'NO_RUNNABLE_NODE');
     }
     selectedNode = best;
     persistState();
@@ -815,6 +819,23 @@ class VpnSession {
     return live;
   }
 
+  /// v0.5.8 §connect-fix: a connect that bails on a PRE-TUNNEL gate must
+  /// end on a terminal phase. [markStarting] (v0.5.5) puts the UI on the
+  /// connecting spinner the instant the user taps; any gate `return false`
+  /// that leaves the phase on `starting` spins the dashboard forever with
+  /// no verdict. Every no-profile/no-runtime failure funnels through here:
+  /// lastError is kept, the boot hold is released and the controller lands
+  /// on `stopped` (non-busy — a retry tap works immediately).
+  Future<bool> _failNoProfile(String trace, String code) async {
+    lastError = code;
+    try {
+      await ProbeEngine.instance.stop();
+    } catch (_) {}
+    ProbeEngine.instance.setTunnelBootHold(false);
+    controller.resetToIdle(reason: 'connect failed pre-tunnel: $code');
+    return false;
+  }
+
   /// The single authoritative engine-start path — every connect (explicit
   /// or auto) funnels through here after node selection, so the single-core
   /// guarantee is enforced in exactly ONE place.
@@ -887,10 +908,10 @@ class VpnSession {
     // of generating a merged dual-core config or a direct-only selector
     // over a dead stub.
     if (!AndroidNodeSupport.coreAllowedOnAndroid(profile.effectiveCore)) {
-      lastError = 'CORE_NOT_RUNNABLE_ON_ANDROID';
       Logger.instance.error('vpn-session',
           '$trace FAILED stage=CORE_SELECTED node=${profile.name} core=${profile.effectiveCore.name} reason=non-sing-box core has no in-app runtime (single-core guarantee)');
-      return false;
+      // v0.5.8 §connect-fix: end the phase (was: `starting` forever).
+      return _failNoProfile(trace, 'CORE_NOT_RUNNABLE_ON_ANDROID');
     }
     // ── BOOTSTRAP PIN (v0.4.4 device regression) ──
     // Node hostnames are resolved HERE, outside the tunnel. Left to the
@@ -929,7 +950,8 @@ class VpnSession {
     // port). No Xray runtime needed; the mihomo gate is its own probe.
     if (profile.effectiveCore == CoreKind.mihomo) {
       final ok = await _startMihomoUpstream(profile, trace);
-      if (!ok) return false;
+      // v0.5.8 §connect-fix: the phase must land on a terminal either way.
+      if (!ok) return _failNoProfile(trace, lastError ?? 'UPSTREAM_START_FAILED');
     } else if (CoreManager.needsXrayUpstream(profile)) {
       // v0.4.9 §user-fix ("first tap after open fails"): the runtime probe
       // rides an unawaited warmup — racing it here answered a false
@@ -941,13 +963,15 @@ class VpnSession {
         }
       }
       if (!XrayCoreState.instance.runtimeLoaded) {
-        lastError = 'XRAY_RUNTIME_UNAVAILABLE';
         Logger.instance.error('vpn-session',
             '$trace FAILED stage=CORE_SELECTED node=${profile.name} transport=${profile.transport.name} reason=xray runtime not loaded (sing-box on, Xray off)');
-        return false;
+        // v0.5.8 §connect-fix: end the phase (was: `starting` forever).
+        return _failNoProfile(trace, 'XRAY_RUNTIME_UNAVAILABLE');
       }
       final ok = await _startXrayUpstream(profile, trace);
-      if (!ok) return false;
+      // v0.5.8 §connect-fix: the upstream start owns its own error code —
+      // but the phase must still land on a terminal either way.
+      if (!ok) return _failNoProfile(trace, lastError ?? 'UPSTREAM_START_FAILED');
     }
 
     try {
@@ -977,7 +1001,8 @@ class VpnSession {
       if (configJson == null) {
         Logger.instance.error('vpn-session',
             '$trace FAILED stage=CONFIG_GENERATED error=generation returned null');
-        return false;
+        // v0.5.8 §connect-fix: end the phase (was: `starting` forever).
+        return await _failNoProfile(trace, 'CONFIG_GENERATION_FAILED');
       }
       Logger.instance.info('vpn-session', '$trace CONFIG_GENERATED bytes=${configJson.length}');
 
@@ -1101,7 +1126,9 @@ class VpnSession {
       Logger.instance.error('vpn-session',
           '$trace FAILED stage=connect exception=${e.runtimeType} msg=${Logger.redact(e.toString())}');
       Logger.instance.debug('vpn-session', '$trace stack=${Logger.redact(st.toString().split('\n').take(4).join(' | '))}');
-      return false;
+      // v0.5.8 §connect-fix: an exception could also leave the phase on
+      // `starting` — land it on a terminal so the spinner always ends.
+      return _failNoProfile(trace, lastError ?? 'CONNECT_EXCEPTION');
     }
   }
 

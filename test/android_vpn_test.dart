@@ -2,7 +2,9 @@ import 'dart:convert';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nexus/application/dependencies.dart';
 import 'package:nexus/platform/android_vpn.dart';
+import 'package:nexus/settings/vpn_session.dart';
 
 /// v0.3.0 §5/§6/§7 — Android VPN state machine tests.
 ///
@@ -15,6 +17,14 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late Map<String, Object> Function(String method, Object? arg) handler;
+
+  // v0.5.8: session-level pins run against the shared bootstrap harness
+  // (same pattern as connect_speed_test.dart — the empty pool yields
+  // NO_RUNNABLE_NODE, which is exactly the pre-tunnel gate being pinned).
+  late AppDependencies deps;
+  setUpAll(() async {
+    deps = await AppDependencies.bootstrapForTest();
+  });
 
   setUp(() {
     handler = (m, a) => {'error': 'unexpected $m'};
@@ -255,5 +265,71 @@ void main() {
     expect(c.phase, AndroidVpnPhase.stopped);
     expect(stateCalls, greaterThanOrEqualTo(2),
         reason: 'stop must poll until the native side confirms');
+  });
+
+  test(
+      'v0.5.8: markStarting\'s starting phase must NOT wedge connect (probe runs)',
+      () async {
+    // REGRESSION PIN for the "فقط میچرخه و وصل نمیشه" bug. v0.5.5 added
+    // markStarting (tap → starting) but the connect gate `if (isBusy)
+    // return false` counted `starting` as busy — every tap was silently
+    // refused, the service never started, no probe ever ran and the UI
+    // spun forever on every config.
+    final c = AndroidVpnController()..permissionPollSeconds = 1;
+    var gen = '';
+    var started = false;
+    var probed = false;
+    handler = (m, a) {
+      switch (m) {
+        case 'prepare':
+          return {'granted': true};
+        case 'start':
+          gen = '${(jsonDecode(a! as String) as Map)['generation']}';
+          started = true;
+          return {'ok': true};
+        case 'state':
+          return {'state': 'VALIDATING', 'detail': '', 'generation': gen};
+      }
+      return {};
+    };
+    c.markStarting(); // the v0.5.5 tap feedback
+    expect(c.wedgeArmed, isFalse,
+        reason: '`starting` from a tap must not ARM the connect gate');
+    final ok = await c.connect(probeTunnel: () async {
+      probed = true;
+      return true;
+    });
+    expect(ok, isTrue, reason: 'the flow must proceed past its own gate');
+    expect(started, isTrue, reason: 'the service start must be invoked');
+    expect(probed, isTrue, reason: 'the tunnel probe must actually run');
+    expect(c.phase, AndroidVpnPhase.connected);
+  });
+
+  test('v0.5.8: a pre-tunnel gate failure lands a terminal phase (no spin)',
+      () async {
+    final s = VpnSession(deps: deps);
+    expect(s.controller.phase, AndroidVpnPhase.idle);
+    // Empty pool in this harness → NO_RUNNABLE_NODE via the session gate.
+    final ok = await s.connect();
+    expect(ok, isFalse);
+    expect(s.lastError, 'NO_RUNNABLE_NODE');
+    expect(s.controller.phase, isNot(AndroidVpnPhase.starting),
+        reason: 'the spinner must END when the flow ends — v0.5.5 left it '
+            'on `starting` forever after a gate rejection');
+    // And the controller must be immediately tap-able again.
+    expect(s.controller.isBusy, isFalse);
+  });
+
+  test('v0.5.8: resetToIdle never tramples a live session', () async {
+    final c = AndroidVpnController()..phase = AndroidVpnPhase.connected;
+    c.resetToIdle();
+    expect(c.phase, AndroidVpnPhase.connected);
+    c.phase = AndroidVpnPhase.validating;
+    c.resetToIdle();
+    expect(c.phase, AndroidVpnPhase.validating,
+        reason: 'reset must refuse busy phases');
+    c.phase = AndroidVpnPhase.starting;
+    c.resetToIdle(reason: 'flow ended');
+    expect(c.phase, AndroidVpnPhase.stopped);
   });
 }
