@@ -184,10 +184,14 @@ class AtlanhixUpdaterChannel(private val activity: Activity) {
                     .put("error", "unknown_sources: ${e.message}")
             }
         }
+        // NOTE: the catch branch MUST return — without it the try/catch
+        // expression's type is a mix of Uri and JSONObject and Kotlin fails
+        // the build ("Initializer type mismatch: expected 'Uri', actual
+        // 'Any!'") long before the installer ever runs.
         val uri: Uri = try {
             FileProvider.getUriForFile(activity, AUTHORITY, file)
         } catch (e: Exception) {
-            JSONObject().put("ok", false).put("error", "provider: ${e.message}")
+            return JSONObject().put("ok", false).put("error", "provider: ${e.message}")
         }
         // v0.6.3 §update-fix: ACTION_VIEW on the APK MIME is the modern,
         // supported installer trigger (ACTION_INSTALL_PACKAGE is deprecated

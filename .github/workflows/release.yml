@@ -108,16 +108,27 @@ jobs:
         run: flutter build windows --release
 
       - name: Download core engines (official releases)
+        # v0.6.3 §ci-fix: engine downloads must never cost the whole release.
+        # This step is what silently killed the Windows job on v0.6.0, v0.6.1
+        # AND v0.6.3 — Android published its APKs, the Windows zip never did,
+        # so desktop users had NO update asset to download at all (the exact
+        # "آپدیت درون‌برنامه‌ای کار نمی‌کند" report). Two changes: every download
+        # retries through curl.exe, and a missing engine is now a loud warning
+        # instead of a dead job — the zip still ships and every existing
+        # install can finally self-update.
         shell: pwsh
+        continue-on-error: true
         run: |
           New-Item -ItemType Directory -Force -Path cores/windows-x64 | Out-Null
-          Invoke-WebRequest -Uri 'https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box-1.14.0-windows-amd64.zip' -OutFile sb.zip
+          & curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 -o sb.zip 'https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box-1.14.0-windows-amd64.zip'
+          if (-not (Test-Path sb.zip)) { throw 'sing-box download failed (curl)' }
           Expand-Archive sb.zip -DestinationPath sb -Force
           # archive layouts differ (sing-box nests a version dir, Xray puts
           # the exe at the ROOT) — search recursively instead of guessing.
           $sbExe = Get-ChildItem sb -Recurse -Filter sing-box.exe | Select-Object -First 1
           Copy-Item $sbExe.FullName cores/windows-x64/sing-box.exe
-          Invoke-WebRequest -Uri 'https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-windows-64.zip' -OutFile xr.zip
+          & curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 -o xr.zip 'https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-windows-64.zip'
+          if (-not (Test-Path xr.zip)) { throw 'xray download failed (curl)' }
           Expand-Archive xr.zip -DestinationPath xr -Force
           $xrExe = Get-ChildItem xr -Recurse -Filter xray.exe | Select-Object -First 1
           Copy-Item $xrExe.FullName cores/windows-x64/xray.exe
@@ -132,13 +143,21 @@ jobs:
           # never did. Now: resolve the latest release's asset by NAME
           # pattern instead of pinning a URL, so a new upstream tag cannot
           # break the build again.
+          #
+          # v0.6.3 §ci-fix: the v0.5.6 fix then over-corrected — it demanded the
+          # `-v1-v1.19.32` microarch shape, so the PLAIN asset that upstream
+          # has always shipped (`mihomo-windows-amd64-v1.19.32.zip`) matched
+          # nothing and the throw killed the release again. Match the plain
+          # Go-toolchain build (the portable one): the `-v1-`/`-v2-` builds
+          # can SIGILL on older CPUs.
           $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/MetaCubeX/mihomo/releases/latest' -Headers @{ 'User-Agent' = 'atlanhix-release' }
           $asset = $rel.assets |
-            Where-Object { $_.name -match '^mihomo-windows-amd64-v\d+-v\d+\.\d+\.\d+\.zip$' } |
+            Where-Object { $_.name -match '^mihomo-windows-amd64-v\d+\.\d+\.\d+\.zip$' } |
             Select-Object -First 1
           if (-not $asset) { throw "no mihomo windows-amd64 asset in $($rel.tag_name)" }
           Write-Output "mihomo $($rel.tag_name) -> $($asset.name)"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile mh.zip
+          & curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 -o mh.zip $asset.browser_download_url
+          if (-not (Test-Path mh.zip)) { throw 'mihomo download failed (curl)' }
           New-Item -ItemType Directory -Force -Path mh | Out-Null
           Expand-Archive mh.zip -DestinationPath mh -Force
           # Archive layouts vary (some nest a version dir) — search, don't guess.
@@ -156,7 +175,11 @@ jobs:
           Copy-Item build/windows/x64/runner/Release/* $stage -Recurse -Force
           # engines ride INSIDE the bundle so a zip-only install just works
           # (BinaryManager searches ./cores relative to the working dir)
-          Copy-Item cores $stage -Recurse -Force
+          if (Test-Path cores) {
+            Copy-Item cores $stage -Recurse -Force
+          } else {
+            Write-Warning 'no cores/ dir — shipping the zip without bundled engines'
+          }
           Compress-Archive -Path $stage -DestinationPath "Atlanhix-v$ver-windows-x64.zip" -Force
           Get-Item "Atlanhix-v$ver-windows-x64.zip" | Select-Object Name, Length
 
@@ -206,6 +229,9 @@ jobs:
         run: flutter build linux --release
 
       - name: Download core engines (official releases)
+        # v0.6.3 §ci-fix: same policy as the Windows job — a missing engine
+        # warns loudly and the tarball still ships.
+        continue-on-error: true
         run: |
           set -euo pipefail
           mkdir -p cores/linux-x64 tmp-cores
@@ -225,7 +251,7 @@ jobs:
           assets="$(curl -fsSL -H 'User-Agent: atlanhix-release' \
             https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)"
           url="$(printf '%s' "$assets" | \
-            grep -o 'https://[^"]*mihomo-linux-amd64-v[0-9.]*\(-v[0-9.]*\)\?\.\(zip\|gz\)' | head -n1)"
+            grep -o 'https://[^"]*mihomo-linux-amd64-v[0-9.]*\.\(zip\|gz\)' | head -n1)"
           if [ -z "$url" ]; then echo 'no mihomo linux-amd64 asset'; exit 1; fi
           echo "mihomo -> $url"
           case "$url" in
@@ -252,7 +278,11 @@ jobs:
           mkdir -p "$STAGE"
           cp -r build/linux/x64/release/bundle/. "$STAGE/"
           # engines ride INSIDE the bundle so an untar-only install just works
-          cp -r cores "$STAGE/"
+          if [ -d cores ]; then
+            cp -r cores "$STAGE/"
+          else
+            echo '::warning::no cores/ dir — shipping the tarball without bundled engines'
+          fi
           tar -czf "Atlanhix-v$VER-linux-x64.tar.gz" -C stage "Atlanhix-v$VER"
           ls -la Atlanhix-*-linux-x64.tar.gz
 
