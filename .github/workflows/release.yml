@@ -144,13 +144,19 @@ jobs:
           # pattern instead of pinning a URL, so a new upstream tag cannot
           # break the build again.
           #
-          # v0.6.3 §ci-fix: the v0.5.6 fix then over-corrected — it demanded the
-          # `-v1-v1.19.32` microarch shape, so the PLAIN asset that upstream
-          # has always shipped (`mihomo-windows-amd64-v1.19.32.zip`) matched
-          # nothing and the throw killed the release again. Match the plain
-          # Go-toolchain build (the portable one): the `-v1-`/`-v2-` builds
-          # can SIGILL on older CPUs.
-          $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/MetaCubeX/mihomo/releases/latest' -Headers @{ 'User-Agent' = 'atlanhix-release' }
+          # v0.6.3 §ci-fix: that pattern was a trap in the other direction —
+          # it matched ONLY the `-v1-v1.19.32` microarch shape, so it would
+          # have shipped the v1 build (the one that can SIGILL on older CPUs)
+          # and would break outright on any release carrying just the plain
+          # asset. Match the plain Go-toolchain build (`-v1-`/`-v2-`/`-v3-`
+          # are microarch-specific and stay out of the pick).
+          # v0.6.3 §ci-fix: authenticate this call. api.github.com allows only
+          # 60 unauthenticated requests per hour PER IP and runner IPs are
+          # shared, so this line is a time bomb on its own; github.token lifts
+          # the budget to 5000/hour. (The DOWNLOADS below were the actual
+          # killer — replacing the one-shot Invoke-WebRequest with the
+          # retrying curl call is what turned this step green.)
+          $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/MetaCubeX/mihomo/releases/latest' -Headers @{ 'User-Agent' = 'atlanhix-release'; 'Authorization' = 'Bearer ${{ github.token }}' }
           $asset = $rel.assets |
             Where-Object { $_.name -match '^mihomo-windows-amd64-v\d+\.\d+\.\d+\.zip$' } |
             Select-Object -First 1
@@ -230,8 +236,12 @@ jobs:
 
       - name: Download core engines (official releases)
         # v0.6.3 §ci-fix: same policy as the Windows job — a missing engine
-        # warns loudly and the tarball still ships.
+        # warns loudly and the tarball still ships, and the mihomo API call
+        # rides github.token (60 unauthenticated calls/hour/IP on shared
+        # runner IPs is not a budget a release should depend on).
         continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p cores/linux-x64 tmp-cores
@@ -248,7 +258,11 @@ jobs:
           # mihomo — resolve the newest asset by NAME (never a pinned URL: the
           # Windows job learned that lesson in v0.5.6) and accept either the
           # .zip or the .gz packaging upstream switches between.
-          assets="$(curl -fsSL -H 'User-Agent: atlanhix-release' \
+          # Optional bearer so this curl never meets the 60/hour wall (the
+          # header is skipped entirely when the token is absent).
+          auth=()
+          if [ -n "$GH_TOKEN" ]; then auth=(-H "Authorization: Bearer $GH_TOKEN"); fi
+          assets="$(curl -fsSL -H 'User-Agent: atlanhix-release' "${auth[@]}" \
             https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)"
           url="$(printf '%s' "$assets" | \
             grep -o 'https://[^"]*mihomo-linux-amd64-v[0-9.]*\.\(zip\|gz\)' | head -n1)"
