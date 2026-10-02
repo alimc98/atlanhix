@@ -92,13 +92,30 @@ class AndroidVpnController {
   /// starting → isBusy → guard `return false` → spinner forever, no config
   /// ever started). connect() itself re-lands the phase (preparing/…).
   bool get wedgeArmed =>
-      phase == AndroidVpnPhase.preparing ||
-      phase == AndroidVpnPhase.validating ||
-      phase == AndroidVpnPhase.reconnecting ||
-      phase == AndroidVpnPhase.stopping;
+      !_staleRunPhase &&
+      (phase == AndroidVpnPhase.preparing ||
+          phase == AndroidVpnPhase.validating ||
+          phase == AndroidVpnPhase.reconnecting ||
+          phase == AndroidVpnPhase.stopping);
+
+  /// v0.6.2 §stop-fix: the current [phase] was written by a connect run that
+  /// [cancelConnect] has since superseded. Such a run never writes another
+  /// phase (every path exits quietly), so its `preparing`/`validating` label
+  /// is STALE — a successor (a node-tap redial, a fresh tap after a stop)
+  /// must be able to take the tunnel over instead of being refused by its
+  /// own predecessor's leftovers. Cleared by the next real [_set].
+  ///
+  /// This is the exact device wedge the user reported as "هیچ کانفیگی وصل
+  /// نمیشه": a retarget tap landing while the old run sat on `validating`
+  /// left `wedgeArmed` true forever — every later connect answered a silent
+  /// `false` and the dashboard spun on "Connecting…" until the app was
+  /// killed.
+  bool get phaseIsStale => _staleRunPhase;
+  bool _staleRunPhase = false;
 
   void _set(AndroidVpnPhase p, {String? detail, String? errorCode}) {
     phase = p;
+    _staleRunPhase = false;
     if (detail != null) lastDetail = detail;
     if (errorCode != null) lastErrorCode = errorCode;
     _stateController.add(p);
@@ -113,7 +130,10 @@ class AndroidVpnController {
   /// phase the INSTANT the user taps (guarded against a non-idle phase),
   /// and the ladder/UI machine races behind it.
   void markStarting({String? detail}) {
-    if (isBusy || isConnected) return;
+    // v0.6.2 §stop-fix: a STALE busy phase is not a live session — the tap
+    // that superseded it owns the UI now and must be able to show progress.
+    if (isConnected) return;
+    if (isBusy && !_staleRunPhase) return;
     _set(AndroidVpnPhase.starting, detail: detail ?? 'user tapped connect');
   }
 
@@ -157,6 +177,17 @@ class AndroidVpnController {
   void cancelConnect() {
     _connectRun++;
     _connectRunSuperseded = true;
+    // v0.6.2 §stop-fix: mark the run-owned phase STALE (see [phaseIsStale]) —
+    // the superseded run cannot write a terminal anymore, so nobody else
+    // must be locked out by what it left on screen.
+    if (phase == AndroidVpnPhase.preparing ||
+        phase == AndroidVpnPhase.starting ||
+        phase == AndroidVpnPhase.validating ||
+        phase == AndroidVpnPhase.reconnecting) {
+      _staleRunPhase = true;
+      Logger.instance.info('android-vpn',
+          'connect superseded — phase=${phase.name} marked stale (a successor may re-enter)');
+    }
   }
 
   /// v0.5.0 §user-fix ("notification not synced with the real VPN state"):
@@ -360,8 +391,19 @@ class AndroidVpnController {
     /// died and the second (warm) tap connected (user report: "بار اول
     /// وصل نمیشه، بار دوم درسته"). Defaults to startupTimeout when null.
     Duration? probeTimeout,
+
+    /// v0.6.2 §stop-fix: the SESSION-level ownership guard. [cancelConnect]
+    /// only covers a newer connect() entering THIS gate; it cannot see the
+    /// session's own verdict (the user pressed Stop, or a node tap redialed).
+    /// The funnel's owner answers "is this attempt still the live one?" and
+    /// a `false` makes this run exit QUIETLY — no phase write, no native
+    /// stop: the successor (or the stop) owns the tunnel now. This is what
+    /// makes "متوقف کردن وسط کانکتینگ" actually stop instead of racing the
+    /// in-flight probe and flipping the UI to connected/failed afterwards.
+    bool Function()? stillOwned,
   }) async {
     final probeBudget = probeTimeout ?? startupTimeout;
+    final owned = stillOwned ?? () => true;
     // v0.5.8 §connect-fix: only a session that OWNS the tunnel blocks a
     // new start. The old `if (isBusy) return false` included `starting`,
     // which markStarting() (v0.5.5) sets BEFORE this method runs — so every
@@ -371,6 +413,10 @@ class AndroidVpnController {
     // ADMITTED: this method immediately re-lands the phase (preparing →
     // starting → validating), and every path below ends on a terminal.
     if (isConnected || wedgeArmed) return false;
+    // v0.6.2 §stop-fix: the owner may already have thrown this attempt away
+    // (a stop rode in between the session's checks and this gate) — never
+    // start a native session for a dead attempt.
+    if (!owned()) return false;
     _proxyMode = proxyMode;
     // v0.5.9 §retarget: capture this attempt's generation. A bump from
     // [cancelConnect] (node retarget / disconnect) makes every remaining
@@ -378,6 +424,10 @@ class AndroidVpnController {
     final run = ++_connectRun;
     _connectRunSuperseded = false;
     bool superseded() => run != _connectRun;
+    // v0.6.2 §stop-fix: EITHER a newer connect took the gate over
+    // ([superseded]) OR the session's owner declared this attempt dead (the
+    // user pressed Stop / a node tap redialed). Both mean: leave quietly.
+    bool abandoned() => superseded() || !owned();
     _connectRunActive = true;
     try {
       // v0.4.4 §user-5: PROXY MODE skips the TUN entirely — no consent
@@ -387,7 +437,7 @@ class AndroidVpnController {
       // v0.5.9 §retarget: a permission dialog can sit for MINUTES — a
       // retarget (or disconnect) during it must abandon this attempt
       // without touching the native state (the successor decides).
-      if (superseded()) return false;
+      if (abandoned()) return false;
       _set(AndroidVpnPhase.preparing);
       final generation =
           DateTime.now().microsecondsSinceEpoch.toRadixString(36);
@@ -402,7 +452,9 @@ class AndroidVpnController {
         // v0.5.9 §retarget: superseded → quit QUIETLY. No phase write, no
         // stop(): the newer attempt owns both, and killing the service here
         // would murder the successor's fresh tunnel (the retarget redial).
-        if (superseded()) return false;
+        // v0.6.2 §stop-fix: the same goes for a session-level stop — the
+        // guard is consulted on EVERY tick, so a cancel lands within 250 ms.
+        if (abandoned()) return false;
         final s = await _call('state');
         final native = (s['state'] as String? ?? 'IDLE').toUpperCase();
         // Race fix (audit #3): the start intent is QUEUED on the main
@@ -433,16 +485,21 @@ class AndroidVpnController {
         if (detail != null && detail.isNotEmpty) lastDetail = detail;
         switch (native) {
           case 'REVOKED':
+            // v0.6.2 §stop-fix: an abandoned run reports nothing and tears
+            // nothing down — the successor owns the tunnel and its verdict,
+            // and a stop-teardown must never fight the newer session.
+            if (abandoned()) return false;
             _set(AndroidVpnPhase.revoked,
                 detail: detail ?? 'revoked during startup',
                 errorCode: code ?? VpnErrorCode.revoked);
-            await stop();
+            await stop(cancelInFlight: false);
             return false;
           case 'FAILED':
+            if (abandoned()) return false;
             _set(AndroidVpnPhase.failed,
                 detail: detail ?? 'engine failed',
                 errorCode: code ?? VpnErrorCode.engineStartFailed);
-            await stop();
+            await stop(cancelInFlight: false);
             return false;
           case 'VALIDATING':
           case 'CONNECTED':
@@ -451,7 +508,10 @@ class AndroidVpnController {
             final ok = await probeTunnel().timeout(probeBudget);
             // v0.5.9 §retarget: the probe can outlive a retarget — never
             // celebrate or tear down after being superseded.
-            if (superseded()) return false;
+            // v0.6.2 §stop-fix: a stop during the probe lands here too; the
+            // tunnel the probe measured belongs to a session the user just
+            // ended, so the verdict is dropped.
+            if (abandoned()) return false;
             if (ok) {
               if (_proxyMode) {
                 final set = await _call('setProxy', {'port': proxyPort});
@@ -460,7 +520,7 @@ class AndroidVpnController {
                       detail: set['error'] as String? ??
                           'global proxy refused by Android',
                       errorCode: VpnErrorCode.unknown);
-                  await stop();
+                  await stop(cancelInFlight: false);
                   return false;
                 }
               }
@@ -471,12 +531,12 @@ class AndroidVpnController {
             _set(AndroidVpnPhase.failed,
                 detail: 'connectivity probe failed',
                 errorCode: VpnErrorCode.healthCheckFailed);
-            await stop();
+            await stop(cancelInFlight: false);
             return false;
         }
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
-      if (superseded()) return false;
+      if (abandoned()) return false;
       // v0.5.6 §diag-fix: `generationAcked` was assigned but never read —
       // the documented intent (audit #3) was to tell "the native side never
       // adopted OUR start intent" apart from "the engine was merely slow".
@@ -491,12 +551,12 @@ class AndroidVpnController {
           errorCode: generationAcked
               ? VpnErrorCode.engineNotReady
               : VpnErrorCode.engineStartFailed);
-      await stop();
+      await stop(cancelInFlight: false);
       return false;
     } catch (e) {
       // v0.5.9 §retarget: a superseded attempt also reports nothing — its
       // verdict belongs to the successor.
-      if (superseded()) return false;
+      if (abandoned()) return false;
       _set(AndroidVpnPhase.failed, detail: 'connect failed: $e');
       // Device-wedge fix (pipeline audit 2026-09-15): a probe that THROWS
       // (TimeoutException — the probe budget and startup budget were the
@@ -504,7 +564,7 @@ class AndroidVpnController {
       // engine kept the TUN fd, the mixed port and libbox alive; the next
       // connect died on `bind: address already in use` and every retry
       // failed until a force-restart. Always best-effort stop on failure.
-      await stop();
+      await stop(cancelInFlight: false);
       return false;
     } finally {
       // v0.5.9 §retarget: the run is leaving the gate either way — a
@@ -516,7 +576,20 @@ class AndroidVpnController {
   /// Clean disconnect (§3): stop the service and confirm STOPPED natively.
   /// Terminal failure phases (failed/denied/revoked) are preserved so the UI
   /// surfaces the reason instead of a benign `stopped`.
-  Future<void> stop() async {
+  ///
+  /// v0.6.2 §stop-fix (user report: "موقعی که توی کانکتینگ هست نمیشه متوقف
+  /// کرد"): [cancelInFlight] supersedes every connect run still in flight
+  /// BEFORE the native stop. Without this the run kept polling — and
+  /// PROBING — after the user pressed Stop: the probe could outlive the
+  /// teardown by its full 32 s budget and then overwrite the `stopped` phase
+  /// with `failed` (or, on a tunnel that had already carried traffic,
+  /// `connected`), so the stop looked broken and the UI lied about it.
+  ///
+  /// The connect flow's OWN teardown passes `false`: it is the live owner
+  /// (every abandoned path returned before it), and a bump there could
+  /// cancel a successor that started while the failure path ran.
+  Future<void> stop({bool cancelInFlight = true}) async {
+    if (cancelInFlight) cancelConnect();
     _watcher?.cancel();
     _watcher = null;
     if (_proxyMode) {

@@ -1,9 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- v0.6.0 §in-app-update: shares the downloaded update APK with Android's
-     package installer (ACTION_INSTALL_PACKAGE) without making the whole
-     app-private files dir world-readable. Path: files/updates/*.apk. -->
+     package installer without making the whole app-private files dir
+     world-readable.
+     v0.6.3 §update-fix: DownloadManager CANNOT write into the app-private
+     filesDir (since API 29 it refuses arbitrary app data paths), so the APK
+     now lands in getExternalFilesDir(DIRECTORY_DOWNLOADS) via
+     setDestinationInExternalFilesDir — `<external-files-path>` is exactly
+     that root, and the FileProvider keeps it private to the app. The legacy
+     files-path entry stays for APKs downloaded by an older build. -->
 <paths>
     <files-path
         name="update_apks"
         path="updates/" />
+    <external-files-path
+        name="update_apks_ext"
+        path="Download/" />
 </paths>

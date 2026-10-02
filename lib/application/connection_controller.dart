@@ -221,6 +221,22 @@ class ConnectionController {
     cores.fragmentPreset = v;
   }
 
+  /// v0.6.2 §stop-fix: run token of the connect funnel. A new connect (or a
+  /// disconnect) bumps it; every await boundary re-checks it, so a superseded
+  /// run leaves QUIETLY — no state write, no engine start, no teardown. This
+  /// is the desktop twin of the Android wedge the user reported: a stop or a
+  /// switch mid-connect used to race the in-flight run (which then repainted
+  /// `connected`/`error` over the user's stop) and, while busy, every new
+  /// request was silently dropped by `if (_state.isBusy) return false`.
+  int _runId = 0;
+  bool _runAlive(int run) => run == _runId;
+
+  /// v0.6.2 §stop-fix: cancellable CANDIDATE WALKS (Smart Connect's ranked
+  /// list, crash failover). Before this, stopping mid-walk only ended the
+  /// current attempt — the loop moved on to the next candidate and dialed it
+  /// a moment later, so the app reconnected itself right after a Stop.
+  int _walkSeq = 0;
+
   // Phase 6 failover tuning.
   int failureThreshold = 2;
   Duration monitorInterval = const Duration(seconds: 30);
@@ -250,6 +266,10 @@ class ConnectionController {
   /// TCP pre-probe → try in order with full engine start + HTTP verify.
   /// A candidate is healthy only after a real probe; parsing never qualifies.
   Future<void> smartConnect() async {
+    // v0.6.2 §stop-fix: this walk over candidates is cancellable — a Stop or
+    // a newer request bumps [_walkSeq] and the loop stops before dialing the
+    // next node.
+    final seq = ++_walkSeq;
     final ranked = _selector.eligible(
         repository.all, healthStore.all, strategy);
     if (ranked.isEmpty) {
@@ -266,8 +286,14 @@ class ConnectionController {
         (probed.isNotEmpty ? probed.map((r) => r.$1) : ranked).take(5);
     var lastError = 'all candidates failed';
     for (final profile in candidates) {
+      if (seq != _walkSeq) return;
+      final before = _runId;
       final ok = await connect(profile);
+      if (seq != _walkSeq) return;
       if (ok) return;
+      // A NEWER connect (a tap elsewhere) claimed the run while this attempt
+      // ran — the walk must not fight it for the tunnel.
+      if (_runId != before + 1) return;
       // Session cooldown so the next Smart Connect (and failover) skips it
       // until the cooldown expires — recovery is automatic on expiry.
       _selector.markFailed(profile.id);
@@ -286,9 +312,17 @@ class ConnectionController {
   }
 
   /// Connects a specific profile through the real runtime (Flow A/B).
+  ///
+  /// v0.6.2 §stop-fix: every connect claims a RUN TOKEN ([_runId]) and every
+  /// await boundary below re-checks it. A superseded run leaves quietly, so
+  /// a stop or a node switch is FINAL instead of racing the in-flight flow.
+  /// (The old `if (_state.isBusy) return false;` gate meant a node tap during
+  /// a connect was silently dropped — the desktop half of "موقعی که توی
+  /// کانکتینگ هست نمیشه ... یه کانفیگ دیگه رو کانکت کرد".)
   Future<bool> connect(ProxyProfile profile) async {
-    if (_state.isBusy) return false;
+    final run = ++_runId;
     try {
+      if (!_runAlive(run)) return false;
       _setState(ConnectionStateSnapshot(
           phase: ConnectionPhase.validating, activeProfile: profile));
       // v0.5.3 §mihomo: the app-level engine choice reaches detection —
@@ -312,6 +346,9 @@ class ConnectionController {
       // never starts the Xray/MDVPN upstream.
       profile.core = decision.core;
       await cores.stop(); // clean slate for a new start
+      // v0.6.2 §stop-fix: the await above is a real cancellation window (the
+      // stop may have landed while the previous engine was shutting down).
+      if (!_runAlive(run)) return false;
       // v0.4.6 §user: a fresh connect BEGINS the fragment AUTO ladder (rung
       // 0 — or the node's persisted winning rung when one exists). Fixed
       // presets are unaffected by this call.
@@ -326,6 +363,9 @@ class ConnectionController {
       // SNI/Host keep the hostname (profile.copyWith), so TLS/Reality and
       // Host headers are byte-for-byte unchanged.
       profile = await _withBootstrappedAddress(profile);
+      // v0.6.2 §stop-fix: a bootstrap DNS resolve can take seconds — never
+      // boot an engine for a run the user already cancelled.
+      if (!_runAlive(run)) return false;
       // WARP traffic chaining (§8): materialize the saved WARP account as a
       // WireGuard endpoint and dial node traffic through it. If the account
       // is missing/incomplete the chain is silently skipped — chaining is a
@@ -349,6 +389,7 @@ class ConnectionController {
         warpProfile: warpProfile,
         chainWarpOutside: chainWarpOutside,
       );
+      if (!_runAlive(run)) return false;
       if (!start.ok) {
         throw CoreStartError(
           _friendlyStartFailure(start),
@@ -373,6 +414,9 @@ class ConnectionController {
           : cores.front.mixedPort;
       // v0.5.6 §connect-fix: canary fallback (see _probeTunnel).
       final probe = await _probeTunnel('127.0.0.1', probePort);
+      // v0.6.2 §stop-fix: the probe can outlive a stop (its canaries are real
+      // HTTP requests). A cancelled run publishes nothing.
+      if (!_runAlive(run)) return false;
       // v0.4.6 §user-3: the FIRST rung's probe is a real attempt too —
       // otherwise every rung the ladder started with would show a dishonest
       // 0-attempt (or worse: an untouched 100%) in the per-sub stats.
@@ -394,7 +438,8 @@ class ConnectionController {
       // there directly.
       if (!probe.ok && cores.fragmentPreset == FragmentPreset.auto) {
         final attempt = await _retryWithEscalatedFragment(
-            profile, decision.core, warpProfile);
+            profile, decision.core, warpProfile, run);
+        if (!_runAlive(run)) return false;
         if (attempt != null) {
           _consecutiveVerifyFailures = 0;
           _applyTunnelMode();
@@ -428,7 +473,11 @@ class ConnectionController {
             'probe: ${Logger.redact(probe.detail!)}',
         ];
         causes.addAll(_engineFailureCauses(profile));
+        // v0.6.2 §stop-fix: a superseded run must not tear the successor's
+        // engine down on its way out.
+        if (!_runAlive(run)) return false;
         await _teardown();
+        if (!_runAlive(run)) return false;
         throw ProbeError(
           'The node did not respond through the tunnel.',
           kind: probe.errorKind,
@@ -437,6 +486,8 @@ class ConnectionController {
       }
       _consecutiveVerifyFailures = 0;
 
+      // v0.6.2 §stop-fix: never celebrate a tunnel the user just cancelled.
+      if (!_runAlive(run)) return false;
       _applyTunnelMode();
       _startMonitor(profile);
       _startTrafficPolling();
@@ -456,12 +507,16 @@ class ConnectionController {
       ));
       return true;
     } on AppError catch (e) {
+      // v0.6.2 §stop-fix: a superseded run reports nothing and tears nothing
+      // down — its verdict belongs to the successor (or the stop).
+      if (!_runAlive(run)) return false;
       Logger.instance.error('connection', e.userMessage);
       _setState(ConnectionStateSnapshot(
           phase: ConnectionPhase.error, activeProfile: profile, error: e));
       await _teardown();
       return false;
     } catch (e) {
+      if (!_runAlive(run)) return false;
       Logger.instance.error('connection', e.toString());
       _setState(ConnectionStateSnapshot(
           phase: ConnectionPhase.error,
@@ -512,12 +567,16 @@ class ConnectionController {
     ProxyProfile profile,
     CoreKind core,
     ProxyProfile? warpProfile,
+    int run,
   ) async {
     if (!cores.tlsFragmentEnabled) return null;
     if (!FragmentationEngine().isEligible(profile)) return null;
     Logger.instance.info('connection',
         'FRAGMENT_AUTO probe failed — climbing the ladder');
     while (cores.advanceAutoLadder()) {
+      // v0.6.2 §stop-fix: the ladder restarts real engines — a cancelled run
+      // must not keep climbing it.
+      if (!_runAlive(run)) return null;
       final rung = cores.currentAutoFragment;
       Logger.instance.info('connection',
           'FRAGMENT_AUTO retrying with next rung${rung != null ? ' (${rung.id})' : ''}');
@@ -538,6 +597,7 @@ class ConnectionController {
         }
         final probe =
             await _probeTunnel('127.0.0.1', cores.front.mixedPort);
+        if (!_runAlive(run)) return null;
         // v0.4.6 §user-3: every real probe is an attempt — pass or fail.
         if (rung != null) {
           await cores.fragmentLadder?.recordRungAttempt(
@@ -650,22 +710,32 @@ class ConnectionController {
   Future<bool> switchTo(ProxyProfile next) async {
     final current = _state.activeProfile;
     if (current == null || !_state.isConnected) return connect(next);
+    // v0.6.2 §stop-fix: a hot switch is a cancellable walk too — a Stop
+    // during its verification probe must win instead of being repainted into
+    // `connected` by the swap that was still in flight.
+    final seq = ++_walkSeq;
     _setState(ConnectionStateSnapshot(
         phase: ConnectionPhase.switching, activeProfile: next));
     try {
+      if (seq != _walkSeq) return false;
       final hot = await cores.hotSwitch(next, routing: routing, dns: dns);
+      if (seq != _walkSeq) return false;
       if (hot) {
         final ok = await _verifyActive(next);
+        if (seq != _walkSeq) return false;
         if (ok) return true;
       }
       if (next.effectiveCore == CoreKind.xray) {
         final xr =
             await cores.restartXrayUpstream(next, routing: routing, dns: dns);
+        if (seq != _walkSeq) return false;
         if (xr) {
           final ok = await _verifyActive(next, core: CoreKind.xray);
+          if (seq != _walkSeq) return false;
           if (ok) return true;
         }
       }
+      if (seq != _walkSeq) return false;
       // v0.4.6: leave the busy `switching` phase before the fallback full
       // connect — connect() refuses to run while busy, so this documented
       // path-3 fallback was DEAD CODE: every failed hot switch silently
@@ -678,7 +748,9 @@ class ConnectionController {
           connectedAt: _state.connectedAt));
       return await connect(next);
     } finally {
-      if (_state.phase == ConnectionPhase.switching) {
+      // v0.6.2 §stop-fix: a superseded switch keeps its hands off the UI —
+      // the stop (or the newer walk) owns the phase now.
+      if (seq == _walkSeq && _state.phase == ConnectionPhase.switching) {
         // v0.4.6: carry the failure cause into the restored snapshot so the
         // UI's last-error view keeps WHY the switch failed.
         _setState(ConnectionStateSnapshot(
@@ -728,12 +800,24 @@ class ConnectionController {
   }
 
   Future<void> disconnect() async {
+    // v0.6.2 §stop-fix: a stop SUPERSEDES everything in flight FIRST — the
+    // connect run (its next await boundary exits quietly) and any candidate
+    // walk (Smart Connect / failover stop before the next node). Without
+    // this the run kept going: its probe could finish after the teardown and
+    // publish `connected`/`error` over the user's Stop, and the walk dialed
+    // the next candidate right after.
+    _runId++;
+    _walkSeq++;
+    final me = _runId;
     _monitorTimer?.cancel();
     _trafficTimer?.cancel();
     _setState(ConnectionStateSnapshot(
         phase: ConnectionPhase.disconnecting,
         activeProfile: _state.activeProfile));
     await _teardown();
+    // A connect that started during the teardown owns the UI now — do not
+    // stamp `disconnected` over its phases.
+    if (!_runAlive(me)) return;
     _setState(ConnectionStateSnapshot(phase: ConnectionPhase.disconnected));
   }
 
@@ -805,6 +889,9 @@ class ConnectionController {
   /// walking down the ranking. Bounded at 4 candidates.
   Future<void> failoverFrom(ProxyProfile failed) async {
     if (_state.phase == ConnectionPhase.recovering) return;
+    // v0.6.2 §stop-fix: failover is a CANDIDATE WALK too — a Stop must end
+    // it (before, the walk carried on and reconnected the app).
+    final seq = ++_walkSeq;
     _setState(ConnectionStateSnapshot(
         phase: ConnectionPhase.recovering, activeProfile: failed));
     final ranked = _scorer.rank(repository.all, healthStore.all, strategy);
@@ -814,13 +901,18 @@ class ConnectionController {
         .take(4)
         .toList();
     for (final candidate in candidates) {
+      if (seq != _walkSeq) return;
       Logger.instance.info('failover', 'trying candidate: ${candidate.name}');
+      final before = _runId;
       final ok = await connect(candidate);
+      if (seq != _walkSeq) return;
+      if (_runId != before + 1) return;
       if (ok) {
         Logger.instance.info('failover', 'failover succeeded → ${candidate.name}');
         return;
       }
     }
+    if (seq != _walkSeq) return;
     _setState(ConnectionStateSnapshot(
         phase: ConnectionPhase.error,
         activeProfile: failed,

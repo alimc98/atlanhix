@@ -17,7 +17,11 @@ class MihomoBridge {
 
   bool _statusKnown = false;
 
-  // ignore: unused_field — kept for the future status readback API
+  /// v0.6.3 §notify-fix: true while the `:mihomo` process reports itself
+  /// alive (state file refreshed within the last minute). Used by the
+  /// disconnect path and the boot orphan sweep to decide whether a child
+  /// core — and its "Atlanhix core" notification — must be torn down.
+  bool get running => _running;
   bool _running = false;
 
   // ignore: unused_field — kept for the future status readback API
@@ -80,5 +84,12 @@ class MihomoBridge {
     } catch (_) {}
     _running = false;
     _mixedPort = 0;
+  }
+
+  /// v0.6.3 §notify-fix: re-reads the native state (same probe as
+  /// [probe]) so a caller can check `running` without a full bootstrap.
+  Future<bool> runningNow() async {
+    await probe();
+    return _running;
   }
 }

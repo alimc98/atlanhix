@@ -165,3 +165,99 @@ jobs:
         with:
           files: Atlanhix-*-windows-x64.zip
           fail_on_unmatched_files: true
+
+  # v0.6.3 §release-parity: Linux is a first-class desktop target now — the
+  # same bundle layout as Windows (app + cores/<platform>-<arch>), zipped as
+  # a .tar.gz. The Dart side picks it up automatically: UpdateChecker resolves
+  # Atlanhix-v*-linux-x64.tar.gz for TargetPlatform.linux, the in-app updater
+  # streams it into ~/Downloads and reveals it in the file manager, and
+  # BinaryManager looks in cores/linux-x64 (Platform.operatingSystem+arch).
+  linux:
+    name: Linux tarball
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux desktop build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev libsecret-1-dev \
+            libjsoncpp-dev
+          # tray_manager/window_manager need an appindicator dev package; the
+          # name differs across Ubuntu releases (ayatana on 22.04+/24.04).
+          sudo apt-get install -y libayatana-appindicator3-dev || \
+            sudo apt-get install -y libappindicator3-dev || true
+
+      - name: Set up Flutter (version pinned to the dev toolchain)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.4'
+          cache: true
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Enable Linux desktop
+        run: flutter config --enable-linux-desktop
+
+      - name: Build Linux release
+        run: flutter build linux --release
+
+      - name: Download core engines (official releases)
+        run: |
+          set -euo pipefail
+          mkdir -p cores/linux-x64 tmp-cores
+          # sing-box (same pinned version as the Windows job)
+          curl -fsSL -o tmp-cores/sb.tar.gz \
+            https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box-1.14.0-linux-amd64.tar.gz
+          tar -xzf tmp-cores/sb.tar.gz -C tmp-cores
+          cp "$(find tmp-cores -type f -name sing-box | head -n1)" cores/linux-x64/sing-box
+          # Xray
+          curl -fsSL -o tmp-cores/xr.zip \
+            https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip
+          unzip -o -q tmp-cores/xr.zip -d tmp-cores/xr
+          cp "$(find tmp-cores/xr -type f -name xray | head -n1)" cores/linux-x64/xray
+          # mihomo — resolve the newest asset by NAME (never a pinned URL: the
+          # Windows job learned that lesson in v0.5.6) and accept either the
+          # .zip or the .gz packaging upstream switches between.
+          assets="$(curl -fsSL -H 'User-Agent: atlanhix-release' \
+            https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)"
+          url="$(printf '%s' "$assets" | \
+            grep -o 'https://[^"]*mihomo-linux-amd64-v[0-9.]*\(-v[0-9.]*\)\?\.\(zip\|gz\)' | head -n1)"
+          if [ -z "$url" ]; then echo 'no mihomo linux-amd64 asset'; exit 1; fi
+          echo "mihomo -> $url"
+          case "$url" in
+            *.zip)
+              curl -fsSL -o tmp-cores/mh.zip "$url"
+              unzip -o -q tmp-cores/mh.zip -d tmp-cores/mh
+              ;;
+            *.gz)
+              curl -fsSL -o tmp-cores/mihomo.gz "$url"
+              gunzip -f tmp-cores/mihomo.gz
+              mkdir -p tmp-cores/mh
+              mv tmp-cores/mihomo tmp-cores/mh/mihomo
+              ;;
+          esac
+          cp "$(find tmp-cores/mh -type f -name mihomo | head -n1)" cores/linux-x64/mihomo
+          chmod +x cores/linux-x64/*
+          ls -la cores/linux-x64
+
+      - name: Stage + tarball
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          STAGE="stage/Atlanhix-v$VER"
+          mkdir -p "$STAGE"
+          cp -r build/linux/x64/release/bundle/. "$STAGE/"
+          # engines ride INSIDE the bundle so an untar-only install just works
+          cp -r cores "$STAGE/"
+          tar -czf "Atlanhix-v$VER-linux-x64.tar.gz" -C stage "Atlanhix-v$VER"
+          ls -la Atlanhix-*-linux-x64.tar.gz
+
+      - name: Attach to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Atlanhix-*-linux-x64.tar.gz
+          fail_on_unmatched_files: true

@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
+
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
@@ -16,7 +18,7 @@ import '../core/net/clean_dns_client.dart';
 /// bumped with it. That invariant is now ENFORCED by
 /// `test/app_version_consistency_test.dart`, which fails the build when the
 /// two disagree — which is how the drift stayed invisible for five releases.
-const String kAppVersion = '0.6.1+17';
+const String kAppVersion = '0.6.3+19';
 
 /// v0.4.7 §user — the release update checker.
 ///
@@ -64,31 +66,92 @@ class UpdateChecker {
       // page. v0.6.0 §desktop-update: Windows picks the release ZIP
       // (Atlanhix-v*-windows-x64.zip — engines ride inside, so an unzip
       // over the old install upgrades in place), Android keeps the .apk.
-      final isWindows =
-          !kIsWeb && defaultTargetPlatform == TargetPlatform.windows;
-      final wantedSuffix = isWindows ? '.zip' : '.apk';
-      final wantedPrefix = isWindows ? 'atlanhix-' : '';
-      String url = (j['html_url'] as String?) ?? repoApi;
+      // v0.6.3 §release-parity: Linux gets the same treatment
+      // (Atlanhix-v*-linux-x64.tar.gz), and the Android pick is ABI-aware —
+      // the release carries arm64/v7a/universal splits and "first .apk"
+      // could hand an arm64 phone the 32-bit build.
       final assets = (j['assets'] as List?) ?? const [];
-      for (final a in assets) {
-        final name = ((a as Map)['name'] as String?)?.toLowerCase() ?? '';
-        final link = a['browser_download_url'] as String?;
-        if (link != null &&
-            name.endsWith(wantedSuffix) &&
-            name.startsWith(wantedPrefix)) {
-          url = link;
-          break;
+      String url = (j['html_url'] as String?) ?? repoApi;
+      var kind = UpdateAssetKind.apk;
+      final pick = assetForPlatform(
+        platformName,
+        archHint: Platform.version,
+      );
+      for (final cand in pick.candidates) {
+        var hit = false;
+        for (final a in assets) {
+          final m = a as Map;
+          final name = (m['name'] as String?)?.toLowerCase() ?? '';
+          final link = m['browser_download_url'] as String?;
+          if (link != null &&
+              name.startsWith(cand.prefix) &&
+              name.endsWith(cand.suffix)) {
+            url = link;
+            kind = cand.kind;
+            hit = true;
+            break;
+          }
         }
+        if (hit) break;
       }
       return UpdateInfo(
         version: tag,
         url: url,
         notes: (j['body'] as String?) ?? '',
-        assetKind: isWindows ? UpdateAssetKind.windowsZip : UpdateAssetKind.apk,
+        assetKind: kind,
       );
     } catch (e) {
       Logger.instance.info('update', 'check failed: $e');
       return null;
+    }
+  }
+
+  /// v0.6.3 §release-parity: the platform name the asset picker understands.
+  static String get platformName {
+    if (kIsWeb) return 'web';
+    return switch (defaultTargetPlatform) {
+      TargetPlatform.android => 'android',
+      TargetPlatform.windows => 'windows',
+      TargetPlatform.linux => 'linux',
+      TargetPlatform.macOS => 'macos',
+      _ => 'other',
+    };
+  }
+
+  /// v0.6.3 §release-parity: the release asset that serves [platform] —
+  /// PURE so every platform/ABI combination is unit-testable without a
+  /// device. [archHint] is the raw `Platform.version` string (Android ABI
+  /// detection: the release ships arm64-v8a / armeabi-v7a / universal
+  /// splits). Candidates are tried IN ORDER; a miss on the ABI-specific
+  /// suffix falls back to universal, then to any file of the right kind.
+  static ReleaseAssetPick assetForPlatform(String platform,
+      {String archHint = ''}) {
+    switch (platform) {
+      case 'android':
+        final a = archHint.toLowerCase();
+        final abi = (a.contains('arm64') || a.contains('aarch64'))
+            ? '-arm64-v8a'
+            : (a.contains('armeabi') || a.contains('armv7'))
+                ? '-armeabi-v7a'
+                : '-universal';
+        return ReleaseAssetPick([
+          (prefix: 'atlanhix-', suffix: '$abi.apk', kind: UpdateAssetKind.apk),
+          if (abi != '-universal')
+            (prefix: 'atlanhix-', suffix: '-universal.apk', kind: UpdateAssetKind.apk),
+          (prefix: '', suffix: '.apk', kind: UpdateAssetKind.apk),
+        ]);
+      case 'windows':
+        return ReleaseAssetPick([
+          (prefix: 'atlanhix-', suffix: '-windows-x64.zip', kind: UpdateAssetKind.windowsZip),
+        ]);
+      case 'linux':
+        return ReleaseAssetPick([
+          (prefix: 'atlanhix-', suffix: '-linux-x64.tar.gz', kind: UpdateAssetKind.linuxTarGz),
+        ]);
+      default:
+        // macOS has no published asset yet — the caller keeps the release
+        // page URL, which is honest (and the dialog says so).
+        return const ReleaseAssetPick([]);
     }
   }
 
@@ -116,7 +179,18 @@ class UpdateChecker {
 }
 
 /// The kind of release asset the checker picked for this platform.
-enum UpdateAssetKind { apk, windowsZip }
+enum UpdateAssetKind { apk, windowsZip, linuxTarGz }
+
+/// One asset-name matcher: a release file is mine when its lowercased name
+/// starts with [prefix] and ends with [suffix].
+typedef ReleaseAssetMatcher = ({String prefix, String suffix, UpdateAssetKind kind});
+
+/// Ordered fallbacks for a platform (ABI-specific first, universal last).
+class ReleaseAssetPick {
+  const ReleaseAssetPick(this.candidates);
+
+  final List<ReleaseAssetMatcher> candidates;
+}
 
 class UpdateInfo {
   UpdateInfo({

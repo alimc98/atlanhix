@@ -10,11 +10,12 @@ import 'package:flutter/services.dart';
 import 'application/clipboard_import_service.dart';
 import 'application/dependencies.dart';
 import 'application/in_app_updater.dart'
-    show DesktopUpdateDownloader, InAppUpdater;
+    show DesktopUpdateDownloader, InAppUpdater, InstallOutcome;
 import 'application/update_checker.dart'
     show UpdateAssetKind, UpdateChecker, kAppVersion;
 import 'core/engine_availability.dart';
 import 'core/logger.dart';
+import 'platform/core_sweep.dart';
 import 'localization/generated/app_localizations.dart';
 import 'settings/app_settings.dart';
 import 'platform/android_vpn.dart';
@@ -60,6 +61,10 @@ Future<void> main() async {
       await MihomoBridge.instance.probe();
       MihomoCoreState.instance
           .setRuntimeLoaded(MihomoBridge.instance.available);
+      // v0.6.3 §notify-fix: a force-killed app can strand a child core (and
+      // its "Atlanhix core" notification) with nobody left to stop it — the
+      // sweep kills exactly those, never a session the user is in.
+      await sweepOrphanedCores();
       // v0.4.9: arm the AmneziaWG gates from the libbox engine's
       // self-reported version (fork marker `-lx.`).
       await probeEngineVersion();
@@ -360,14 +365,49 @@ class _AtlanhixAppState extends State<AtlanhixApp>
             updater.onStage = (s) => setDlg(() => stage = s);
             return AlertDialog(
               title: Text('Atlanhix ${info.version}'),
+              // v0.6.3 §update-fix: the dialog is CLOSABLE now (the old one
+              // had no actions and was un-dismissable, so a failed download
+              // left the user trapped on a frozen progress box) and it can
+              // hand the user back to the installer after granting Android's
+              // "install unknown apps" permission.
+              actions: [
+                if (stage == 'needsPermission')
+                  FilledButton(
+                    onPressed: () async {
+                      final outcome =
+                          await updater.install(version: info.version);
+                      setDlg(() => stage = switch (outcome) {
+                            InstallOutcome.launched => 'installing',
+                            InstallOutcome.needsPermission =>
+                              'needsPermission',
+                            InstallOutcome.failed => 'failed',
+                          });
+                    },
+                    child: const Text('Install'),
+                  ),
+                TextButton(
+                  onPressed: () {
+                    // Cancel the DownloadManager job and close the dialog.
+                    unawaited(updater.cancel());
+                    updater.dispose();
+                    Navigator.pop(ctx);
+                  },
+                  child: Text(l.clipboardLater),
+                ),
+              ],
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(stage == 'installing'
                       ? 'Installing the update…'
-                      : stage == 'failed'
-                          ? 'Download failed — check your connection and try again.'
-                          : 'Downloading inside the app… $percent%'),
+                      : stage == 'needsPermission'
+                          ? 'Android needs a one-time permission to install '
+                              'updates from Atlanhix (the settings page is '
+                              'open). Allow it there, then tap Install again.'
+                          : stage == 'failed'
+                              ? 'Download failed — check your connection and try '
+                                  'again.'
+                              : 'Downloading inside the app… $percent%'),
                   const SizedBox(height: 16),
                   if (stage == 'downloading')
                     LinearProgressIndicator(value: percent / 100),
@@ -385,10 +425,21 @@ class _AtlanhixAppState extends State<AtlanhixApp>
     // install finishes the upgrade (the zip carries its own cores/). No
     // manual GitHub visit, matching the Android flow's spirit on a platform
     // without a package installer.
-    if (info.assetKind == UpdateAssetKind.windowsZip && Platform.isWindows) {
+    // v0.6.3 §release-parity: Linux gets the SAME in-app flow as Windows —
+    // the release tarball is streamed into ~/Downloads and revealed in the
+    // file manager, so neither desktop platform has to visit GitHub.
+    if ((info.assetKind == UpdateAssetKind.windowsZip ||
+            info.assetKind == UpdateAssetKind.linuxTarGz) &&
+        (Platform.isWindows || Platform.isLinux)) {
       final dl = DesktopUpdateDownloader();
       var percent = 0;
       var failed = false;
+      // v0.6.3 §update-fix: the dialog needs a REAL repaint hook — the inner
+      // StatefulBuilder's setter was never captured, so the progress bar sat
+      // at 0% for the whole download (with the Windows flow appearing frozen
+      // and doing "nothing").
+      StateSetter? repaint;
+      var dialogOpen = true;
       if (mounted && navCtx.mounted) {
         final done = showDialog<void>(
           context: navCtx,
@@ -397,6 +448,9 @@ class _AtlanhixAppState extends State<AtlanhixApp>
             return AlertDialog(
               title: Text('Atlanhix ${info.version}'),
               content: StatefulBuilder(builder: (ctx, setP) {
+                // v0.6.3 §update-fix: captured so the download progress can
+                // actually repaint this dialog.
+                repaint = setP;
                 return Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -408,33 +462,63 @@ class _AtlanhixAppState extends State<AtlanhixApp>
                   ],
                 );
               }),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    // Cancels a running download AND closes the dialog.
+                    dl.cancel();
+                    Navigator.of(ctx).pop();
+                  },
+                  child: Text(l.clipboardLater),
+                ),
+              ],
             );
           }),
         );
-        // Drive the download; the dialog reflects progress via setState
-        // captured above. The downloader runs regardless of dialog state.
+        // v0.6.3 §update-fix: track the dialog's own lifetime — the
+        // completion pop below must never fire into a dialog the user
+        // already closed (the old unconditional `canPop()` popped whatever
+        // route was on top when a late download finished).
+        unawaited(done.then((_) => dialogOpen = false));
+        // Drive the download; the dialog reflects progress through the
+        // captured setter. The downloader runs regardless of dialog state.
         unawaited(() async {
-          final path = await dl.downloadZip(
+          final path = await dl.downloadArchive(
             url: info.url,
             version: info.version,
-            onProgress: (p) => percent = p,
+            // v0.6.3 §release-parity: the saved file keeps the RELEASE's own
+            // extension (.tar.gz on Linux, .zip on Windows).
+            extension: info.assetKind == UpdateAssetKind.linuxTarGz
+                ? '.tar.gz'
+                : '.zip',
+            onProgress: (p) {
+              percent = p;
+              // StateSetter takes the rebuild callback (empty: the captured
+              // closure reads `percent`).
+              repaint?.call(() {});
+            },
           );
           if (path == null) {
             failed = true;
-          } else if (mounted) {
-            await dl.revealInExplorer(path);
+            repaint?.call(() {}); // the user must SEE the failure
+            return;
           }
-          if (navCtx.mounted) {
-            final nav = Navigator.of(navCtx);
-            if (nav.canPop()) nav.pop();
+          if (mounted) await dl.revealInExplorer(path);
+          if (dialogOpen) {
+            dialogOpen = false;
+            if (navCtx.mounted) Navigator.of(navCtx).pop();
           }
         }());
         await done;
         return;
       }
       // No navigator yet — download anyway, reveal when done.
-      final path = await dl.downloadZip(
-          url: info.url, version: info.version);
+      final path = await dl.downloadArchive(
+          url: info.url,
+          version: info.version,
+          extension: info.assetKind == UpdateAssetKind.linuxTarGz
+              ? '.tar.gz'
+              : '.zip');
       if (path != null) await dl.revealInExplorer(path);
       return;
     }

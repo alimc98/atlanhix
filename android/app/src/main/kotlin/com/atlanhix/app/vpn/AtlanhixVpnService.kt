@@ -441,10 +441,33 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
         AtlanhixTrace.log("SHUTDOWN_REQUESTED")
         setState(State.STOPPING)
         shutdownTunnelOnly()
+        stopChildCores()
         setState(State.STOPPED)
         AtlanhixTrace.log("STOPPED clean")
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /**
+     * v0.6.3 §notify-fix ("برنامه بسته هم باشه باز توي نوتيفيكشن بار
+     * Atlanhix core مياد"): the `:xray` / `:mihomo` child cores are their OWN
+     * foreground services with their OWN "Atlanhix core" notification. The
+     * Dart-side stop() only fires inside a LIVE session (the upstream port
+     * fields are in-memory), so a tunnel stop, a revoke, or a swipe-away left
+     * the child process — and its notification — orphaned until the next app
+     * launch, and a force-kill left it orphaned forever (the boot sweep in
+     * main.dart catches that half). Every teardown path of the tunnel now
+     * stops the children explicitly: stopService() delivers onDestroy in
+     * their processes, which kills the engine AND removes the notification.
+     */
+    private fun stopChildCores() {
+        for (cls in listOf(XrayCoreService::class.java, MihomoCoreService::class.java)) {
+            try {
+                stopService(Intent(this, cls))
+            } catch (e: Throwable) {
+                AtlanhixTrace.err("child core stop failed (${cls.simpleName}): ${e.message}")
+            }
+        }
     }
 
     private fun shutdownTunnelOnly() {
@@ -466,6 +489,9 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
         // transition (never FAILED; the UI distinguishes denial vs revoke).
         setState(State.REVOKED, "revoked by system", ERR_VPN_REVOKED)
         shutdownTunnelOnly()
+        // v0.6.3 §notify-fix: a revoked tunnel must not leave the child cores
+        // (and their "Atlanhix core" pill) running.
+        stopChildCores()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -473,6 +499,10 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
     override fun onDestroy() {
         if (instance === this) instance = null
         shutdownTunnelOnly()
+        // v0.6.3 §notify-fix: whichever path destroyed the VPN service, the
+        // children go with it — an engine with no tunnel has no reason to
+        // exist (or to notify).
+        stopChildCores()
         // v0.4.9 §user-fix ("atlanhix core even after closing the app"):
         // whatever path destroyed the service, the notification must go —
         // a sticky foreground notification on a dead tunnel is a lie.
@@ -490,6 +520,9 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
         AtlanhixTrace.log("TASK_REMOVED — tearing session down")
         setState(State.STOPPING)
         shutdownTunnelOnly()
+        // v0.6.3 §notify-fix: swiping the app away used to leave the :mihomo
+        // / :xray child running with its "Atlanhix core" notification.
+        stopChildCores()
         setState(State.STOPPED)
         AtlanhixTrace.log("STOPPED (task removed)")
         try {

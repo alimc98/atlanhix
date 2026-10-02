@@ -9,6 +9,7 @@ import '../../settings/app_settings.dart';
 import '../../settings/smart_switch.dart' show LadderProgress;
 import '../../domain/entities/health.dart';
 import '../../domain/entities/proxy_profile.dart';
+import '../../platform/android_vpn.dart' show AndroidVpnPhase;
 import '../../localization/generated/app_localizations.dart';
 import '../../theme/theme.dart';
 import '../widgets/live_monitor.dart';
@@ -537,22 +538,45 @@ class _DashboardScreenState extends State<DashboardScreen>
         } else {
           await widget.deps.connection.disconnect();
         }
-      } else {
+        return;
+      }
+      // v0.6.2 §stop-fix (user report: "موقعی که توی کانکتینگ هست نمیشه
+      // متوقف کرد"): while a connect is STILL IN FLIGHT the pill means
+      // CANCEL. Before this, the tap re-entered the connect path (or, with
+      // the pill disabled, did nothing at all) while the old run kept
+      // probing — the button that was supposed to stop the attempt either
+      // silently raced it or was dead, so the only way out was killing the
+      // app. Both platforms own a real cancel now: the Android session
+      // marks the in-flight attempt cancelled and supersedes the controller
+      // run, the desktop controller bumps its run token.
+      if (busy) {
         if (widget.deps.vpnSession.controller.isAndroid) {
-          final ok = await widget.deps.vpnSession.connect();
-          if (!ok && mounted) {
-            final vpn = widget.deps.vpnSession;
-            final req = vpn.selectedNode;
-            final why = req == null
-                ? ''
-                : ' (${AndroidNodeSupport.notRunnableReason(req) ?? req.name} cannot run on this device)';
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text(AndroidNodeSupport.connectErrorHint(vpn.lastError) ??
-                    'Connection failed$why')));
-          }
+          await widget.deps.vpnSession.disconnect();
         } else {
-          await widget.deps.connection.smartConnect();
+          await widget.deps.connection.disconnect();
         }
+        return;
+      }
+      if (widget.deps.vpnSession.controller.isAndroid) {
+        final ok = await widget.deps.vpnSession.connect();
+        final vpn = widget.deps.vpnSession;
+        // v0.6.2 §stop-fix: a connect the USER cancelled reports `false` too —
+        // an error snackbar right after their own Stop reads as "the app kept
+        // failing". Only a real engine/probe/permission failure fires it.
+        final failed = vpn.controller.phase == AndroidVpnPhase.failed ||
+            vpn.controller.phase == AndroidVpnPhase.permissionDenied ||
+            vpn.controller.phase == AndroidVpnPhase.revoked;
+        if (!ok && failed && mounted) {
+          final req = vpn.selectedNode;
+          final why = req == null
+              ? ''
+              : ' (${AndroidNodeSupport.notRunnableReason(req) ?? req.name} cannot run on this device)';
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(AndroidNodeSupport.connectErrorHint(vpn.lastError) ??
+                  'Connection failed$why')));
+        }
+      } else {
+        await widget.deps.connection.smartConnect();
       }
     }
 
@@ -798,7 +822,9 @@ class _DashboardScreenState extends State<DashboardScreen>
               _PowerPill(
                 connected: connected,
                 busy: busy,
-                label: connected ? l.disconnect : l.connect,
+                label: connected
+                    ? l.disconnect
+                    : (busy ? l.cancel : l.connect),
                 onToggle: toggle,
               ),
               const SizedBox(height: 20),
@@ -1153,7 +1179,11 @@ class _PowerPill extends StatelessWidget {
         color: c.surface,
         borderRadius: BorderRadius.circular(999),
         child: InkWell(
-          onTap: busy ? null : onToggle,
+          // v0.6.2 §stop-fix: never disabled. While connecting a tap CANCELS
+          // the in-flight attempt (the label reads Cancel, the glyph is a
+          // stop square next to the spinner) — the old `busy ? null :` left
+          // the user with NO way to stop a connect that was already running.
+          onTap: onToggle,
           borderRadius: BorderRadius.circular(999),
           child: Container(
             height: 58,
@@ -1178,13 +1208,16 @@ class _PowerPill extends StatelessWidget {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                if (busy)
+                if (busy) ...[
                   const SizedBox(
                     width: 20,
                     height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2.2),
-                  )
-                else
+                  ),
+                  const SizedBox(width: 8),
+                  // v0.6.2 §stop-fix: what a tap does while connecting.
+                  Icon(Icons.stop_rounded, size: 18, color: c.textPrimary),
+                ] else
                   Icon(Icons.power_settings_new_rounded,
                       size: 20, color: connected ? c.success : c.textPrimary),
                 const SizedBox(width: 12),

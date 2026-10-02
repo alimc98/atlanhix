@@ -64,13 +64,29 @@ class InAppUpdater {
         case 'done':
           _poll?.cancel();
           onProgress?.call(100);
-          final ok = await install(version: _version ?? '');
-          onStage?.call(ok ? 'installing' : 'failed');
+          final outcome = await install(version: _version ?? '');
+          onStage?.call(switch (outcome) {
+            InstallOutcome.launched => 'installing',
+            InstallOutcome.needsPermission => 'needsPermission',
+            InstallOutcome.failed => 'failed',
+          });
         case 'failed' || 'gone':
           _poll?.cancel();
           onStage?.call('failed');
       }
     });
+  }
+
+  /// v0.6.3 §update-fix: aborts a running DownloadManager download (the
+  /// dialog's Cancel). A cancelled download must never be installed later.
+  Future<void> cancel() async {
+    _poll?.cancel();
+    final id = downloadId;
+    downloadId = null;
+    if (id == null) return;
+    try {
+      await _channel.invokeMethod<String>('cancel', {'downloadId': id});
+    } catch (_) {}
   }
 
   /// Native download status (null when the channel is unavailable).
@@ -88,22 +104,31 @@ class InAppUpdater {
   /// Launches the system installer over the downloaded APK. Android shows
   /// its standard one-tap consent — there is no silent-install path for
   /// sideloaded APKs, and pretending otherwise would be dishonest.
-  Future<bool> install({required String version}) async {
+  ///
+  /// v0.6.3 §update-fix: the outcome is RICH now. Since Android 8 the
+  /// package installer refuses an app that has not been granted "install
+  /// unknown apps"; the old boolean collapsed that wall into a bare
+  /// failure, so the update looked broken with no way forward. The native
+  /// side opens the exact settings page and answers
+  /// [InstallOutcome.needsPermission] — the dialog tells the user what to do
+  /// and offers the Install button again.
+  Future<InstallOutcome> install({required String version}) async {
     try {
       final r =
           await _channel.invokeMethod<String>('install', {'version': version});
       final j = _decode(r!);
-      if (j['ok'] != true) {
-        Logger.instance
-            .warn('update', 'install refused: ${j['error'] ?? 'unknown'}');
-        return false;
+      if (j['ok'] == true) return InstallOutcome.launched;
+      final err = '${j['error'] ?? ''}';
+      Logger.instance.warn('update', 'install refused: $err');
+      if (err.startsWith('unknown_sources')) {
+        return InstallOutcome.needsPermission;
       }
-      return true;
+      return InstallOutcome.failed;
     } on MissingPluginException {
-      return false;
+      return InstallOutcome.failed;
     } catch (e) {
       Logger.instance.warn('update', 'install failed: $e');
-      return false;
+      return InstallOutcome.failed;
     }
   }
 
@@ -113,16 +138,26 @@ class InAppUpdater {
   void dispose() => _poll?.cancel();
 }
 
+/// v0.6.3 §update-fix: what happened when the installer was fired.
+enum InstallOutcome {
+  /// The system package installer is on screen.
+  launched,
+  /// Android blocked the install: the "install unknown apps" page for this
+  /// app was opened — the user grants it and taps Install again.
+  needsPermission,
+  failed,
+}
+
 /// v0.6.0 §desktop-update — Windows download flow, the desktop half of the
 /// same "download inside the app" promise.
-///
-/// The release ZIP carries the app binaries AND its cores/ dir, so the
-/// upgrade path is: download into the user's Downloads folder (real HTTP
-/// stream with progress through the same CleanDnsClient the checker uses,
-/// so a DNS-poisoned network still resolves GitHub) → explorer window opens
-/// on the file → the user unzips over the previous install (or runs it from
-/// anywhere). A true silent self-replace needs a separate updater process
-/// with elevation; this is the honest one-tap version of it.
+///  /// The release archive carries the app binaries AND its cores/ dir, so the
+  /// upgrade path is: download into the user's Downloads folder (real HTTP
+  /// stream with progress) → the file manager opens on the file → the user
+  /// unpacks it over the previous install (or runs it from anywhere). A true
+  /// silent self-replace needs a separate updater process with elevation;
+  /// this is the honest one-tap version of it. Windows takes the .zip, Linux
+  /// the .tar.gz — same code path, different extension (v0.6.3 §release-
+  /// parity).
 class DesktopUpdateDownloader {
   DesktopUpdateDownloader({http.Client? client}) : _client = client ?? http.Client();
 
@@ -131,20 +166,24 @@ class DesktopUpdateDownloader {
 
   void cancel() => _cancelled = true;
 
-  /// Streams [url] into `<Downloads>/atlanhix-update-<version>.zip`.
+  /// Streams [url] into `<Downloads>/atlanhix-update-<version><extension>`.
   /// Returns the absolute file path, or null on failure/cancel.
-  Future<String?> downloadZip({
+  ///
+  /// v0.6.3 §release-parity: [extension] is the release artifact's own
+  /// extension — `.zip` for Windows bundles, `.tar.gz` for Linux ones — so
+  /// the saved file is a real archive instead of a zip-named tarball.
+  Future<String?> downloadArchive({
     required String url,
     required String version,
+    String extension = '.zip',
     void Function(int percent)? onProgress,
   }) async {
     _cancelled = false;
     final dir = _downloadsDir();
     try {
       if (dir == null) return null;
-      final safe = version.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
-      final file = File('${dir.path}${Platform.pathSeparator}'
-          'atlanhix-update-$safe.zip');
+      final file = File(
+          '${dir.path}${Platform.pathSeparator}${archiveFileName(version, extension)}');
       final resp = await _client
           .send(http.Request('GET', Uri.parse(url)))
           .timeout(const Duration(seconds: 20));
@@ -178,22 +217,45 @@ class DesktopUpdateDownloader {
     }
   }
 
-  /// Opens an explorer window on the downloaded file (one tap away from
-  /// unzip-over-old-install). Never throws.
+  /// v0.6.3 §release-parity: the saved file name — pure so the extension
+  /// contract is unit-testable without a network round-trip.
+  static String archiveFileName(String version, String extension) {
+    final safe = version.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+    return 'atlanhix-update-$safe$extension';
+  }
+
+  /// Opens the platform file manager on the downloaded file (one tap away
+  /// from an unzip/tar over the old install). Never throws.
+  ///
+  /// v0.6.3 §release-parity: Windows selects the file in Explorer; Linux has
+  /// no select verb, so xdg-open gets the containing folder (honest and
+  /// works on every DE); macOS keeps `open -R` for completeness.
   Future<void> revealInExplorer(String path) async {
     try {
-      await Process.run('explorer', ['/select,', path]);
+      final file = File(path);
+      if (Platform.isWindows) {
+        await Process.run('explorer', ['/select,', path]);
+      } else if (Platform.isLinux) {
+        final dir = file.parent;
+        await Process.run('xdg-open', [dir.path]);
+      } else if (Platform.isMacOS) {
+        await Process.run('open', ['-R', path]);
+      }
     } catch (e) {
-      Logger.instance.info('update', 'explorer reveal failed: $e');
+      Logger.instance.info('update', 'reveal failed: $e');
     }
   }
 
-  /// The real Downloads folder on Windows (COM shell lookup), with sane
-  /// fallbacks: UserProfile\Downloads, then the temp dir.
+  /// The real Downloads folder for the running OS, with sane fallbacks:
+  /// %USERPROFILE%\Downloads (Windows), $HOME/Downloads (Linux/macOS),
+  /// then the temp dir. Never null on a sane system.
   Directory? _downloadsDir() {
-    final profile = Platform.environment['USERPROFILE'];
-    if (profile != null && profile.isNotEmpty) {
-      final d = Directory('$profile\\Downloads');
+    final env = Platform.environment;
+    final home = Platform.isWindows
+        ? env['USERPROFILE']
+        : (env['HOME'] ?? env['XDG_CONFIG_HOME']?.replaceAll('/.config', ''));
+    if (home != null && home.isNotEmpty) {
+      final d = Directory('$home${Platform.pathSeparator}Downloads');
       if (d.existsSync()) return d;
     }
     return Directory.systemTemp;

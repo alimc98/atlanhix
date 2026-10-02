@@ -43,6 +43,14 @@ class _ConnectAttempt {
   /// may briefly outlive its flow (freed by the dial's finally / overwritten
   /// at the next connect); consumers gate on in-flight phase, not on null.
   bool redirected = false;
+
+  /// v0.6.2 §stop-fix: the user STOPPED (the dashboard pill was tapped while
+  /// this attempt was still connecting). The attempt must abort its funnel
+  /// and its tunnel probe immediately and never write a verdict — the
+  /// disconnect owns the UI, and a late `failed`/`connected` from this flow
+  /// is exactly the "نمیشه متوقف کرد" bug (the stop looked ignored and the
+  /// tunnel came back up after the user had killed it).
+  bool cancelled = false;
 }
 
 /// v0.4.1 §2/§5/§31 — the Android VPN session orchestrator.
@@ -74,6 +82,34 @@ class VpnSession {
       }
     });
   }
+
+  /// v0.6.2 §stop-fix: is [a] still the session's live attempt? Ownership is
+  /// BY IDENTITY (v0.5.9 §retarget) plus the two terminal flags: `redirected`
+  /// = a newer node owns the dial, `cancelled` = the user stopped everything.
+  /// A null/dead attempt owns nothing, so a stale flow can never boot an
+  /// engine, probe a tunnel or publish a verdict.
+  bool _ownsAttempt(_ConnectAttempt? a) =>
+      a != null && identical(_runningAttempt, a) && !a.redirected && !a.cancelled;
+
+  /// v0.6.2 §tap-fix ("یه کانفیگ دیگه رو کانکت کرد" while connecting): is a
+  /// connect run in flight right now (either the controller's own body or a
+  /// phase that a run owns)? Drives both the retarget on a node tap and the
+  /// supersede on a fresh connect request.
+  /// v0.6.2 §boot-race-fix: does this exclusion reason exist only because an
+  /// engine-availability probe has not answered yet (rather than because the
+  /// engine is genuinely absent)? Those are the reasons worth a grace window.
+  static bool _runtimeGatedReason(String why) =>
+      why.startsWith('mihomo:') ||
+      why.startsWith('xray_transport:') ||
+      why.startsWith('xray_pinned:') ||
+      why.startsWith('amnezia_wg:');
+
+  bool _connectInFlight() =>
+      controller.connectRunActive ||
+      controller.phase == AndroidVpnPhase.preparing ||
+      controller.phase == AndroidVpnPhase.starting ||
+      controller.phase == AndroidVpnPhase.validating ||
+      controller.phase == AndroidVpnPhase.reconnecting;
 
   final AppDependencies deps;
   late final AndroidVpnController controller;
@@ -499,9 +535,8 @@ class VpnSession {
     final attempt = _runningAttempt;
     final inFlight = attempt != null &&
         !attempt.redirected &&
-        (controller.connectRunActive ||
-            controller.phase == AndroidVpnPhase.starting ||
-            controller.phase == AndroidVpnPhase.validating);
+        !attempt.cancelled &&
+        _connectInFlight();
     if (inFlight && !dialingThis) {
       attempt.redirected = true;
       Logger.instance.info('vpn-session',
@@ -538,8 +573,12 @@ class VpnSession {
       for (var i = 0;
           i < 40 && controller.connectRunActive;
           i++) {
+        if (redial.cancelled) return;
         await Future<void>.delayed(const Duration(milliseconds: 250));
       }
+      // v0.6.2 §stop-fix: a stop can land while this redial waits or resolves
+      // — its verdict belongs to nobody then.
+      if (redial.cancelled) return;
       controller.resetToIdle(reason: 'connect retargeted to ${p.name}');
       // Cosmetic only (v0.5.8 §connect-fix): keep the "Connecting…" pill up
       // across the handover — the user never asked to disconnect.
@@ -767,6 +806,20 @@ class VpnSession {
     final trace = '[ATX-DART ${DateTime.now().millisecondsSinceEpoch % 10000}]';
     Logger.instance.info('vpn-session', '$trace CONNECT_REQUEST');
     lastError = null;
+    // v0.6.2 §tap-fix ("یه کانفیگ دیگه رو کانکت کرد" while connecting): a
+    // connect request that lands on a LIVE attempt SUPERSEDES it instead of
+    // racing it. The old flow is marked so every identity gate + its tunnel
+    // probe abort quietly, and the controller run is bumped so it cannot
+    // tear the native session down or repaint the phase. The freshest
+    // request always owns the funnel (same discipline as the node-tap
+    // retarget, but for the pill/second request).
+    final live = _runningAttempt;
+    if (live != null && !live.cancelled && _connectInFlight()) {
+      live.redirected = true;
+      controller.cancelConnect();
+      Logger.instance.info('vpn-session',
+          '$trace CONNECT_SUPERSEDES a live attempt (freshest request wins)');
+    }
     // v0.5.5 §user: INSTANT visual response — the phase flips to starting
     // on the tap itself (spinner + "Connecting…" + globe wakes up), never
     // waiting for the ladder or the permission flow. The later stages
@@ -800,7 +853,26 @@ class VpnSession {
       // the node the user chose, not a node the picker preferred.
       selectedNode = explicit;
       persistState();
-      final why = AndroidNodeSupport.androidExclusionReason(explicit);
+      var why = AndroidNodeSupport.androidExclusionReason(explicit);
+      // v0.6.2 §boot-race-fix (the other shape of "کلا هیچ کانفیگی وصل
+      // نمیشه"): the engine gates (Xray runtime / mihomo binary / AWG fork)
+      // are armed by probes that run UNawaited behind the first frame. A tap
+      // landing before they answer rejected an xhttp/mihomo node with
+      // "runtime is not loaded" — and the FIRST tap after launch is exactly
+      // when the user connects, so for a subscription full of xhttp/mihomo
+      // nodes EVERY config looked unrunnable. A runtime-shaped rejection now
+      // gets a short bounded grace + a re-check (the same discipline the
+      // funnel already uses for the Xray handshake).
+      if (why != null && _runtimeGatedReason(why)) {
+        for (var i = 0; i < 10 && _runtimeGatedReason(why!); i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+          why = AndroidNodeSupport.androidExclusionReason(explicit);
+        }
+        if (why == null) {
+          Logger.instance.info('vpn-session',
+              '$trace ENGINE_GATES armed during the boot-probe grace — proceeding');
+        }
+      }
       if (why != null) {
         Logger.instance.error('vpn-session',
             '$trace FAILED stage=NODE_SELECTED node=${explicit.name} proto=${explicit.protocol.name} transport=${explicit.transport.name} core=${explicit.effectiveCore.name} reason=$why');
@@ -991,7 +1063,9 @@ class VpnSession {
       // v0.5.9 §retarget: a NEWER attempt owns the slot (a tap redialed
       // mid-flight, or a second connect) — this flow must NOT boot anything
       // (two funnels would race the engine boot and the config files).
-      if (!identical(_runningAttempt, attempt) || attempt.redirected) {
+      // v0.6.2 §stop-fix: a CANCELLED attempt (user pressed Stop) is just as
+      // dead — no engine, no probe, no verdict.
+      if (!_ownsAttempt(attempt)) {
         return false;
       }
       // v0.5.9 §retarget: dial the LATEST target, not the stale caller
@@ -1004,7 +1078,7 @@ class VpnSession {
       final ok = await _connectProfileInner(target, trace, attempt: attempt);
       // v0.5.9 §retarget: superseded → this result is not the session's
       // verdict (the redial in flight owns it now); report honestly.
-      if (!identical(_runningAttempt, attempt) || attempt.redirected) {
+      if (!_ownsAttempt(attempt)) {
         return false;
       }
       return ok;
@@ -1030,12 +1104,33 @@ class VpnSession {
     // v0.5.3 §mihomo: the engine preference reaches the Android resolution
     // too — `mihomo` steers mihomo-runnable nodes to the standalone engine
     // (child-process shape, gated on its boot-time binary probe).
-    final resolvedCore = deps.detector
+    var resolvedCore = deps.detector
         .resolve(
           profile,
           preference: deps.appSettings.corePreference,
         )
         .core;
+    // v0.6.2 §engine-fallback: an APP-LEVEL engine preference must never take
+    // the whole app down (the other half of "کلا هیچ کانفیگی وصل نمیشه"):
+    // with Engine=mihomo chosen in Settings, EVERY vless/vmess/trojan/ss
+    // node resolves to mihomo — and if this build/ABI did not ship (or could
+    // not exec) the mihomo runtime, the boot probe reports "off" and every
+    // single config died on the single-core gate with the same code. An app
+    // preference is a PREFERENCE, not an order (unlike [userPinnedCore],
+    // which still fails honestly): when the preferred engine is not runnable
+    // here, fall back to the capability-matrix decision — for an xhttp node
+    // that is the :xray upstream, which DOES run the transport.
+    if (profile.userPinnedCore == null &&
+        deps.appSettings.corePreference != CorePreference.auto &&
+        !AndroidNodeSupport.coreAllowedOnAndroid(resolvedCore)) {
+      final fallback =
+          deps.detector.resolve(profile, preference: CorePreference.auto).core;
+      if (AndroidNodeSupport.coreAllowedOnAndroid(fallback)) {
+        Logger.instance.warn('vpn-session',
+            '$trace ENGINE_PREFERENCE_UNAVAILABLE ${resolvedCore.name} is not runnable on this device → falling back to ${fallback.name} (the preference is not an order)');
+        resolvedCore = fallback;
+      }
+    }
     // Only write when different — the connect paths may run repeatedly on
     // the same profile object, and a second resolution would otherwise
     // skip the log line (effectiveCore is already xray after run 1).
@@ -1077,6 +1172,12 @@ class VpnSession {
     // bypass is always exact — even for nodes whose hostname only resolves
     // through the bootstrap resolver (carrier-poisoned system DNS).
     profile = await _withBootstrappedAddress(profile, trace);
+
+    // v0.6.2 §stop-fix: the bootstrap resolve awaits real DNS — a stop or a
+    // node tap can land inside it. One more ownership gate here keeps a dead
+    // attempt from spawning an :xray/:mihomo child (or starting mihomo for a
+    // node nobody asked for anymore).
+    if (!_ownsAttempt(attempt)) return false;
 
     // v0.4.6 §user: a fresh Android connect BEGINS the fragment AUTO ladder
     // (rung 0 — or the node's persisted winning rung from the ladder cache)
@@ -1167,6 +1268,15 @@ class VpnSession {
           '$trace HANDOFF mtu=${controller.mtu} dns=${controller.dnsServers.length} include=${controller.includeApps.length} exclude=${controller.excludeApps.length} routes=${controller.routes.length}');
 
       // 3. Real connect: permission → service → TUN → engine → probe.
+      // v0.6.2 §stop-fix: the LAST gate before the native handoff. Config
+      // generation, DNS pinning and the upstream start all await — a stop or
+      // a retarget landing in any of them must not resurrect a session the
+      // user already killed.
+      if (!_ownsAttempt(attempt)) {
+        Logger.instance.info('vpn-session',
+            '$trace ABANDONED before native handoff (stop/retarget won)');
+        return false;
+      }
       Logger.instance.info('vpn-session', '$trace VPN_PERMISSION requested');
       // v0.5.2 §first-connect-fix ("بار اول وصل نمیشه، بار دوم درسته"):
       // the probe fires THE INSTANT the native side reports VALIDATING —
@@ -1182,10 +1292,7 @@ class VpnSession {
           // rounds — the retarget's redial waits for THIS run to exit before
           // it may dial. Identity (not just the redirected flag): a redial
           // registers a FRESH attempt, so a stale flow sees a newer owner.
-          bool superseded() {
-            final cur = _runningAttempt;
-            return cur == null || !identical(cur, attempt);
-          }
+          bool superseded() => !_ownsAttempt(attempt);
 
           for (var i = 0; i < 3; i++) {
             if (superseded()) return false;
@@ -1247,9 +1354,26 @@ class VpnSession {
         // reporting.
         probeTimeout: const Duration(seconds: 32),
         proxyMode: deps.appSettings.proxyMode,
+        // v0.6.2 §stop-fix: the SAME ownership guard the funnel uses — a stop
+        // (or retarget) during the permission dialog, the engine handoff or
+        // the multi-second probe makes this run exit quietly instead of
+        // publishing a verdict over the stop the user just made.
+        stillOwned: () => _ownsAttempt(attempt),
       );
       Logger.instance.info(
           'vpn-session', ok ? '$trace CONNECTED' : '$trace FAILED stage=controller.connect (see prior stages)');
+      // v0.6.2 §stop-fix: an ABANDONED attempt (a stop, or a node tap that
+      // took the dial over) ends HERE. Everything below this line is
+      // session-owning work — arming the tunnel watchdog, recording fragment
+      // rungs, and especially climbing the fragment ladder (which RESTARTS
+      // upstreams and re-probes through the tunnel). Running it for a dead
+      // attempt would fight the successor's engine and repaint a verdict
+      // over the user's stop.
+      if (!_ownsAttempt(attempt)) {
+        Logger.instance.info('vpn-session',
+            '$trace ABANDONED after controller.connect (no verdict written)');
+        return false;
+      }
       // v0.4.8 §user: arm the in-tunnel URL watchdog on a real CONNECTED,
       // cancel it on every terminal state (see _syncFromAndroid).
       if (ok) _armWarpWatchdog();
@@ -1307,14 +1431,31 @@ class VpnSession {
   /// user's preference) — no half-remembered state survives into the next
   /// session.
   Future<void> disconnect() async {
+    // v0.6.2 §stop-fix: kill the in-flight attempt FIRST. The flag makes the
+    // funnel's identity checks and the tunnel probe abort at their next
+    // step, and controller.stop() supersedes the controller run — together
+    // the stop is immediate and no late verdict can repaint the UI.
+    final live = _runningAttempt;
+    if (live != null) {
+      live.cancelled = true;
+      Logger.instance.info('vpn-session',
+          '[ATX-DART UI] CONNECT_CANCELLED (stop during connecting)');
+    }
     _smart.stop();
     await controller.stop();
-    if (_xrayUpstreamPort > 0) {
+    // v0.6.3 §notify-fix: the child cores die with the session — ALWAYS, not
+    // only when this process still remembers its upstream port. Those port
+    // fields are in-memory: after an app restart (or a session adopted from
+    // the native side) a disconnect left the :xray/:mihomo process — and its
+    // "Atlanhix core" foreground notification — running with no owner. The
+    // bridge's `running` flag is refreshed from the native state file, so
+    // this only ever stops something that is genuinely alive.
+    if (_xrayUpstreamPort > 0 || XrayBridge.instance.running) {
       _xrayUpstreamPort = 0;
       await XrayBridge.instance.stop();
     }
     // v0.5.3 §mihomo: the child dies with the session.
-    if (_mihomoUpstreamPort > 0) {
+    if (_mihomoUpstreamPort > 0 || MihomoBridge.instance.running) {
       _mihomoUpstreamPort = 0;
       await MihomoBridge.instance.stop();
     }
@@ -1768,7 +1909,7 @@ class VpnSession {
   // down after an automated experiment.
   // ---------------------------------------------------------------------
 
-  /// Asks the user. UI layer assigns: (context) → Future<bool>.
+  /// Asks the user. UI layer assigns: `(context) → Future<bool>`.
   Future<bool> Function(String nodeName)? onWarpOffer;
 
   Timer? _warpWatchdog;
