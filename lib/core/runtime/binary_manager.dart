@@ -11,6 +11,7 @@ enum CoreBinaryKind {
   mihomo, // v0.5.3: mihomo (Clash.Meta) — the standalone third engine
   amneziaWg,
   masterDnsVpn,
+  stormDns,
 }
 
 /// Lifecycle-independent info about one engine binary on this machine.
@@ -85,6 +86,10 @@ class BinaryManager {
       CoreBinaryKind.masterDnsVpn => Platform.isWindows
           ? 'masterdnsvpn-client$exe'
           : 'masterdnsvpn-client',
+      // v0.6.4 §stormdns: the release artifact is `StormDNS_Client_<OS>_<ARCH>`
+      // (see nullroute1970/StormDNS releases); the layout normalizes it to
+      // `stormdns(.exe)` exactly like mihomo/mdvpn do.
+      CoreBinaryKind.stormDns => 'stormdns$exe',
     };
   }
 
@@ -96,6 +101,12 @@ class BinaryManager {
         CoreBinaryKind.masterDnsVpn => Platform.isWindows
             ? ['mdvpn-client.exe']
             : ['mdvpn-client'],
+        CoreBinaryKind.stormDns => [
+            if (Platform.isWindows) 'StormDNS_Client_Windows_AMD64.exe',
+            if (Platform.isMacOS) 'StormDNS_Client_MacOS_AMD64',
+            if (Platform.isLinux) 'StormDNS_Client_Linux_AMD64',
+            'stormdns-client',
+          ],
         _ => const [],
       };
 
@@ -106,6 +117,7 @@ class BinaryManager {
         CoreBinaryKind.mihomo => const ['-v'],
         CoreBinaryKind.amneziaWg => const ['--version'],
         CoreBinaryKind.masterDnsVpn => const ['-version'],
+        CoreBinaryKind.stormDns => const ['--version'],
       };
 
   /// Candidate absolute paths for one engine, in priority order.

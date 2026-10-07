@@ -2,13 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import '../core_detector.dart';
 import '../configgen/xray_config_generator.dart';
 import '../fragmentation/fragment_profiles.dart';
 import '../../routing/routing_models.dart';
 import '../../domain/entities/proxy_profile.dart';
 import '../logger.dart';
-import '../primitives.dart';
 import 'binary_manager.dart';
 import 'core_process.dart';
 import 'core_runtime.dart';

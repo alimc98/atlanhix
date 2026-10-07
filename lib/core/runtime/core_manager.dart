@@ -63,15 +63,27 @@ class CoreManager {
       binaryManager: binaryManager,
       workDir: Directory('${workDir.path}${Platform.pathSeparator}mdvpn'),
     );
+    // v0.6.4 §stormdns: the DNS-tunnel sibling — own work dir, own SOCKS
+    // port (18001 default, re-allocated in prepare()) so it can coexist
+    // with a MasterDnsVPN daemon on 18000.
+    stormDns = StormDnsRuntime(
+      binaryManager: binaryManager,
+      workDir: Directory('${workDir.path}${Platform.pathSeparator}stormdns'),
+      socksPort: 18001,
+    );
     // v0.5.3: the third standalone engine (its own work dir, own API port —
     // 9097 is the front's; mihomo takes 9099 to never collide).
     mihomo = MihomoRuntime(
       binaryManager: binaryManager,
       workDir: Directory('${workDir.path}${Platform.pathSeparator}mihomo'),
-      mixedPort: 2081,
-      apiPort: 9099,
+      mixedPort: mihomoMixedPort,
+      apiPort: mihomoApiPort,
     );
   }
+
+  /// v0.5.3: mihomo's own ports (the front sing-box owns 2080/9097).
+  static const int mihomoMixedPort = 2081;
+  static const int mihomoApiPort = 9099;
 
   final BinaryManager binaryManager;
   final Directory workDir;
@@ -81,6 +93,10 @@ class CoreManager {
   late final XrayRuntime xray;
   late final AmneziaWgRuntime amneziaWg;
   late final MasterDnsVpnRuntime masterDnsVpn;
+
+  /// v0.6.4 §stormdns: standalone StormDNS client daemon (DNS tunnel →
+  /// local SOCKS5, chained as a sing-box upstream stub).
+  late final StormDnsRuntime stormDns;
 
   /// v0.5.3: standalone mihomo (Clash.Meta) — full xhttp/XMUX ownership.
   late final MihomoRuntime mihomo;
@@ -103,6 +119,14 @@ class CoreManager {
     final lines = switch (engine) {
       CoreKind.xray => xray.debugStderrTail(),
       CoreKind.singbox => singbox.debugStderrTail(),
+      // v0.6.4 §mihomo: a failed mihomo session must surface ITS stderr
+      // (dial refused, resolve timeout, bad config) — before, this fell
+      // through to an empty tail and the ProbeError said nothing useful.
+      CoreKind.mihomo => mihomo.debugStderrTail(),
+      // v0.6.4 §stormdns: the external DNS-tunnel daemons surface their
+      // stderr too (resolver scan failed / config rejected / key mismatch).
+      CoreKind.masterDnsVpn => masterDnsVpn.debugStderrTail(),
+      CoreKind.stormDns => stormDns.debugStderrTail(),
       _ => const <String>[],
     };
     if (lines.isEmpty) return '';
@@ -131,8 +155,14 @@ class CoreManager {
         xray.onExit.listen((e) => _anyExitCtrl.add(EngineExitEvent(CoreKind.xray, e))),
         masterDnsVpn.onExit
             .listen((e) => _anyExitCtrl.add(EngineExitEvent(CoreKind.masterDnsVpn, e))),
+        stormDns.onExit
+            .listen((e) => _anyExitCtrl.add(EngineExitEvent(CoreKind.stormDns, e))),
         amneziaWg.onExit
             .listen((e) => _anyExitCtrl.add(EngineExitEvent(CoreKind.amneziaWg, e))),
+        // v0.6.4 §mihomo: a crashed standalone mihomo session never reached
+        // crash recovery (the default engine's exit was simply unheard).
+        mihomo.onExit
+            .listen((e) => _anyExitCtrl.add(EngineExitEvent(CoreKind.mihomo, e))),
       ]);
     }
     return _anyExitCtrl.stream;
@@ -233,12 +263,16 @@ class CoreManager {
     await xray.prepare();
     await amneziaWg.prepare();
     await masterDnsVpn.prepare();
+    await stormDns.prepare();
     // v0.5.3: mihomo probes its binary too (flip MihomoCoreState when
     // found); a missing binary keeps the engine honestly disabled.
     await mihomo.prepare();
     // v0.3.1 §21: MDVPN SOCKS port is dynamically allocated per manager
     // instance so parallel test files / concurrent sessions never contend.
     masterDnsVpn.socksPort = await PortAllocator.freePort(prefer: 18000);
+    // v0.6.4 §stormdns: same dynamic allocation — prefer 18001 (its
+    // default) so it never contends with the mdvpn daemon either.
+    stormDns.socksPort = await PortAllocator.freePort(prefer: 18001);
     _prepared = true;
   }
 
@@ -251,6 +285,7 @@ class CoreManager {
             CoreKind.wireguardSingbox ||
             CoreKind.xray ||
             CoreKind.masterDnsVpn ||
+            CoreKind.stormDns ||
             CoreKind.unknown =>
               true,
             // v0.5.3: mihomo-owned nodes NEVER ride the sing-box front —
@@ -285,6 +320,8 @@ class CoreManager {
       switch (p.effectiveCore) {
         case CoreKind.masterDnsVpn:
           out[p.id] = (host: '127.0.0.1', port: masterDnsVpn.socksPort);
+        case CoreKind.stormDns:
+          out[p.id] = (host: '127.0.0.1', port: stormDns.socksPort);
         default:
           break;
       }
@@ -337,6 +374,21 @@ class CoreManager {
           final r = await masterDnsVpn.start();
           if (!r.ok) {
             throw CoreStartError('MasterDNSVPN failed to start: ${r.message}',
+                exitCode: null);
+          }
+        }
+      case CoreKind.stormDns:
+        // v0.6.4 §stormdns: identical lifecycle to the mdvpn upstream —
+        // the front sing-box carries this node as a SOCKS stub.
+        stormDns.profile = profile;
+        if (stormDns.status != RuntimeStatus.running ||
+            !await stormDns.probe()) {
+          if (stormDns.status == RuntimeStatus.running) {
+            await stormDns.stop();
+          }
+          final r = await stormDns.start();
+          if (!r.ok) {
+            throw CoreStartError('StormDNS failed to start: ${r.message}',
                 exitCode: null);
           }
         }
@@ -463,6 +515,20 @@ class CoreManager {
     required DnsSettings dns,
   }) async {
     final cur = _active;
+    // v0.6.4 §mihomo: standalone mihomo sessions hot-switch through the
+    // engine's OWN selector (Clash API PUT /proxies/ATX) — sub-second, no
+    // restart, the same path FlClash uses. Handled BEFORE the sing-box gate
+    // below because a mihomo session runs no front engine at all.
+    if (next.effectiveCore == CoreKind.mihomo &&
+        mihomo.status == RuntimeStatus.running) {
+      final api = mihomo.api;
+      if (api == null) return false;
+      // The target must actually be a member of the RUNNING config —
+      // otherwise a 404 lies as a "switch failed".
+      final tags = await api.proxyTags();
+      if (tags == null || !tags.contains(next.name)) return false;
+      return api.select(MihomoConfigGenerator.atxSelector, next.name);
+    }
     if (singbox.status != RuntimeStatus.running) return false;
     switch (next.effectiveCore) {
       case CoreKind.singbox:
@@ -483,6 +549,12 @@ class CoreManager {
           return false;
         }
         break;
+      case CoreKind.stormDns:
+        if (stormDns.status != RuntimeStatus.running ||
+            !await stormDns.probe()) {
+          return false;
+        }
+        break;
       case CoreKind.amneziaWg:
         return false; // standalone daemon, never in the front selector
       case CoreKind.mihomo:
@@ -495,6 +567,7 @@ class CoreManager {
             cur.effectiveCore == CoreKind.wireguardSingbox ||
             cur.effectiveCore == CoreKind.xray ||
             cur.effectiveCore == CoreKind.masterDnsVpn ||
+            cur.effectiveCore == CoreKind.stormDns ||
             cur.effectiveCore == CoreKind.unknown)) {
       return singbox.switchToProfile(next);
     }
@@ -552,6 +625,16 @@ class CoreManager {
 
     // MDVPN upstream crash: rebuild only the daemon (v0.3.0 §10 restart),
     // keep the front engine and selector untouched.
+    // v0.6.4 §mihomo: standalone mihomo crash → rebuild the mihomo session
+    // (startFor delegates to startMihomo). Without this branch the generic
+    // path below stopped sing-box and restarted the same topology the
+    // crash already proved dead — or worse, restarted the front for a
+    // session that never had one.
+    if (engine == CoreKind.mihomo && active.effectiveCore == CoreKind.mihomo) {
+      final r = await startFor(active, all: all, routing: routing, dns: dns);
+      return r.ok;
+    }
+
     if (engine == CoreKind.masterDnsVpn && active.effectiveCore == CoreKind.masterDnsVpn) {
       if (masterDnsVpn.status == RuntimeStatus.running) {
         await masterDnsVpn.stop();
@@ -561,6 +644,18 @@ class CoreManager {
       if (!r.ok) return false;
       // Readiness is the SOCKS greeting probe — no readiness, no recovery.
       return masterDnsVpn.probe();
+    }
+
+    // v0.6.4 §stormdns: StormDNS upstream crash → rebuild only the daemon,
+    // front engine and selector untouched (same shape as the mdvpn branch).
+    if (engine == CoreKind.stormDns && active.effectiveCore == CoreKind.stormDns) {
+      if (stormDns.status == RuntimeStatus.running) {
+        await stormDns.stop();
+      }
+      stormDns.profile = active;
+      final r = await stormDns.start();
+      if (!r.ok) return false;
+      return stormDns.probe();
     }
 
     await singbox.stop();
@@ -580,6 +675,7 @@ class CoreManager {
   Future<void> _stopUpstreams() async {
     if (xray.status == RuntimeStatus.running) await xray.stop();
     if (masterDnsVpn.status == RuntimeStatus.running) await masterDnsVpn.stop();
+    if (stormDns.status == RuntimeStatus.running) await stormDns.stop();
   }
 
   Future<void> stop() async {
@@ -660,5 +756,6 @@ class CoreManager {
     await xray.dispose();
     await amneziaWg.dispose();
     await masterDnsVpn.dispose();
+    await stormDns.dispose();
   }
 }

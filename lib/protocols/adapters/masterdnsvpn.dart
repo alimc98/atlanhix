@@ -121,17 +121,10 @@ class MasterDnsVpnParser {
       ..writeln('DATA_ENCRYPTION_METHOD = $method')
       ..writeln('PROTOCOL_TYPE = "SOCKS5"')
       ..writeln('LISTEN_IP = "127.0.0.1"')
-      ..writeln('LISTEN_PORT = ${q['SOCKS5_PORT'] ?? '18000'}')
-      ..writeln('MTU = ${int.tryParse(q['MTU'] ?? '1230') ?? 1230}');
-    final resolvers = (q['RESOLVERS'] ?? '')
-        .split(',')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
-    if (resolvers.isNotEmpty) {
-      b.writeln(
-          'RESOLVERS = [${resolvers.map((r) => '"${esc(r)}"').join(', ')}]');
-    }
+      ..writeln('LISTEN_PORT = ${q['SOCKS5_PORT'] ?? '18000'}');
+    // v0.6.3 §schema-parity: no `MTU` / `RESOLVERS` keys — absent from the
+    // current upstream client_config.toml.simple (MTU discovery is
+    // automatic; resolvers ride the client_resolvers.txt sidecar).
     return b.toString();
   }
 

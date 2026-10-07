@@ -4,6 +4,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 
 import '../../platform/device_stats.dart';
+import '../tab_stage.dart';
 import '../../theme/theme.dart';
 
 /// v0.5.2 §user — LIVE MONITOR: battery % + temperature, THIS app's CPU
@@ -21,6 +22,10 @@ class _LiveMonitorState extends State<LiveMonitor> {
   DeviceSample? _sample;
   Timer? _timer;
 
+  /// v0.6.4 §battery: the poll reads /proc + the battery sensor every 3 s.
+  /// It only earns that cost while this tab is actually on screen.
+  bool _stageActive = true;
+
   @override
   void initState() {
     super.initState();
@@ -34,6 +39,23 @@ class _LiveMonitorState extends State<LiveMonitor> {
       final s = await _stats.poll();
       if (mounted) setState(() => _sample = s);
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // v0.6.4 §battery: park the /proc poll while the dashboard tab is
+    // offstage (the doc comment above promised exactly this via TickerMode,
+    // which never stops a Dart timer — the shell now tells us directly).
+    final active = TabStageScope.activeOf(context);
+    if (active == _stageActive) return;
+    _stageActive = active;
+    if (active) {
+      if (_stats.isAndroid) _poll();
+    } else {
+      _timer?.cancel();
+      _timer = null;
+    }
   }
 
   @override

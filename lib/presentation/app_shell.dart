@@ -7,11 +7,10 @@ import '../domain/entities/proxy_profile.dart';
 import '../domain/errors/app_error.dart';
 import '../localization/generated/app_localizations.dart';
 import '../theme/theme.dart';
-import '../settings/app_settings.dart';
 import '../platform/android_vpn.dart' show AndroidVpnPhase;
 import 'screens/dashboard_screen.dart';
+import 'tab_stage.dart';
 import 'screens/nodes_screen.dart';
-import 'screens/warp_screen.dart'; // reached via Settings -> /warp
 import 'screens/routing_editor_screen.dart';
 import 'screens/logs_screen.dart';
 import 'screens/settings_screen.dart';
@@ -55,7 +54,6 @@ class _AppShellState extends State<AppShell>
   StreamSubscription? _sub;
   StreamSubscription? _vpnSub;
   StreamSubscription<void>? _selSub;
-  AppSettings? _settings;
 
   /// v0.4.1: on Android the VpnSession owns the connect lifecycle.
   static final bool isAndroid = Platform.isAndroid;
@@ -70,6 +68,56 @@ class _AppShellState extends State<AppShell>
     'nav_logs',
     'nav_settings',
   ];
+
+  // v0.6.4 §speed: memoized tab screens. Every shell setState (VPN phase
+  // events, the header status pill, a tab move) used to allocate FRESH
+  // instances of all five screens, so Flutter re-ran their entire build
+  // methods for updates that only touch the header/pill/globe — while the
+  // screens already subscribe to their own data streams and never asked
+  // for that rebuild. Cached per real input:
+  //   * SettingsScreen is re-made when the theme mode changes;
+  //   * RoutingEditorScreen is NEVER cached — `deps.routingSettings` is
+  //     replaced wholesale on subscription-carried routing, so a cached
+  //     instance would show stale rules.
+  NexusThemeMode? _screensThemeMode;
+  Widget? _dashCache;
+  Widget? _nodesCache;
+  Widget? _logsCache;
+  Widget? _settingsCache;
+
+  List<Widget> _screens() {
+    final themeMode = widget.themeMode;
+    if (_screensThemeMode != themeMode) {
+      _screensThemeMode = themeMode;
+      _settingsCache = null;
+    }
+    return [
+      _dashCache ??= DashboardScreen(
+        deps: widget.deps,
+        // v0.6.4 § redesign: the dashboard's two chevrons are real
+        // navigation, wired here (the shell owns the tab index).
+        onOpenNodes: () => _goTo(1),
+        onOpenRouting: () => _goTo(2),
+      ),
+      _nodesCache ??= NodesScreen(deps: widget.deps),
+      RoutingEditorScreen(
+        routingRepo: widget.deps.routingSettingsRepo,
+        routing: widget.deps.routingSettings,
+        onChanged: () {
+          // v0.4.1: routing edits apply on the NEXT connect (no live rewrite).
+          if (isAndroid) widget.deps.vpnSession.pendingApply = true;
+          if (mounted) setState(() {});
+        },
+      ),
+      _logsCache ??= LogsScreen(deps: widget.deps),
+      _settingsCache ??= SettingsScreen(
+        deps: widget.deps,
+        themeMode: themeMode,
+        onThemeChanged: widget.onThemeChanged,
+        onLocaleChanged: widget.onLocaleChanged,
+      ),
+    ];
+  }
 
   /// Brand tile icon for tab [i]; [selected] controls opacity only.
   static Widget _navIcon(int i, {required bool selected}) => _BrandNavIcon(
@@ -146,26 +194,7 @@ class _AppShellState extends State<AppShell>
       l.navLogs,
       l.navSettings,
     ];
-    final screens = <Widget>[
-      DashboardScreen(deps: widget.deps),
-      NodesScreen(deps: widget.deps),
-      RoutingEditorScreen(
-        routingRepo: widget.deps.routingSettingsRepo,
-        routing: widget.deps.routingSettings,
-        onChanged: () {
-          // v0.4.1: routing edits apply on the NEXT connect (no live rewrite).
-          if (isAndroid) widget.deps.vpnSession.pendingApply = true;
-          if (mounted) setState(() {});
-        },
-      ),
-      LogsScreen(deps: widget.deps),
-      SettingsScreen(
-        deps: widget.deps,
-        themeMode: widget.themeMode,
-        onThemeChanged: widget.onThemeChanged,
-        onLocaleChanged: widget.onLocaleChanged,
-      ),
-    ];
+    final screens = _screens();
 
     // Settings -> WARP row pushes /warp; the shell owns the Navigator.
     // (registered in main.dart routes)
@@ -258,7 +287,18 @@ class _AppShellState extends State<AppShell>
                   },
                   child: IndexedStack(
                     index: _index,
-                    children: screens,
+                    // v0.6.4 §battery: the IndexedStack keeps every tab ALIVE
+                    // (state retention), which also keeps its timers running.
+                    // Each screen learns here whether it is the on-stage tab
+                    // and parks its periodic work while it is not.
+                    children: [
+                      for (var i = 0; i < screens.length; i++)
+                        TabStageScope(
+                          index: i,
+                          active: i == _index,
+                          child: screens[i],
+                        ),
+                    ],
                   ),
                 ),
               ),
@@ -279,37 +319,76 @@ class _AppShellState extends State<AppShell>
               // wordmark leads the header, page name follows.
               title: Row(
                 children: [
-                  // v0.5.0 §user: the appbar wordmark read ~50% too large on
-                  // the phone — halved (15 → 10).
-                  const AtlanhixWordmark(height: 10),
-                  const SizedBox(width: 12),
-                  Flexible(
-                    child: Text(
-                      Localizations.localeOf(context).languageCode == 'fa'
-                          ? labels[_index]
-                          : labels[_index].toUpperCase(),
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                  // v0.6.4 § redesign: the mockup's two-line header —
+                  // the wordmark stacked OVER the page name.
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const AtlanhixWordmark(height: 13),
+                      Text(
+                        Localizations.localeOf(context).languageCode == 'fa'
+                            ? labels[_index]
+                            : labels[_index].toUpperCase(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              letterSpacing: 2.2,
+                              fontSize: 9,
+                              color: ThemeExt.of(context).textSecondary,
+                            ),
+                      ),
+                    ],
                   ),
+                  const SizedBox(width: 12),
                 ],
               ),
               actions: [
+                // v0.6.4 § redesign: the header's status pill (the
+                // mockup's ● Connected >" chip). It is a
+                // control, not a label: a tap opens the Nodes tab.
                 Padding(
-                  padding: const EdgeInsets.only(right: 12),
+                  padding: const EdgeInsets.only(right: 10),
                   child: Center(
-                    child: StatusDot(
-                      color: switch (_phase) {
-                        ConnectionPhase.connected =>
-                          ThemeExt.of(context).success,
-                        ConnectionPhase.error => ThemeExt.of(context).error,
-                        ConnectionPhase.connecting ||
-                        ConnectionPhase.startingCore ||
-                        ConnectionPhase.switching ||
-                        ConnectionPhase.validating =>
-                          ThemeExt.of(context).info,
-                        _ => ThemeExt.of(context).textMuted,
-                      },
-                      label: _statusLabel(l),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: () => _goTo(1),
+                        borderRadius: BorderRadius.circular(999),
+                        child: Container(
+                          padding:
+                              const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(999),
+                            border:
+                                Border.all(color: ThemeExt.of(context).border),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              StatusDot(
+                                color: switch (_phase) {
+                                  ConnectionPhase.connected =>
+                                    ThemeExt.of(context).success,
+                                  ConnectionPhase.error =>
+                                    ThemeExt.of(context).error,
+                                  ConnectionPhase.connecting ||
+                                  ConnectionPhase.startingCore ||
+                                  ConnectionPhase.switching ||
+                                  ConnectionPhase.validating =>
+                                    ThemeExt.of(context).info,
+                                  _ => ThemeExt.of(context).textMuted,
+                                },
+                                label: _statusLabel(l),
+                              ),
+                              const SizedBox(width: 2),
+                              Icon(Icons.chevron_right_rounded,
+                                  size: 16,
+                                  color: ThemeExt.of(context).textSecondary),
+                            ],
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -543,7 +622,10 @@ class _ExpressiveNavBar extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
         child: Container(
-          height: 68,
+          // v0.6.4 §ui-fix: the selected destination's icon scales to 1.12,
+          // which pushed the pill past the old 68 px shell (an 11 px
+          // "BOTTOM OVERFLOWED" stripe on every 420 dpi phone).
+          height: 74,
           decoration: BoxDecoration(
             color: c.surface.withValues(alpha: 0.92),
             borderRadius: BorderRadius.circular(34),
@@ -595,9 +677,9 @@ class _PillDestination extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 340),
         curve: Curves.easeOutCubic,
-        margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+        margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
         padding: EdgeInsets.symmetric(
-            horizontal: selected ? 14 : 8, vertical: 6),
+            horizontal: selected ? 14 : 8, vertical: 4),
         decoration: BoxDecoration(
           color: selected ? colors.accentSoft : Colors.transparent,
           borderRadius: BorderRadius.circular(28),

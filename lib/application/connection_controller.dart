@@ -8,7 +8,6 @@ import '../core/net/bootstrap_dns.dart';
 import '../core/runtime/core_manager.dart';
 import '../core/runtime/core_process.dart';
 import '../core/runtime/core_runtime.dart';
-import '../core/runtime/singbox_runtime.dart';
 import '../core/scoring/node_scorer.dart';
 import '../core/scoring/smart_connect.dart';
 import '../chain/chain_planner.dart';
@@ -140,6 +139,23 @@ class ConnectionController {
   /// takes a moment to dial) before the verdict. They now race IN PARALLEL:
   /// the worst-case round costs the SLOWEST canary (6 s), the first success
   /// still wins, and the error the user sees keeps the last real failure.
+  /// v0.6.4 §mihomo: the mixed port of the engine that actually serves the
+  /// CURRENT session. A standalone mihomo session listens on ITS OWN port
+  /// (2081) and runs no sing-box front at all — probing/enabling the front's
+  /// 2080 in that state failed every verify/monitor round on a healthy
+  /// tunnel (desktop mihomo was effectively unusable before this).
+  ///
+  /// [core] overrides the guess (used by the fragment-ladder retry where
+  /// the state snapshot has not been updated yet).
+  int mixedPortFor(CoreKind? core) {
+    final effective = core ?? _state.core ?? _state.activeProfile?.effectiveCore;
+    if (effective == CoreKind.mihomo &&
+        cores.mihomo.status == RuntimeStatus.running) {
+      return cores.mihomo.mixedPort;
+    }
+    return cores.front.mixedPort;
+  }
+
   Future<ProbeResult> _probeTunnel(String host, int port,
       {Duration? timeout}) async {
     final effective = timeout ?? const Duration(seconds: 6);
@@ -241,6 +257,24 @@ class ConnectionController {
   int failureThreshold = 2;
   Duration monitorInterval = const Duration(seconds: 30);
   Timer? _monitorTimer;
+  ProxyProfile? _monitorProfile;
+  bool _monitorForeground = true;
+
+  /// v0.6.3 §battery: foreground/background cadence for the tunnel monitor.
+  /// Foreground the verify probe runs at [monitorInterval] (30 s); when the
+  /// app is hidden a dead tunnel matters far less than the CPU wake, so the
+  /// cadence stretches to 2 minutes — the same v0.5.0 discipline the native
+  /// watcher already gets (2 s → 15 s). main.dart flips this on lifecycle.
+  void setMonitorCadence({required bool foreground}) {
+    if (_monitorForeground == foreground) return;
+    _monitorForeground = foreground;
+    final p = _monitorProfile;
+    // Restart a RUNNING monitor so the new cadence applies immediately.
+    if (p != null && _monitorTimer != null) _startMonitor(p);
+  }
+
+  Duration get _monitorInterval =>
+      _monitorForeground ? monitorInterval : const Duration(minutes: 2);
   int _consecutiveVerifyFailures = 0;
 
   final NodeScorer _scorer = NodeScorer();
@@ -407,13 +441,8 @@ class ConnectionController {
           phase: ConnectionPhase.verifying,
           activeProfile: profile,
           core: decision.core));
-      // v0.5.3 §mihomo: a standalone mihomo session listens on ITS OWN
-      // mixed port (2081) — the probe must knock there, not at the front's.
-      final probePort = decision.core == CoreKind.mihomo
-          ? cores.mihomo.mixedPort
-          : cores.front.mixedPort;
-      // v0.5.6 §connect-fix: canary fallback (see _probeTunnel).
-      final probe = await _probeTunnel('127.0.0.1', probePort);
+      final probe = await _probeTunnel(
+          '127.0.0.1', mixedPortFor(decision.core));
       // v0.6.2 §stop-fix: the probe can outlive a stop (its canaries are real
       // HTTP requests). A cancelled run publishes nothing.
       if (!_runAlive(run)) return false;
@@ -545,6 +574,15 @@ class ConnectionController {
   /// resolve/TLS failure lives.
   List<String> _engineFailureCauses(ProxyProfile profile) {
     final causes = <String>[];
+    // v0.6.4 §mihomo: on a standalone mihomo session the sing-box front is
+    // NOT running — its stale tail would mislead. Report the engine that
+    // actually serves this session.
+    if (profile.effectiveCore == CoreKind.mihomo ||
+        _state.core == CoreKind.mihomo) {
+      final mihomoTail = cores.engineStderrTail(CoreKind.mihomo);
+      if (mihomoTail.isNotEmpty) causes.add('mihomo: $mihomoTail');
+      return causes;
+    }
     final frontTail = cores.engineStderrTail(CoreKind.singbox);
     if (frontTail.isNotEmpty) causes.add('sing-box: $frontTail');
     if (profile.effectiveCore == CoreKind.xray) {
@@ -596,7 +634,7 @@ class ConnectionController {
           continue; // try the next rung
         }
         final probe =
-            await _probeTunnel('127.0.0.1', cores.front.mixedPort);
+            await _probeTunnel('127.0.0.1', mixedPortFor(core));
         if (!_runAlive(run)) return null;
         // v0.4.6 §user-3: every real probe is an attempt — pass or fail.
         if (rung != null) {
@@ -685,7 +723,7 @@ class ConnectionController {
     switch (tunnelMode) {
       case TunnelMode.systemProxy:
       case TunnelMode.managed:
-        SystemProxyController.instance.enable(port: cores.front.mixedPort);
+        SystemProxyController.instance.enable(port: mixedPortFor(null));
       case TunnelMode.tun:
       case TunnelMode.off:
         break;
@@ -765,7 +803,7 @@ class ConnectionController {
   Future<bool> _verifyActive(ProxyProfile profile, {CoreKind? core}) async {
     // v0.5.6 §connect-fix: canary fallback (see _probeTunnel).
     final probe =
-        await _probeTunnel('127.0.0.1', cores.front.mixedPort);
+        await _probeTunnel('127.0.0.1', mixedPortFor(core ?? profile.effectiveCore));
     if (!probe.ok) {
       _setState(ConnectionStateSnapshot(
         phase: _state.phase,
@@ -810,6 +848,8 @@ class ConnectionController {
     _walkSeq++;
     final me = _runId;
     _monitorTimer?.cancel();
+    _monitorTimer = null;
+    _monitorProfile = null;
     _trafficTimer?.cancel();
     _setState(ConnectionStateSnapshot(
         phase: ConnectionPhase.disconnecting,
@@ -823,6 +863,8 @@ class ConnectionController {
 
   Future<void> _teardown() async {
     _monitorTimer?.cancel();
+    _monitorTimer = null;
+    _monitorProfile = null;
     _trafficTimer?.cancel();
     _removeTunnelMode();
     await cores.stop();
@@ -832,14 +874,15 @@ class ConnectionController {
   // active-node monitoring + real failover.
 
   void _startMonitor(ProxyProfile profile) {
+    _monitorProfile = profile;
     _monitorTimer?.cancel();
-    _monitorTimer = Timer.periodic(monitorInterval, (_) async {
+    _monitorTimer = Timer.periodic(_monitorInterval, (_) async {
       if (_state.phase != ConnectionPhase.connected &&
           _state.phase != ConnectionPhase.degraded) {
         return;
       }
-      final probe =
-          await _probeTunnel('127.0.0.1', cores.front.mixedPort);
+      final probe = await _probeTunnel(
+          '127.0.0.1', mixedPortFor(profile.effectiveCore));
       if (probe.ok) {
         _consecutiveVerifyFailures = 0;
         healthStore.record(HealthRecord(
@@ -942,9 +985,11 @@ class ConnectionController {
       _setState(ConnectionStateSnapshot(
           phase: ConnectionPhase.recovering, activeProfile: active));
 
-      // Upstream crash (Xray/MDVPN): rebuild only the upstream, keep the
-      // front engine and selector untouched.
-      if (e.engine == CoreKind.xray || e.engine == CoreKind.masterDnsVpn) {
+      // Upstream crash (Xray/MDVPN/StormDNS): rebuild only the upstream,
+      // keep the front engine and selector untouched.
+      if (e.engine == CoreKind.xray ||
+          e.engine == CoreKind.masterDnsVpn ||
+          e.engine == CoreKind.stormDns) {
         final recovered = await cores.recoverEngine(
             e.engine,
             all: repository.all,
@@ -959,12 +1004,36 @@ class ConnectionController {
         return;
       }
 
+      // v0.6.4 §mihomo: standalone mihomo crash → rebuild the MIHOMO
+      // session (recoverEngine delegates to startMihomo) and re-verify on
+      // ITS mixed port. Before this, a mihomo crash fell into the front-
+      // rebuild path, restarted sing-box for a session that never had one
+      // and probed the wrong port — every crash ended in a bogus failover.
+      if (e.engine == CoreKind.mihomo) {
+        final recovered = await cores.recoverEngine(CoreKind.mihomo,
+            all: repository.all, routing: routing, dns: dns);
+        if (recovered) {
+          final probe =
+              await _probeTunnel('127.0.0.1', mixedPortFor(CoreKind.mihomo));
+          if (probe.ok) {
+            _setState(ConnectionStateSnapshot(
+                phase: ConnectionPhase.connected,
+                activeProfile: active,
+                connectedAt: DateTime.now(),
+                core: CoreKind.mihomo));
+            return;
+          }
+        }
+        await failoverFrom(active);
+        return;
+      }
+
       // Front engine crash: full front rebuild.
       final recovered = await cores
           .recoverFront(all: repository.all, routing: routing, dns: dns);
       if (recovered) {
         final probe =
-            await _probeTunnel('127.0.0.1', cores.front.mixedPort);
+            await _probeTunnel('127.0.0.1', mixedPortFor(null));
         if (probe.ok) {
           _setState(ConnectionStateSnapshot(
               phase: ConnectionPhase.connected,
@@ -983,7 +1052,16 @@ class ConnectionController {
   void _startTrafficPolling() {
     _trafficTimer?.cancel();
     _trafficTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      final t = cores.front.traffic;
+      // v0.6.4 §mihomo: read the counters of the engine that is ACTUALLY
+      // serving — a standalone mihomo session never fills `front.traffic`,
+      // so the dashboard graph stayed flat/zero on the default engine.
+      final mihomoActive =
+          _state.core == CoreKind.mihomo ||
+          _state.activeProfile?.effectiveCore == CoreKind.mihomo;
+      final t = mihomoActive &&
+              cores.mihomo.status == RuntimeStatus.running
+          ? cores.mihomo.traffic
+          : cores.front.traffic;
       if (t != null && !_trafficSubject.isClosed) {
         _trafficSubject.add(t);
       }

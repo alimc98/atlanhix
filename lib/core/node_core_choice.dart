@@ -69,6 +69,8 @@ class NodeCoreChoice {
         return 'AmneziaWG';
       case CoreKind.masterDnsVpn:
         return 'MDVPN';
+      case CoreKind.stormDns:
+        return 'StormDNS';
     }
   }
 

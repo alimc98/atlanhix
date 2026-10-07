@@ -26,6 +26,14 @@ class MihomoConfigGenerator {
     this.clashSecret = '',
   });
 
+  /// The app-owned SELECTOR group every generated config carries. Also the
+  /// migration/delay-test entry point for a running mihomo session
+  /// (Clash API PUT /proxies/ATX) — callers must use THIS instead of the
+  /// sing-box front's `proxy`/`node:<id>` dialect.
+  static const String atxSelector = 'ATX';
+  /// The url-test group nested inside [atxSelector].
+  static const String atxAutoGroup = 'ATX-AUTO';
+
   /// Convenience for callers that think in ints (the runtime's apiPort).
   /// Keeps `MihomoConfigGenerator(mixedPort: 2081, apiPort: 9099)` working.
   factory MihomoConfigGenerator.ports({required int mixedPort, required int apiPort, String secret = ''}) =>
@@ -51,6 +59,24 @@ class MihomoConfigGenerator {
       if (mp != null) proxies.add(mp);
     }
     final names = [for (final pr in proxies) pr['name'] as String];
+    // v0.6.4 §mihomo-fix: callers pass the profile ID (`selectedId:
+    // profile.id`) but Clash proxy names are profile NAMES — the old
+    // `names.contains(selectedId)` was almost always false, the requested
+    // node was never first, and a Clash `select` defaults to its FIRST
+    // member: every session booted on ATX-AUTO/url-test instead of the
+    // node the user tapped. Resolve by ID OR by name (both spellings are
+    // in the wild; the generator contract said "id" while v0.5.9 tests
+    // and the group ordering logic used names).
+    String? selectedName;
+    for (final p in profiles) {
+      final mp = proxyOf(p);
+      if (mp == null) continue;
+      final n = mp['name'] as String;
+      if (p.id == selectedId || n == selectedId) {
+        selectedName = n;
+        break;
+      }
+    }
     // v0.5.9 §mihomo-fix: the group ordering below boots the selector on
     // the requested node (a Clash select defaults to its first member).
     return {
@@ -79,16 +105,17 @@ class MihomoConfigGenerator {
       'proxies': proxies,
       'proxy-groups': [
         {
-          'name': 'ATX',
+          'name': atxSelector,
           'type': 'select',
           // v0.5.9 §mihomo-fix: the REQUESTED node first — a Clash select
           // group defaults to its FIRST member (absent a saved selection),
           // so the engine boots dialed as-requested; Smart Switch still
           // owns live migration through the same selector.
           'proxies': [
-            if (names.contains(selectedId)) selectedId,
-            'ATX-AUTO',
-            ...names.where((n) => n != selectedId),
+            if (selectedName != null && names.contains(selectedName))
+              selectedName,
+            atxAutoGroup,
+            ...names.where((n) => n != selectedName),
           ],
         },
         if (names.isNotEmpty)
@@ -97,7 +124,7 @@ class MihomoConfigGenerator {
             // SmartSwitch still drives migration via the selector (ATX);
             // this group is the standalone-mode fallback. Plain http —
             // same methodology as the app's own default probe (v0.5.9).
-            'name': 'ATX-AUTO',
+            'name': atxAutoGroup,
             'type': 'url-test',
             'proxies': names,
             'url': 'http://www.gstatic.com/generate_204',
@@ -107,7 +134,7 @@ class MihomoConfigGenerator {
       ],
       'rules': [
         ..._routingRules(routing),
-        'MATCH,ATX',
+        'MATCH,$atxSelector',
       ],
     };
   }
@@ -459,7 +486,7 @@ class MihomoConfigGenerator {
     for (final r in routing.rules) {
       if (!r.enabled) continue;
       final target = switch (r.action) {
-        RoutingAction.proxy || RoutingAction.chain => 'ATX',
+        RoutingAction.proxy || RoutingAction.chain => atxSelector,
         RoutingAction.block => 'REJECT',
         RoutingAction.direct || RoutingAction.warp => 'DIRECT',
       };

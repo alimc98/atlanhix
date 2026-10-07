@@ -1,6 +1,8 @@
 package com.atlanhix.app
 
 import android.content.Intent
+import android.os.Build
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -13,6 +15,10 @@ import com.atlanhix.app.vpn.AtlanhixUpdaterChannel
 import com.atlanhix.app.vpn.InstalledAppsSource
 
 class MainActivity : FlutterActivity() {
+
+    private companion object {
+        const val TAG = "atlanhix"
+    }
 
     private var vpnChannel: AtlanhixVpnChannel? = null
     private var vpnMethodSink: MethodChannel.Result? = null
@@ -33,6 +39,11 @@ class MainActivity : FlutterActivity() {
                 result.success(xrayChannelOrNew().handle(call.method, arg).toString())
             } catch (e: Exception) {
                 result.error("xray_channel", e.message, null)
+            } catch (t: Throwable) {
+                // v0.6.4 §crash-fix: same core-ABI guard as the VPN channel —
+                // a core .so this device cannot load is an error, not a crash.
+                Log.w(TAG, "core unavailable: %s".format(t.message))
+                result.error("core_unavailable", t.message ?: "core_unavailable", null)
             }
         }
         MethodChannel(
@@ -48,6 +59,11 @@ class MainActivity : FlutterActivity() {
                 result.success(mihomoChannelOrNew().handle(call.method, arg).toString())
             } catch (e: Exception) {
                 result.error("mihomo_channel", e.message, null)
+            } catch (t: Throwable) {
+                // v0.6.4 §crash-fix: same core-ABI guard as the VPN channel —
+                // a core .so this device cannot load is an error, not a crash.
+                Log.w(TAG, "core unavailable: %s".format(t.message))
+                result.error("core_unavailable", t.message ?: "core_unavailable", null)
             }
         }
         // v0.4.9 §user: transient probe engine (real delay tests with no
@@ -67,6 +83,8 @@ class MainActivity : FlutterActivity() {
                     runOnUiThread { result.success(resp.toString()) }
                 } catch (e: Exception) {
                     runOnUiThread { result.error("probe_channel", e.message, null) }
+                } catch (t: Throwable) {
+                    runOnUiThread { result.error("core_unavailable", t.message, null) }
                 }
             }.start()
         }
@@ -132,6 +150,17 @@ class MainActivity : FlutterActivity() {
                 }
             } catch (e: Exception) {
                 result.error("vpn_channel", e.message, null)
+            } catch (t: Throwable) {
+                // v0.6.4 §crash-fix: the core AAR ships ONE ABI. On a device
+                // whose ABI it does not cover, `Libbox.<clinit>` throws
+                // UnsatisfiedLinkError (an Error, NOT an Exception) on the
+                // very first channel call — which used to kill the process
+                // at startup, taking the whole UI with it. A missing core is
+                // a device capability question, not a crash: answer the
+                // platform channel with an honest error so Dart can surface
+                // "engine unavailable" and the rest of the app keeps working.
+                Log.w(TAG, "core unavailable on ${Build.SUPPORTED_ABIS.joinToString()}: ${t.message}")
+                result.error("core_unavailable", t.message ?: "core_unavailable", null)
             }
         }
     }

@@ -116,6 +116,7 @@ class OutboundBuilders {
         };
       case ProxyProtocol.wireguard:
       case ProxyProtocol.masterDnsVpn:
+      case ProxyProtocol.stormDns:
       case ProxyProtocol.custom:
         return null; // endpoint / external daemon / passthrough
     }

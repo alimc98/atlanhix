@@ -1,4 +1,3 @@
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../../application/connection_controller.dart';
 import '../../localization/generated/app_localizations.dart';

@@ -72,6 +72,7 @@ class AndroidNodeSupport {
       ProxyProtocol.wireguard =>
         true,
       ProxyProtocol.masterDnsVpn ||
+      ProxyProtocol.stormDns ||
       ProxyProtocol.ssh ||
       ProxyProtocol.custom =>
         false,
@@ -102,6 +103,7 @@ class AndroidNodeSupport {
     if (!isRunnable(p)) {
       return switch (p.protocol) {
         ProxyProtocol.masterDnsVpn => 'MDVPN (desktop only)',
+        ProxyProtocol.stormDns => 'StormDNS (desktop only)',
         _ => 'Not runnable on Android',
       };
     }
@@ -147,6 +149,7 @@ class AndroidNodeSupport {
     if (reason.startsWith('Xray-only')) return 'Xray off · xhttp';
     if (reason.startsWith('Xray')) return 'Xray off';
     if (reason.startsWith('MDVPN')) return 'MDVPN · desktop only';
+    if (reason.startsWith('StormDNS')) return 'StormDNS · desktop only';
     return 'not on Android';
   }
 
@@ -158,6 +161,7 @@ class AndroidNodeSupport {
         CoreKind.wireguardSingbox => 'sing-box (WireGuard)',
         CoreKind.amneziaWg => 'AmneziaWG',
         CoreKind.masterDnsVpn => 'MDVPN',
+        CoreKind.stormDns => 'StormDNS',
         CoreKind.unknown => 'auto',
       };
 
@@ -177,9 +181,13 @@ class AndroidNodeSupport {
         // gated on its own boot-time version probe, never an AAR.
         CoreKind.mihomo => MihomoCoreState.instance.runtimeLoaded,
         // v0.4.9: AWG executes in-libbox on the forked engine (with_awg).
-        CoreKind.amneziaWg => AmneziaWgCoreState.instance.runtimeLoaded,
+        CoreKind.amneziaWg =>
+          AmneziaWgCoreState.instance.runtimeLoaded,
         CoreKind.masterDnsVpn =>
           false,
+        // v0.6.4 §stormdns: same honest lockout as mdvpn — the external
+        // client daemon does not exist on Android (phase 2: JNI build).
+        CoreKind.stormDns => false,
       };
 
   /// WHY a node is excluded from the Android connect pipeline (null =
@@ -221,6 +229,12 @@ class AndroidNodeSupport {
         p.protocol == ProxyProtocol.masterDnsVpn) {
       return 'masterdnsvpn: needs the external mdvpn-client daemon, which does not run on Android';
     }
+    // v0.6.4 §stormdns: same class of exclusion as mdvpn — desktop-only
+    // external daemon (phase 2 plans a JNI/.so build, see WhiteDNS).
+    if (p.effectiveCore == CoreKind.stormDns ||
+        p.protocol == ProxyProtocol.stormDns) {
+      return 'stormdns: needs the external StormDNS client daemon, which does not run on Android';
+    }
     if (!isRunnable(p)) {
       return '${p.protocol.name}: not runnable by the on-device sing-box engine';
     }
@@ -237,8 +251,9 @@ class AndroidNodeSupport {
         'XRAY_START_FAILED' =>
           'The Xray process refused to start — check the engine logs',
         'NO_RUNNABLE_NODE' =>
-          'No node on this device can run yet — Xray (xhttp) and MDVPN nodes '
-              'need their desktop cores; AmneziaWG needs the forked engine',
+          'No node on this device can run yet — Xray (xhttp) and '
+              'MDVPN/StormDNS nodes need their desktop cores; AmneziaWG '
+              'needs the forked engine',
         'NODE_NOT_RUNNABLE_ON_ANDROID' ||
         'CORE_NOT_RUNNABLE_ON_ANDROID' =>
           'This node needs a core that cannot run here '

@@ -10,7 +10,6 @@ import '../../localization/generated/app_localizations.dart';
 import '../../settings/app_settings.dart';
 import '../../theme/theme.dart';
 import 'dns_scan_screen.dart';
-import 'routing_editor_screen.dart';
 
 /// v0.4.1 §7 — the REAL Settings screen. Every control reads and writes the
 /// persistent [AppSettings] model (no hardcoded toggles); each save flows
@@ -614,7 +613,7 @@ class SettingsScreen extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             'Flutter ${const String.fromEnvironment("FLUTTER_VERSION", defaultValue: "3.47")} · '
-            'sing-box (libbox) engine · WARP · WireGuard · AmneziaWG · MasterDNSVPN',
+            'sing-box (libbox) engine · WARP · WireGuard · AmneziaWG · MasterDNSVPN · StormDNS',
             style: Theme.of(context)
                 .textTheme
                 .bodySmall

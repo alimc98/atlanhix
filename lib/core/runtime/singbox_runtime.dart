@@ -2,12 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import '../core_detector.dart';
 import '../configgen/singbox_config_generator.dart';
 import '../../routing/routing_models.dart';
 import '../../domain/entities/proxy_profile.dart';
 import '../logger.dart';
-import '../primitives.dart';
 import 'binary_manager.dart';
 import 'clash_api_client.dart';
 import 'core_process.dart';

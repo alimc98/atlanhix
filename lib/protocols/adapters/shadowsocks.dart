@@ -96,12 +96,14 @@ class ShadowsocksParser {
   /// Decode a whole subscription body that is one big base64 blob of URIs.
   static List<String> decodeUriList(String body) {
     final trimmed = body.trim();
-    if (trimmed.startsWith('ss://') ||
-        trimmed.startsWith('vmess://') ||
-        trimmed.startsWith('vless://') ||
-        trimmed.startsWith('trojan://') ||
-        trimmed.startsWith('hysteria2://') ||
-        trimmed.startsWith('tuic://')) {
+    // v0.6.3 §import-fix: the plain-body fast path used to hardcode SIX
+    // schemes — a pasted `mdvpn://`, `stormdns://`, `wireguard://`,
+    // `anytls://` or `socks://` line fell through to the base64 attempt and
+    // threw "not a URI list", breaking single-link clipboard imports for
+    // every scheme the sniffer accepts. ANY `scheme://` first line means
+    // "already a URI list" — split lines, the per-line parser decides.
+    if (RegExp(r'^[a-z][a-z0-9+.-]*://', caseSensitive: false)
+        .hasMatch(trimmed)) {
       return trimmed
           .split(RegExp(r'\r?\n'))
           .map((l) => l.trim())

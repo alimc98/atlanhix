@@ -1,6 +1,5 @@
+import '../core/logger.dart';
 import '../data/app_storage.dart';
-import '../data/secure_vault.dart';
-import 'routing_settings.dart';
 
 /// v0.4.1 §7 — the real persistent application-settings model.
 ///
@@ -33,7 +32,11 @@ class AppSettings {
     // ---- Routing (§8) ----
     this.routingMode = RoutingMode.rule,
     // ---- Core (§7 Core) ----
-    this.corePreference = CorePreference.auto,
+    // v0.6.4 §mihomo-default: mihomo is the default engine (FlClash parity).
+    // The detector still falls back to the capability matrix for protocols
+    // mihomo cannot run (wireguard/mdvpn/ssh/…) and when the mihomo runtime
+    // is unavailable on the device.
+    this.corePreference = CorePreference.mihomo,
     // ---- v0.4.4 user items 4/5: local port + proxy/TUN mode ----
     this.localPort = 2080, // local mixed proxy port (0 = auto)
     this.proxyMode = false, // true = system-proxy (no TUN), false = TUN
@@ -293,9 +296,12 @@ class AppSettings {
         routingMode: RoutingMode.values.firstWhere(
             (e) => e.name == j['routingMode'],
             orElse: () => RoutingMode.rule),
+        // Missing key = a store written before the field existed → same
+        // default as the constructor (mihomo). An explicit `auto` saved by
+        // the user still round-trips as `auto`.
         corePreference: CorePreference.values.firstWhere(
             (e) => e.name == j['corePreference'],
-            orElse: () => CorePreference.auto),
+            orElse: () => CorePreference.mihomo),
         iranAppsDirect: j['iranAppsDirect'] as bool? ?? false,
         adsBlock: j['adsBlock'] as bool? ?? false,
         tlsFragment: j['tlsFragment'] as bool? ?? false,
@@ -393,7 +399,16 @@ class AppSettingsRepository {
   Future<void> load() async {
     final section = _store.section('appSettings');
     if (section.isEmpty) return;
-    _current = AppSettings.fromJson(section);
+    // v0.6.3 §boot-crash-fix: a corrupt stored section used to throw out of
+    // bootstrap (bad cast / unknown enum name with no orElse). Keep the
+    // DEFAULT settings and log — the app boots, the user re-picks one
+    // setting if needed, instead of a white screen.
+    try {
+      _current = AppSettings.fromJson(section);
+    } catch (e) {
+      Logger.instance.warn(
+          'settings', 'corrupt stored appSettings — using defaults: $e');
+    }
   }
 
   /// Persist a mutated settings object (whole-object replace keeps this

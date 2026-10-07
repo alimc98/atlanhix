@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../platform/android_vpn.dart';
-import '../../settings/app_settings.dart';
 import '../../settings/routing_settings.dart';
-import '../widgets/common_widgets.dart';
 
 /// v0.4.1 §11/§12/§15 — installed-application routing picker.
 ///

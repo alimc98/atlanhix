@@ -225,6 +225,12 @@ class _AtlanhixAppState extends State<AtlanhixApp>
       // v0.5.0 §battery: back in the foreground → counters at the live 2 s
       // cadence again.
       widget.deps.vpnSession.controller.setWatchCadence(foreground: true);
+      // v0.6.3 §battery: tunnel verify probe back to 30 s, and the
+      // subscription auto-update pump resumes ticking (it claims to run
+      // "in the foreground" but had no lifecycle gate — it kept a 60 s
+      // wakeup alive all night).
+      widget.deps.connection.setMonitorCadence(foreground: true);
+      widget.deps.subscriptionService.startAutoUpdatePump();
     }
     // v0.4.9 §battery: the transient probe engine exists ONLY for foreground
     // delay tests. Backgrounded with no live VPN it is a hidden Go runtime
@@ -237,6 +243,12 @@ class _AtlanhixAppState extends State<AtlanhixApp>
       // v0.5.0 §battery: hidden app → drop the native watcher to a 15 s
       // cadence (counters nobody watches don't justify a 2 s CPU wake).
       widget.deps.vpnSession.controller.setWatchCadence(foreground: false);
+      // v0.6.3 §battery: hidden app → tunnel verify stretches 30 s → 2 min
+      // and the subscription pump stops scheduling its 60 s wakeup. Both
+      // come back on the next resume (overdue subs catch up on the first
+      // tick — their `nextUpdate` already fired).
+      widget.deps.connection.setMonitorCadence(foreground: false);
+      widget.deps.subscriptionService.stopAutoUpdatePump();
     }
   }
 

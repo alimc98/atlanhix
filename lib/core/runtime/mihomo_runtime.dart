@@ -60,6 +60,16 @@ class MihomoRuntime {
   /// Cached API client while the engine is up (re-created per start).
   ClashApiClient? _api;
 
+  /// v0.6.4 §mihomo: engine traffic counters (Clash GET /connections),
+  /// polled at the same 1 s cadence as the sing-box front. Without this
+  /// every dashboard graph was DEAD on a mihomo session (the controller
+  /// only ever read `front.traffic`, which a standalone session never
+  /// fills).
+  TrafficSnapshot? _traffic;
+  Timer? _trafficTimer;
+
+  TrafficSnapshot? get traffic => _traffic;
+
   /// Live API client — null when not running. The SmartSwitch/delay-test
   /// path consumes this exactly like `cores.front.api` / :xray's client.
   ClashApiClient? get api => _status == RuntimeStatus.running ? _api : null;
@@ -117,6 +127,7 @@ class MihomoRuntime {
         _status = RuntimeStatus.crashed;
         _exitEvents?.add(_lastExit!);
       }
+      _trafficTimer?.cancel();
       _api = null;
     }));
 
@@ -129,6 +140,7 @@ class MihomoRuntime {
     }
     _status = RuntimeStatus.running;
     _api = ClashApiClient(port: apiPort, secret: apiSecret);
+    _startTrafficPolling();
     return StartResult(StartStatus.ok,
         pid: _process!.pid, startupMs: sw.elapsedMilliseconds);
   }
@@ -156,6 +168,7 @@ class MihomoRuntime {
   }
 
   Future<void> stop() async {
+    _trafficTimer?.cancel();
     final p = _process;
     _process = null;
     // v0.5.6 §leak-fix: `_api` owns an HttpClient that was never closed
@@ -196,6 +209,24 @@ class MihomoRuntime {
   }
 
   String _stderrTail() => _stderrRing.join('\n').trim();
+
+  /// v0.6.4 §mihomo: recent stderr lines for ProbeError surfacing (read-only
+  /// copy; mirrors SingBoxRuntime.debugStderrTail).
+  List<String> debugStderrTail() => List.unmodifiable(_stderrRing);
+
+  /// 1 s counter poll through the engine's own Clash API (parity with the
+  /// sing-box front's [SingBoxRuntime._startTrafficPolling]).
+  void _startTrafficPolling() {
+    _trafficTimer?.cancel();
+    Future<void>.microtask(() async {
+      final t0 = await _api?.connections();
+      if (t0 != null) _traffic = t0;
+    });
+    _trafficTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      final t = await _api?.connections();
+      if (t != null) _traffic = t;
+    });
+  }
 
   String _stdoutTail() => '';
 }

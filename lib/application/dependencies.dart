@@ -12,6 +12,7 @@ import '../application/real_delay_tester.dart';
 import '../application/tcp_pinger.dart';
 import '../application/subscription_service.dart';
 import '../core/core_detector.dart';
+import '../domain/entities/proxy_profile.dart';
 import '../core/fragmentation/fragment_ladder_cache.dart';
 import '../core/health/latency_tester.dart';
 import '../core/health/test_scheduler.dart';
@@ -220,7 +221,16 @@ class AppDependencies {
         // node read as 'engine-off' (UI stayed '—'). The Clash API listener
         // itself is real though (127.0.0.1:9097 confirmed on device), so
         // build the client lazily when the port answers.
-        var api = deps.cores.front.api;
+        // v0.6.4 §mihomo: a node that resolves to mihomo is measured
+        // through the RUNNING child's API (ATX dialect, profile-name
+        // tags) — the front only stubs the ACTIVE node, so its table
+        // would 404 the rest. Child down → fall through to the front.
+        final ridesChild = deps.detector
+                .resolve(p, preference: deps.appSettings.corePreference)
+                .core ==
+            CoreKind.mihomo;
+        var api = ridesChild ? await mihomoEngineApiFor(deps) : null;
+        api ??= deps.cores.front.api;
         api ??= await _probeAndBuildClashApi(deps);
         if (api == null) return null; // engine off — honest 'engine-off'
         // v0.4.9 §user-fix: verify the tag EXISTS in the running config
@@ -228,7 +238,10 @@ class AppDependencies {
         // is simply not in the table — its delayTest would 404 and the old
         // code reported that as a REAL 5-second timeout. Honest null lets
         // the caller fall through to the transient engine instead.
-        final tag = '${SingBoxRuntime.tagPrefix}${p.id}';
+        // v0.6.4 §mihomo: the tag dialect follows the engine that answered.
+        final tag = api.port == CoreManager.mihomoApiPort
+            ? p.name
+            : '${SingBoxRuntime.tagPrefix}${p.id}';
         final tags = await api.proxyTags();
         if (tags != null && !tags.contains(tag)) return null;
         final ms = await api.delayTest(
@@ -481,26 +494,65 @@ class AppDependencies {
   /// 'timeout' dead (the worst lie: engine-off at least falls through).
   static ClashApiClient? _liveClashApi;
 
-  /// Returns a working Clash API client when a listener answers on the
-  /// configured port, null otherwise (engine off → 'engine-off' results).
-  static Future<ClashApiClient?> _probeAndBuildClashApi(AppDependencies deps) async {
-    final client0 = _liveClashApi;
-    if (client0 != null && await client0.isAlive()) return client0;
-    // v0.5.6 §leak-fix: dispose the stale client. `isAlive()` lazily builds
-    // its HttpClient, so dropping the reference orphaned a live client on
-    // EVERY dead probe — which is the dominant case, since this runs per
-    // node while "test all" is pressed with the engine off.
-    _liveClashApi = null;
-    client0?.dispose();
-    final client = ClashApiClient(
-        port: deps.cores.front.apiPort,
-        secret: deps.cores.front.clashSecret);
-    if (await client.isAlive()) {
-      return _liveClashApi = client;
-    }
-    // Dead: hand the client back rather than orphaning it.
+  /// v0.6.4 §mihomo: the RUNNING :mihomo child's Clash API (:9099) keeps
+  /// its OWN slot — with mihomo as default BOTH listeners answer while the
+  /// VPN is up (the front owns the TUN, the child owns the node pool), so
+  /// a single shared slot could only ever remember whoever answered first.
+  /// The two engines speak different selector dialects (proxy/node:<id> vs
+  /// ATX/profile-name), so callers must be able to ask for the one they
+  /// mean instead of guessing from a shared cache.
+  static ClashApiClient? _mihomoClashApi;
+
+  /// One cached-slot probe: keep a live cached client, dispose a dead one
+  /// (v0.5.6 §leak-fix: `isAlive()` lazily builds its HttpClient, so
+  /// dropping the reference orphaned a live client on EVERY dead probe),
+  /// else try to reach [port] fresh. Dead → null (honest 'engine-off').
+  static Future<ClashApiClient?> _probeSlot(
+      ClashApiClient? cached, int port, String secret) async {
+    if (cached != null && await cached.isAlive()) return cached;
+    cached?.dispose();
+    final client = ClashApiClient(port: port, secret: secret);
+    if (await client.isAlive()) return client;
     client.dispose();
     return null;
+  }
+
+  /// Returns a working Clash API client when a listener answers on the
+  /// configured port, null otherwise (engine off → 'engine-off' results).
+  ///
+  /// v0.6.4 §mihomo: probe BOTH listeners — the sing-box front (:9097) and
+  /// the standalone mihomo engine (:9099). With mihomo as the default
+  /// engine, :9097 can be dead and every delay test / Smart-Switch ladder
+  /// read `null` ("engine-off") on a perfectly live session. The FRONT is
+  /// tried first (it owns the TUN and its dialect is the generic one);
+  /// the mihomo child is the fallback answer.
+  static Future<ClashApiClient?> _probeAndBuildClashApi(AppDependencies deps) async {
+    _liveClashApi = await _probeSlot(
+        _liveClashApi, deps.cores.front.apiPort, deps.cores.front.clashSecret);
+    if (_liveClashApi != null) return _liveClashApi;
+    return mihomoEngineApiFor(deps);
+  }
+
+  /// v0.6.4 §mihomo: the :mihomo child's live API, or null when no child
+  /// is running. Needed wherever the target rides mihomo — the front's
+  /// proxy table carries no ATX selection state.
+  static Future<ClashApiClient?> mihomoEngineApiFor(AppDependencies deps) async {
+    _mihomoClashApi = await _probeSlot(_mihomoClashApi,
+        deps.cores.mihomo.apiPort, deps.cores.mihomo.apiSecret);
+    return _mihomoClashApi;
+  }
+
+  /// v0.6.4 §mihomo: the :mihomo child's live API (instance form of
+  /// [mihomoEngineApiFor]).
+  Future<ClashApiClient?> mihomoEngineApi() => mihomoEngineApiFor(this);
+
+  /// v0.6.4 §mihomo: the sing-box FRONT's live API only. WARP rescue lives
+  /// exclusively in the front config (twin outbound + `proxy` member), so
+  /// those swaps must never reach the mihomo listener even when it answers.
+  Future<ClashApiClient?> frontEngineApi() async {
+    _liveClashApi = await _probeSlot(
+        _liveClashApi, cores.front.apiPort, cores.front.clashSecret);
+    return _liveClashApi;
   }
 
   /// v0.5.0 §user-fix: PUBLIC instance wrapper over the probe-and-cache

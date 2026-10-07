@@ -1,6 +1,8 @@
 // Re-exports so the main test files import one helper module.
-export 'package:nexus/core/core_detector.dart'
-    show CoreDetector, CoreKind, CoreBinaryKind;
+// v0.6.3 §analyze-fix: CoreKind lives in proxy_profile.dart and
+// CoreBinaryKind in binary_manager.dart (both re-exported in full below) —
+// showing them from core_detector.dart was an undefined_shown_name.
+export 'package:nexus/core/core_detector.dart' show CoreDetector;
 export 'package:nexus/core/health/latency_tester.dart' show LatencyTester;
 export 'package:nexus/core/health/test_scheduler.dart' show HealthStore;
 export 'package:nexus/data/app_storage.dart' show JsonStore;
@@ -10,7 +12,6 @@ export 'package:nexus/domain/entities/proxy_profile.dart';
 export 'package:nexus/routing/routing_models.dart';
 export 'package:nexus/settings/routing_settings.dart';
 export 'package:nexus/settings/app_settings.dart' show RoutingMode;
-export 'package:nexus/core/health/test_scheduler.dart' show HealthStore;
 export 'package:nexus/settings/runtime_config_bridge.dart';
 export 'package:nexus/core/configgen/xray_config_generator.dart';
 export 'package:nexus/core/configgen/singbox_config_generator.dart';

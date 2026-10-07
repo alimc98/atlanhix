@@ -7,6 +7,7 @@ import 'adapters/clash_yaml.dart';
 import 'adapters/hysteria2.dart';
 import 'adapters/masterdnsvpn.dart';
 import 'adapters/shadowsocks.dart';
+import 'adapters/stormdns.dart';
 import 'adapters/singbox_json.dart';
 import 'adapters/trojan.dart';
 import 'adapters/tuic_socks.dart';
@@ -23,6 +24,7 @@ enum SourceFormat {
   singBoxJson,
   xrayJson,
   wireguardConf,
+  stormDnsToml,
   masterDnsVpnToml,
   unknown,
 }
@@ -54,6 +56,13 @@ class SourceFormatSniffer {
             .hasMatch(t)) {
       return SourceFormat.clashYaml;
     }
+    // v0.6.4 §stormdns: check FIRST — both client configs carry DOMAINS =
+    // and only the StormDNS sample has STARTUP_MODE / DNS_QUERY_TYPE /
+    // the split duplication keys.
+    if (StormDnsParser.looksLikeToml(text) &&
+        StormDnsParser.looksLikeStormToml(text)) {
+      return SourceFormat.stormDnsToml;
+    }
     if (MasterDnsVpnParser.looksLikeToml(text) &&
         RegExp(r'SERVER_(ADDRESS|PUBLIC_KEY)|RESOLVERS|SUBDOMAIN|DOMAINS\s*=',
                 multiLine: true)
@@ -81,7 +90,7 @@ class SourceFormatSniffer {
     const schemes = {
       'vmess:', 'vless:', 'trojan:', 'ss:', 'hysteria2:', 'hy2:', 'hysteria:',
       'tuic:', 'socks:', 'socks5:', 'http:', 'ssr:', 'wireguard:', 'mdvpn:',
-      'anytls:',
+      'stormdns:', 'storm:', 'masterdns:', 'anytls:',
     };
     return schemes.any(line.startsWith);
   }
@@ -102,6 +111,7 @@ class MultiFormatImporter {
   final _singbox = SingBoxJsonParser();
   final _xray = XrayJsonParser();
   final _mdvpn = MasterDnsVpnParser();
+  final _storm = StormDnsParser();
 
   /// v0.4.7 §user: every imported payload is screened for Xray-only
   /// transports (xhttp/mKCP) and their stream-shape requirements, so the
@@ -142,6 +152,8 @@ class MultiFormatImporter {
         warnings.addAll(r.skipped.map((s) => 'Xray: $s'));
       case SourceFormat.wireguardConf:
         profiles.add(_wg.parse(payload, fileName: fileName));
+      case SourceFormat.stormDnsToml:
+        profiles.add(_storm.parseToml(payload, name: fileName));
       case SourceFormat.masterDnsVpnToml:
         profiles.add(_mdvpn.parseToml(payload, name: fileName));
       case SourceFormat.unknown:
@@ -183,6 +195,9 @@ class MultiFormatImporter {
     }
     if (line.startsWith('tuic://')) return _tuic.parse(line);
     if (line.startsWith('mdvpn://')) return _mdvpn.parseUri(line);
+    // WhiteDNS-compatible profile links (stormdns://, storm://, masterdns://
+    // JSON) — before the generic scheme list, engine picked per scheme.
+    if (StormDnsParser.isProfileLink(line)) return _storm.parseUri(line);
     if (line.startsWith('socks://') ||
         line.startsWith('socks5://') ||
         line.startsWith('http://') ||

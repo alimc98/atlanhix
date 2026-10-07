@@ -71,16 +71,11 @@ class VpnSession {
   VpnSession({required this.deps}) {
     controller = AndroidVpnController();
     _sub = controller.states.listen((_) => _syncFromAndroid());
-    // v0.5.2 §user: PER-NODE USAGE — fold the engine's global counters
-    // into the active node's bucket on every native state poll (the same
-    // 2 s cadence the dashboard reads for speeds). Delta accounting keeps
-    // every byte attributed to exactly the node that carried it.
-    _usageTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      if (controller.isConnected && selectedNode != null) {
-        deps.nodeUsage
-            .fold(selectedNode!.id, controller.upBytes, controller.downBytes);
-      }
-    });
+    // v0.6.3 §battery: the per-node usage fold (v0.5.2) is started by
+    // _syncFromAndroid the moment the tunnel comes up and cancelled when it
+    // goes down — the old unconditional 2 s periodic timer scheduled a CPU
+    // wakeup every 2 s for the ENTIRE process lifetime, even disconnected
+    // (its body early-returned, but the wakeup itself still fired).
   }
 
   /// v0.6.2 §stop-fix: is [a] still the session's live attempt? Ownership is
@@ -145,9 +140,15 @@ class VpnSession {
       final url = deps.appSettings.effectiveDelayTestUrl;
       // 1) LIVE engine (VPN up): measure through the running config —
       //    tags of nodes not in the running pool answer honestly below.
+      // v0.6.4 §mihomo: probe BOTH engines once — each node is then
+      // measured through the engine that actually SERVES it (child-pool
+      // members via :9099/ATX, everything else via the front).
       final live = await liveEngineApi();
-      if (live != null) {
-        return _delayBatchVia(live, batch, url,
+      final mih = await deps.mihomoEngineApi();
+      if (live != null || mih != null) {
+        ClashApiClient? apiFor(ProxyProfile p) =>
+            (_mihomoPoolIds.contains(p.id) ? mih : live) ?? live ?? mih;
+        return _delayBatchVia(apiFor, batch, url,
             missing: ProbeResult(
                 ok: false, latencyMs: null,
                 errorKind: 'engine-off',
@@ -197,10 +198,16 @@ class VpnSession {
       final url = deps.appSettings.effectiveDelayTestUrl;
       // 1) Live front engine (desktop child process — on Android this is
       //    null and we fall through to the probe engine).
-      final live = await liveEngineApi();
+      // v0.6.4 §mihomo: a child-served node is measured through the child
+      // (profile-name dialect); everything else stays on the front.
+      final live = _mihomoPoolIds.contains(p.id)
+          ? await deps.mihomoEngineApi() ?? await liveEngineApi()
+          : await liveEngineApi();
       if (live != null) {
-        final ms = await live.delayTest(
-            '${SingBoxRuntime.tagPrefix}${p.id}', url, 5000);
+        final tag = live.port == CoreManager.mihomoApiPort
+            ? p.name
+            : '${SingBoxRuntime.tagPrefix}${p.id}';
+        final ms = await live.delayTest(tag, url, 5000);
         return ProbeResult(ok: ms != null, latencyMs: ms,
             errorKind: ms == null ? 'timeout' : null);
       }
@@ -227,6 +234,20 @@ class VpnSession {
   /// running). The front config stubs this for mihomo-owned nodes.
   int _mihomoUpstreamPort = 0;
 
+  /// v0.6.4 §mihomo: ids the RUNNING :mihomo child actually serves — the
+  /// single source the front stubs, the ATX migration and the delay-test
+  /// dialects all read, so a dropped pool member can never be stubbed into
+  /// a child that does not know it.
+  Set<String> _mihomoPoolIds = const {};
+
+  /// Does [p] resolve to the mihomo engine under the CURRENT settings?
+  /// Shared by the child pool, the front stubs, migrate and delay tests —
+  /// detector + preference only, no runtime state (same answer everywhere).
+  bool _ridesMihomo(ProxyProfile p) => deps.detector
+          .resolve(p, preference: deps.appSettings.corePreference)
+          .core ==
+      CoreKind.mihomo;
+
   /// v0.5.0 §user-fix: a WORKING Clash-API client for the live engine, or
   /// null. On Android libbox runs INSIDE the VPN service process and
   /// `front.api` is never constructed — only this probe-and-cache path
@@ -243,19 +264,33 @@ class VpnSession {
   /// v0.5.2 §user: [onNode] fires per LANDED measurement (live ladder
   /// count); a missing-tag node is reported immediately with null ms.
   static Future<Map<String, ProbeResult>> _delayBatchVia(
-    ClashApiClient api,
+    ClashApiClient? Function(ProxyProfile) apiFor,
     List<ProxyProfile> batch,
     String url, {
     required ProbeResult missing,
     void Function(ProxyProfile p, int? ms)? onNode,
   }) async {
     final out = <String, ProbeResult>{};
+    // v0.6.4 §mihomo: ONE /proxies table read per ENGINE, not per node —
+    // a batch mixes front-served and child-served nodes now, each with its
+    // own dialect (proxy/node:<id> vs ATX/profile-name).
+    final tables = <ClashApiClient, Future<Set<String>?>>{};
     await Future.wait(batch.map((p) async {
-      final tag = '${SingBoxRuntime.tagPrefix}${p.id}';
-      // The tag exists in the config? (cheap /proxies read, cached table on
-      // the engine side of the wire is still one HTTP round trip — but one
-      // per node in parallel is fine.)
-      final tags = await api.proxyTags();
+      final api = await apiFor(p);
+      if (api == null) {
+        // No listener serves this node → honest engine-off, never a
+        // fabricated timeout (same contract as a missing tag below).
+        out[p.id] = missing;
+        onNode?.call(p, null);
+        return;
+      }
+      // v0.6.4 §mihomo: the tag dialect follows the engine that answers.
+      final tag = api.port == CoreManager.mihomoApiPort
+          ? p.name
+          : '${SingBoxRuntime.tagPrefix}${p.id}';
+      // The tag exists in the config? (cheap /proxies read — now once per
+      // engine instead of once per node in parallel.)
+      final tags = await tables.putIfAbsent(api, () => api.proxyTags());
       if (tags == null || !tags.contains(tag)) {
         out[p.id] = missing;
         onNode?.call(p, null);
@@ -289,15 +324,37 @@ class VpnSession {
   /// node's dial-out — the same daemon topology as :xray.
   Future<bool> _startMihomoUpstream(ProxyProfile profile, String trace) async {
     try {
-      final cfg = MihomoConfigGenerator.ports(mixedPort: 2081, apiPort: 9099)
+      // v0.6.4 §mihomo: the child carries the WHOLE mihomo-runnable pool,
+      // not just the active node — desktop parity (CoreManager.startMihomo)
+      // and the precondition for a hot ATX migration: a node missing from
+      // the running config can only be reached by a full reconnect.
+      final seen = <String>{};
+      final pool = <ProxyProfile>[];
+      for (final p in deps.profiles.all) {
+        if (!p.enabled || !AndroidNodeSupport.isRunnable(p)) continue;
+        if (!_ridesMihomo(p)) continue;
+        // Clash proxy names must be UNIQUE — a duplicate would fail the
+        // child's whole config parse. The ACTIVE node always rides (its
+        // bootstrapped copy may share a name with the raw pool entry).
+        if (p.id == profile.id) {
+          if (seen.add(profile.name)) pool.add(profile);
+          continue;
+        }
+        if (seen.add(p.name)) pool.add(p);
+      }
+      if (!pool.any((p) => p.id == profile.id)) {
+        if (seen.add(profile.name)) pool.insert(0, profile);
+      }
+      final cfg = MihomoConfigGenerator.ports(
+              mixedPort: 2081, apiPort: CoreManager.mihomoApiPort)
           .build(
-        profiles: [profile],
+        profiles: pool,
         selectedId: profile.id,
         routing: deps.configBridge.routingProfile(),
         dns: deps.configBridge.dnsSettings(),
       );
-      final ok = await MihomoBridge.instance
-          .start(jsonEncode(cfg), 2081);
+      _logMihomoSummary(cfg, trace);
+      final ok = await MihomoBridge.instance.start(jsonEncode(cfg), 2081);
       if (!ok) {
         lastError = 'MIHOMO_START_FAILED';
         Logger.instance.error('vpn-session',
@@ -305,8 +362,9 @@ class VpnSession {
         return false;
       }
       _mihomoUpstreamPort = 2081;
+      _mihomoPoolIds = pool.map((p) => p.id).toSet();
       Logger.instance.info('vpn-session',
-          '$trace MIHOMO_UPSTREAM node=${profile.name} mixed=2081');
+          '$trace MIHOMO_UPSTREAM node=${profile.name} mixed=2081 pool=${pool.length}');
       return true;
     } catch (e) {
       lastError = 'MIHOMO_START_FAILED';
@@ -770,6 +828,22 @@ class VpnSession {
       _warpWatchdog = null;
       _warpFails = 0;
     }
+    // v0.6.3 §battery: per-node usage fold — alive ONLY while connected
+    // (mirror of the warp-watchdog gate above). Delta accounting keeps every
+    // byte attributed to exactly the node that carried it; the 2 s cadence
+    // matches the dashboard's speed reads while the tunnel is up.
+    final tunnelUp = controller.isConnected;
+    if (tunnelUp && _usageTimer == null) {
+      _usageTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+        if (controller.isConnected && selectedNode != null) {
+          deps.nodeUsage
+              .fold(selectedNode!.id, controller.upBytes, controller.downBytes);
+        }
+      });
+    } else if (!tunnelUp && _usageTimer != null) {
+      _usageTimer?.cancel();
+      _usageTimer = null;
+    }
   }
 
   /// §2 — the full connect flow. Never reports CONNECTED without a real
@@ -973,10 +1047,21 @@ class VpnSession {
     //    (libbox lives in the service process) — the old read here made the
     //    fast path dead code and every switch a full disconnect/reconnect.
     //    The probe-and-cache client reaches the real :9097 listener.
-    final api = await liveEngineApi();
+    // v0.6.4 §mihomo: the swap must go to the engine that SERVES [next],
+    // in ITS dialect — a child-pool member swaps the ATX group over
+    // profile names on :9099; anything else keeps the front's proxy/
+    // node:<id> selector. A child that does not know [next] has no such
+    // member, the select fails, and the full reconnect below rebuilds the
+    // child's config with [next] in the pool.
+    final toMihomo = _mihomoPoolIds.contains(next.id) || _ridesMihomo(next);
+    final api = toMihomo ? await deps.mihomoEngineApi() : await liveEngineApi();
     if (api != null) {
+      final mihomoSide = api.port == CoreManager.mihomoApiPort;
       final ok = await api.select(
-          SingBoxRuntime.selectorTag, '${SingBoxRuntime.tagPrefix}${next.id}');
+          mihomoSide
+              ? MihomoConfigGenerator.atxSelector
+              : SingBoxRuntime.selectorTag,
+          mihomoSide ? next.name : '${SingBoxRuntime.tagPrefix}${next.id}');
       if (ok) {
         // v0.4.8 §user: the swap must be a VERIFIED handover, not a silent
         // timeout — a dead node now lands the session on FAILED instead of
@@ -1457,6 +1542,7 @@ class VpnSession {
     // v0.5.3 §mihomo: the child dies with the session.
     if (_mihomoUpstreamPort > 0 || MihomoBridge.instance.running) {
       _mihomoUpstreamPort = 0;
+      _mihomoPoolIds = const {};
       await MihomoBridge.instance.stop();
     }
     _clearDisconnectedState();
@@ -1558,24 +1644,19 @@ class VpnSession {
               '$trace WARP chain mode ${st.warpChainMode.name} but no registered account — plain topology');
         }
       }
-      // v0.5.3 §mihomo — STANDALONE ENGINE BRANCH: a mihomo-owned node NEVER
-      // reaches the sing-box front config. The mihomo child process owns the
-      // dial-out end-to-end; the front tunnel (libbox TUN) routes ALL traffic
-      // into mihomo's mixed inbound via the SAME socksUpstream mechanism the
-      // :xray child uses — one dialer, no double wrap. The generated config
-      // below is what `mihomo -d -f` consumes when the runtime starts.
+      // v0.6.4 §mihomo-fix: this branch used to RETURN the mihomo config
+      // itself as `configJson` — which is handed to libbox (sing-box) in the
+      // native handoff below. sing-box cannot parse a Clash config (unknown
+      // fields / no inbounds): EVERY mihomo connect on Android failed at
+      // ENGINE_START, so "mihomo as default" would have broken the whole
+      // app on-device. The :mihomo child ALREADY received its config from
+      // [_startMihomoUpstream]; what libbox needs is the FRONT sing-box
+      // config below, whose mihomo stub (socksUpstreams → 127.0.0.1:2081)
+      // routes the TUN into the child — the topology the v0.5.3 comments
+      // describe (TUN → socks → :mihomo → node).
       if (profile.effectiveCore == CoreKind.mihomo) {
-        final cfg = MihomoConfigGenerator.ports(mixedPort: 2081, apiPort: 9099)
-            .build(
-          profiles: [profile],
-          selectedId: profile.id,
-          routing: routing,
-          dns: dns,
-        );
         Logger.instance.info('vpn-session',
-            '$trace MIHOMO_CONFIG generated node=${profile.name} transport=${profile.transport.name}');
-        _logMihomoSummary(cfg, trace);
-        return jsonEncode(cfg);
+            '$trace MIHOMO_FRONT_CONFIG node=${profile.name} transport=${profile.transport.name} (front stubs the child on $_mihomoUpstreamPort)');
       }
       // Upstream Xray (xhttp/mKCP nodes AND detected-Xray cores — e.g. the
       // post-quantum `mlkem…` VLESS encryption, which no sing-box outbound
@@ -1620,9 +1701,20 @@ class VpnSession {
       // dies with `software caused connection abort` (device log 2026-09-17).
       // The stub (127.0.0.1) never matches an ip_cidr rule, so no flow is
       // double-wrapped — the rule only serves the child's own dials.
-      final bypass = CoreManager.needsXrayUpstream(profile)
-          ? XrayConfigGenerator.childDialBypassCidrs(
-              profile, dns: dns)
+      // v0.6.4 §mihomo: the :mihomo child is the SAME topology (separate
+      // process, no protect hook) — it needs the same bypass, plus its
+      // engine-internal resolvers (MihomoConfigGenerator hardcodes
+      // 8.8.8.8/1.1.1.1 DoH) which the app-level DnsSettings may not list.
+      final childOutsideTun = CoreManager.needsXrayUpstream(profile) ||
+          profile.effectiveCore == CoreKind.mihomo;
+      final bypass = childOutsideTun
+          ? <String>[
+              ...XrayConfigGenerator.childDialBypassCidrs(profile, dns: dns),
+              if (profile.effectiveCore == CoreKind.mihomo) ...const [
+                '8.8.8.8/32',
+                '1.1.1.1/32',
+              ],
+            ]
           : const <String>[];
       final cfg = cores.front.buildConfig(
         pool,
@@ -1939,7 +2031,11 @@ class VpnSession {
       _warpFails = 0;
       return;
     }
-    final api = await liveEngineApi();
+    // v0.6.4 §mihomo: the WARP twin exists ONLY in the front config, so
+    // this watchdog reads the FRONT's table even when the mihomo child
+    // answers — the child's dialect has no `node:` tags at all and would
+    // count every sweep as a false failure.
+    final api = await deps.frontEngineApi();
     if (api == null) return;
     final ms = await api.delayTest(
         '${SingBoxRuntime.tagPrefix}${node.id}', url, 5000);
@@ -1968,7 +2064,9 @@ class VpnSession {
   /// warpFirst, swaps the selector to the pre-built twin, verifies with a
   /// real URL probe and restores the plain selection when the rescue fails.
   Future<void> _enableWarpFirstFor(ProxyProfile node) async {
-    final api = await liveEngineApi();
+    // v0.6.4 §mihomo: the rescue twin lives ONLY in the front config —
+    // force the front's API, never the child's ATX listener.
+    final api = await deps.frontEngineApi();
     final rescueTag = 'node:${node.id}:warpfirst';
     if (api == null) return;
     Logger.instance.info('warp-offer',

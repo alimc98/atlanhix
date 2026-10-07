@@ -5,22 +5,35 @@ import '../../application/connection_controller.dart';
 import '../../application/dependencies.dart';
 import '../../core/android_node_support.dart';
 import '../../core/net/geo_locator.dart';
-import '../../settings/app_settings.dart';
 import '../../settings/smart_switch.dart' show LadderProgress;
 import '../../domain/entities/health.dart';
 import '../../domain/entities/proxy_profile.dart';
 import '../../platform/android_vpn.dart' show AndroidVpnPhase;
 import '../../localization/generated/app_localizations.dart';
 import '../../theme/theme.dart';
+import '../tab_stage.dart';
+import '../widgets/common_widgets.dart';
 import '../widgets/live_monitor.dart';
 import '../widgets/traffic_graph.dart';
 
 /// Main dashboard (§30): answers in 5 seconds — connected? which node?
 /// healthy? how fast? what core?
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key, required this.deps});
+  const DashboardScreen({
+    super.key,
+    required this.deps,
+    this.onOpenNodes,
+    this.onOpenRouting,
+  });
 
   final AppDependencies deps;
+
+  /// v0.6.4 §redesign: the node card's chevron opens the Nodes tab. Null
+  /// (the dashboard rendered standalone) simply hides the affordance.
+  final VoidCallback? onOpenNodes;
+
+  /// v0.6.4 §redesign: the GEO ROUTE chip's chevron opens the Routing tab.
+  final VoidCallback? onOpenRouting;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -40,6 +53,17 @@ class _DashboardScreenState extends State<DashboardScreen>
   // 2026-09-17 20:12). Same length, same semantics, mutable.
   final _down = List<double>.of(List<double>.filled(60, 0));
   final _up = List<double>.of(List<double>.filled(60, 0));
+  // v0.6.4 §redesign: the Latency tile plots a REAL history (bounded ring of
+  // engine measurements). Empty = the tile draws the mockup's dotted idle
+  // baseline instead of inventing a curve.
+  final _latencySeries = <double>[];
+
+  void _pushLatency(int ms) {
+    _latencySeries.add(ms.toDouble());
+    while (_latencySeries.length > 40) {
+      _latencySeries.removeAt(0);
+    }
+  }
   int? _lastUp; // for speed delta
   int? _lastDown;
   // v0.5.0 §user: TOTAL USAGE — cumulative bytes since the tunnel came up
@@ -47,6 +71,11 @@ class _DashboardScreenState extends State<DashboardScreen>
   int _sessionDownBytes = 0;
   int _sessionUpBytes = 0;
   Timer? _clock;
+
+  /// v0.6.4 §battery: this tab is on stage (visible). While it is not, the
+  /// 1 s clock is parked — an offstage screen that keeps ticking pays full
+  /// rebuild cost for a picture nobody sees.
+  bool _stageActive = true;
   // v0.4.1 §5: Android selection is authoritative and can change OUTSIDE the
   // state machine (tap while disconnected emits no VPN phase), so the
   // dashboard also listens to explicit selection events and re-reads
@@ -123,6 +152,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           _lastDown = null;
           _sessionDownBytes = 0;
           _sessionUpBytes = 0;
+          _latencySeries.clear();
         }
       });
       // v0.5.2 §globe: the tunnel lifecycle drives the geo roles —
@@ -199,20 +229,14 @@ class _DashboardScreenState extends State<DashboardScreen>
           : _active?.id;
       if (rec.profileId == activeId && rec.ok && rec.latencyMs != null) {
         _latencyMs = rec.latencyMs;
+        _pushLatency(rec.latencyMs!);
       }
       // v0.5.0 §battery/lag: rebuild ONLY when this record belongs to the
       // active node's chip — a 40-node sweep previously repainted the whole
       // dashboard once per record for numbers it never displays.
       if (rec.profileId == activeId) setState(() {});
     });
-    _clock = Timer.periodic(const Duration(seconds: 1), (_) {
-      // v0.4.9 §battery: hidden app → no ticks, no redraws, no wakeups.
-      if (!_appVisible || !mounted) return;
-      _foldAndroidCounters();
-      if (_phase == ConnectionPhase.connected) {
-        setState(() {}); // session clock + metrics
-      }
-    });
+    _startClock();
 
     // v0.5.2 §globe — start with the persisted home fix (no boot cost; the
     // first paint already shows the pin from the LAST run) then refresh it.
@@ -350,6 +374,24 @@ class _DashboardScreenState extends State<DashboardScreen>
   /// text resolution + the geo refresh lifecycle.
 
   /// Top-right chip text: honest state, no invented cities.
+  /// v0.6.4 §redesign: the node card's flag. The EXIT country while the
+  /// tunnel is up (where traffic actually leaves), else the provisional
+  /// host fix, else home. ISO-3166 alpha-2 → regional indicator pair;
+  /// anything unrecognized renders nothing rather than a tofu box.
+  String? _flagEmoji() {
+    final fix = _phase == ConnectionPhase.connected
+        ? (_exitFix ?? _hostFix)
+        : (_hostFix ?? _homeFix);
+    final cc = (fix?.countryCode ?? '').trim().toUpperCase();
+    if (cc.length != 2) return null;
+    const a = 0x41, z = 0x5A, regional = 0x1F1E6;
+    for (final unit in cc.codeUnits) {
+      if (unit < a || unit > z) return null;
+    }
+    return String.fromCharCode(regional + cc.codeUnitAt(0) - a) +
+        String.fromCharCode(regional + cc.codeUnitAt(1) - a);
+  }
+
   String _geoChipLabel(AppLocalizations l) {
     if (_geoPending) return l.globeLocating;
     final exit = _exitFix;
@@ -442,6 +484,43 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
 
+  /// v0.6.4 §battery: the 1 s clock exists only while this tab is on stage
+  /// (and the tick body re-checks [_appVisible], so a backgrounded app is
+  /// free too).
+  void _startClock() {
+    if (_clock != null || !_stageActive) return;
+    _clock = Timer.periodic(const Duration(seconds: 1), (_) {
+      // v0.4.9 §battery: hidden app → no ticks, no redraws, no wakeups.
+      if (!_appVisible || !_stageActive || !mounted) return;
+      _foldAndroidCounters();
+      if (_phase == ConnectionPhase.connected) {
+        setState(() {}); // session clock + metrics
+      }
+    });
+  }
+
+  void _stopClock() {
+    _clock?.cancel();
+    _clock = null;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // v0.6.4 §battery: a tab switch re-enters here through the inherited
+    // dependency — park the clock while offstage, resume it on return.
+    // The dashboard hidden behind the Nodes tab was the app's biggest idle
+    // drain: one full rebuild per second for a picture nobody can see.
+    final active = TabStageScope.activeOf(context);
+    if (active == _stageActive) return;
+    _stageActive = active;
+    if (active) {
+      _startClock();
+    } else {
+      _stopClock();
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -453,7 +532,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     _healthSub?.cancel();
     _geoSub?.cancel();
     _ladderSub?.cancel();
-    _clock?.cancel();
+    _stopClock();
     super.dispose();
   }
 
@@ -624,13 +703,23 @@ class _DashboardScreenState extends State<DashboardScreen>
                           return Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              _TotalTrafficPill(
-                                  downBps: _down.last, upBps: _up.last),
+                              // v0.6.4 §ui-fit: the pill is FLEXIBLE now —
+                              // its inline sparkline used to eat the row and
+                              // squeeze GEO ROUTE down to "Dire…".
+                              Flexible(
+                                child: _TotalTrafficPill(
+                                  downBps: _down.last,
+                                  upBps: _up.last,
+                                  samples: _down,
+                                  sparkColor: c.success,
+                                ),
+                              ),
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Align(
                                   alignment: Alignment.centerRight,
                                   child: _GeoRouteChip(
+                                    onTap: widget.onOpenRouting,
                                     label: _geoChipLabel(l),
                                     ladderText: _ladder.id !=
                                                 LadderProgress.idle.id &&
@@ -671,89 +760,38 @@ class _DashboardScreenState extends State<DashboardScreen>
                         ),
                       ),
                     ),
-                    // Foreground: phase word + node card pinned to the
-                    // bottom (unchanged, below the graph strip).
-                    Column(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        Text(
-                          phaseWord,
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context)
-                              .textTheme
-                              .labelLarge
-                              ?.copyWith(
-                                color:
-                                    connected ? c.success : c.textSecondary,
-                                letterSpacing: 5,
-                                fontWeight: FontWeight.w600,
-                              ),
-                        ),
-                        const SizedBox(height: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 12),
-                          decoration: BoxDecoration(
-                            color: c.surface.withValues(alpha: 0.86),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(color: c.border),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(Icons.shield_outlined,
-                                  size: 16,
-                                  color:
-                                      connected ? c.success : c.textMuted),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  active?.name ??
-                                      (lastErr != null
-                                          ? lastErr.toString()
-                                          : l.tapToConnect),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodyMedium
-                                      ?.copyWith(color: c.textPrimary),
-                                ),
-                              ),
-                              Text(
-                                _latencyMs == null ? '—' : '$_latencyMs ms',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .labelMedium
-                                    ?.copyWith(
-                                      color: (_latencyMs ?? 999) < 300
-                                          ? c.success
-                                          : c.warning,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (coreInfo.isNotEmpty) ...[
-                          const SizedBox(height: 5),
-                          Text(
-                            activeCoreLabel != null
-                                ? '$coreInfo · $activeCoreLabel'
-                                : coreInfo,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodySmall
-                                ?.copyWith(color: c.textMuted),
-                          ),
-                        ],
-                      ],
+                    // v0.6.4 §redesign: the STATUS PILL pinned to the
+                    // bottom of the globe — the mockup's "● Connected"
+                    // badge over the artwork. The node card itself moved OUT
+                    // of the artwork into its own card directly below the
+                    // hero (see [_NodeCard]): on the mockup the globe owns
+                    // its own band and the card reads as the next row.
+                    Align(
+                      alignment: Alignment.bottomCenter,
+                      child: _PhasePill(
+                        word: phaseWord,
+                        connected: connected,
+                      ),
                     ),
                   ],
                 ),
               ),
+              // ── ACTIVE NODE CARD (mockup row 4): shield + flag +
+              // name on the first line, the engine detail on the second,
+              // a hairline divider + chevron pointing at the Nodes tab.
+              _NodeCard(
+                name: active?.name ??
+                    (lastErr != null ? lastErr.toString() : l.tapToConnect),
+                subtitle: coreInfo.isEmpty
+                    ? null
+                    : (activeCoreLabel != null
+                        ? '$coreInfo · $activeCoreLabel'
+                        : coreInfo),
+                flag: _flagEmoji(),
+                connected: connected,
+                onTap: widget.onOpenNodes,
+              ),
+              const SizedBox(height: 10),
               if (lastErr != null && active != null &&
                   AndroidNodeSupport.notRunnableReason(active) != null) ...[
                 const SizedBox(height: 10),
@@ -787,21 +825,27 @@ class _DashboardScreenState extends State<DashboardScreen>
                     child: _HeroStat(
                         label: l.downloadSpeed,
                         value: _fmtSpeed(_down.last),
-                        icon: Icons.south_rounded),
+                        icon: Icons.south_rounded,
+                        samples: _down,
+                        seriesColor: c.success),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: _HeroStat(
                         label: l.uploadSpeed,
                         value: _fmtSpeed(_up.last),
-                        icon: Icons.north_rounded),
+                        icon: Icons.north_rounded,
+                        samples: _up,
+                        seriesColor: c.info),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: _HeroStat(
                         label: l.latency,
                         value: _latencyMs == null ? '—' : '$_latencyMs ms',
-                        icon: Icons.bolt_rounded),
+                        icon: Icons.bolt_rounded,
+                        samples: _latencySeries,
+                        seriesColor: c.warning),
                   ),
                 ],
               ),
@@ -855,12 +899,24 @@ class _DashboardScreenState extends State<DashboardScreen>
 /// (Download GB/s · ms · uptime): hairline rounded tile, small muted icon
 /// + label over a large value, exactly like the mockup's stat cards.
 class _HeroStat extends StatelessWidget {
-  const _HeroStat(
-      {required this.label, required this.value, required this.icon});
+  const _HeroStat({
+    required this.label,
+    required this.value,
+    required this.icon,
+    this.samples = const <double>[],
+    required this.seriesColor,
+  });
 
   final String label;
   final String value;
   final IconData icon;
+
+  /// v0.6.4 §redesign: the tile's own area sparkline (mockup) — the same
+  /// ring the big hero graph draws, shrunk to the card. Fewer than two
+  /// points = the dotted idle baseline, never a fake curve.
+  final List<double> samples;
+
+  final Color seriesColor;
 
   @override
   Widget build(BuildContext context) {
@@ -874,19 +930,34 @@ class _HeroStat extends StatelessWidget {
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Row(
             children: [
-              Icon(icon, size: 13, color: c.textMuted),
+              // v0.6.4 §redesign: the glyph rides a soft disc, like the
+              // mockup's round icon chips.
+              Container(
+                width: 20,
+                height: 20,
+                decoration: BoxDecoration(
+                  color: c.border.withValues(alpha: 0.45),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, size: 12, color: c.textSecondary),
+              ),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
                   label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
+                  // v0.6.4 §ui-fit: 10 px keeps "Download" whole in a
+                  // third-width card (it used to clip to "Downlo…");
+                  // the icon disc + gap above were trimmed to match.
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: c.textSecondary,
-                        letterSpacing: 0.3,
+                        letterSpacing: 0.2,
+                        fontSize: 10,
                       ),
                 ),
               ),
@@ -897,8 +968,53 @@ class _HeroStat extends StatelessWidget {
             value,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
                   color: c.textPrimary,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+          ),
+          const SizedBox(height: 6),
+          _MiniSparkline(samples: samples, color: seriesColor),
+        ],
+      ),
+    );
+  }
+}
+
+/// v0.6.4 §redesign — the mockup's "● Connected" badge riding the bottom
+/// of the globe: a status dot + the phase word on a glass pill. The old
+/// bare letterspaced text read as a caption, not as a state.
+class _PhasePill extends StatelessWidget {
+  const _PhasePill({required this.word, required this.connected});
+
+  final String word;
+  final bool connected;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
+      decoration: BoxDecoration(
+        color: c.surface.withValues(alpha: 0.88),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: connected
+              ? c.success.withValues(alpha: 0.45)
+              : c.border.withValues(alpha: 0.9),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          StatusDot(color: connected ? c.success : c.textMuted, size: 9),
+          const SizedBox(width: 10),
+          Text(
+            word,
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: connected ? c.success : c.textSecondary,
+                  letterSpacing: 4,
                   fontWeight: FontWeight.w600,
                 ),
           ),
@@ -908,15 +1024,205 @@ class _HeroStat extends StatelessWidget {
   }
 }
 
+/// v0.6.4 §redesign — the mockup's ACTIVE NODE card: shield disc, exit flag,
+/// the node name, the engine detail on a second line, then the hairline
+/// divider + chevron that opens the Nodes tab.
+class _NodeCard extends StatelessWidget {
+  const _NodeCard({
+    required this.name,
+    required this.subtitle,
+    required this.flag,
+    required this.connected,
+    required this.onTap,
+  });
+
+  final String name;
+  final String? subtitle;
+  final String? flag;
+  final bool connected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = ThemeExt.of(context);
+    final tappable = onTap != null;
+    return Material(
+      color: c.surface,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: c.border),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: c.border.withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  Icons.shield_outlined,
+                  size: 19,
+                  color: connected ? c.success : c.textSecondary,
+                ),
+              ),
+              const SizedBox(width: 12),
+              if (flag != null) ...[
+                Text(flag!, style: const TextStyle(fontSize: 20)),
+                const SizedBox(width: 10),
+              ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            color: c.textPrimary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        subtitle!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: c.textMuted,
+                            ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (tappable) ...[
+                Container(width: 1, height: 26, color: c.border),
+                const SizedBox(width: 10),
+              ],
+              Icon(
+                Icons.chevron_right_rounded,
+                size: 20,
+                color: tappable ? c.textSecondary : c.border,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// v0.6.4 §redesign — the mockup's area sparkline: a filled curve scaled
+/// to its own window, with a dotted baseline while nothing is measured yet
+/// (honest idle state, same rule as the big hero graph).
+class _MiniSparkline extends StatelessWidget {
+  const _MiniSparkline({required this.samples, required this.color});
+
+  final List<double> samples;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 24,
+      width: double.infinity,
+      child: CustomPaint(painter: _MiniSparkPainter(samples, color)),
+    );
+  }
+}
+
+class _MiniSparkPainter extends CustomPainter {
+  _MiniSparkPainter(this.samples, this.color);
+
+  final List<double> samples;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final flat = samples.length < 2 ||
+        samples.fold<double>(0, (m, v) => v > m ? v : m) <= 0;
+    if (flat) {
+      // Nothing to draw yet — the mockup's dashed idle line, not a faked curve.
+      final base = Paint()..color = color.withValues(alpha: 0.35);
+      for (double x = 0; x < size.width; x += 5) {
+        canvas.drawRect(Rect.fromLTWH(x, size.height - 1, 2, 1), base);
+      }
+      return;
+    }
+    var maxV = 0.0;
+    for (final v in samples) {
+      if (v > maxV) maxV = v;
+    }
+    final line = Paint()
+      ..color = color.withValues(alpha: 0.95)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..isAntiAlias = true;
+    final dx = size.width / (samples.length - 1);
+    final path = Path();
+    for (var i = 0; i < samples.length; i++) {
+      final x = i * dx;
+      final y = size.height - (samples[i] / maxV) * (size.height - 4) - 2;
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    final area = Path.from(path)
+      ..lineTo(size.width, size.height)
+      ..lineTo(0, size.height)
+      ..close();
+    canvas.drawPath(
+      area,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [color.withValues(alpha: 0.3), color.withValues(alpha: 0)],
+        ).createShader(Rect.fromLTWH(0, 0, size.width, size.height)),
+    );
+    canvas.drawPath(path, line);
+  }
+
+  @override
+  // The series is a MUTATED ring (same instance, same length, new values),
+  // so an identity/length check would freeze the curve. One 24 px repaint
+  // per dashboard rebuild is the cheaper trade.
+  bool shouldRepaint(_MiniSparkPainter oldDelegate) => true;
+}
+
 /// v0.5.0 §user — TOTAL TRAFFIC pill (the mockup's top-left glass chip):
 /// the zigzag glyph + "TOTAL TRAFFIC" over the CURRENT down+up speed, and
 /// the cumulative session usage as the small line under it. Rides the
 /// hero artwork (Positioned, transparent glass).
 class _TotalTrafficPill extends StatelessWidget {
-  const _TotalTrafficPill({required this.downBps, required this.upBps});
+  const _TotalTrafficPill({
+    required this.downBps,
+    required this.upBps,
+    this.samples = const <double>[],
+    this.sparkColor,
+  });
 
   final double downBps;
   final double upBps;
+
+  /// v0.6.4 §redesign: the mockup's inline sparkline inside the chip.
+  final List<double> samples;
+  final Color? sparkColor;
 
   @override
   Widget build(BuildContext context) {
@@ -971,6 +1277,13 @@ class _TotalTrafficPill extends StatelessWidget {
               ],
             ),
           ),
+          if (sparkColor != null) ...[
+            const SizedBox(width: 6),
+            SizedBox(
+              width: 34,
+              child: _MiniSparkline(samples: samples, color: sparkColor!),
+            ),
+          ],
         ],
       ),
     );
@@ -985,9 +1298,12 @@ class _TotalTrafficPill extends StatelessWidget {
 /// tested and its ping ("تست ۳/۱۱ · ۱۲۰ ms") — so the Iran → Romania
 /// journey visibly counts through the pool. Null hides the line.
 class _GeoRouteChip extends StatelessWidget {
-  const _GeoRouteChip({required this.label, this.ladderText});
+  const _GeoRouteChip({required this.label, this.ladderText, this.onTap});
 
   final String label;
+  /// v0.6.4 § redesign: the chip's chevron opens the Routing tab —
+  /// wired by the shell, hidden when the dashboard runs standalone.
+  final VoidCallback? onTap;
 
   /// Live ladder readout; null = hidden (no ladder running).
   final String? ladderText;
@@ -1085,6 +1401,15 @@ class _GeoRouteChip extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+        // v0.6.4 §redesign: the mockup's chevron — this chip
+        // OPENS the Routing tab, so the affordance is real, not decorative.
+        if (onTap != null)
+          GestureDetector(
+            onTap: onTap,
+            behavior: HitTestBehavior.opaque,
+            child: Icon(Icons.chevron_right_rounded,
+                size: 18, color: c.textSecondary),
           ),
         ],
       ),

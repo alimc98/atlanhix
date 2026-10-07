@@ -1,6 +1,5 @@
 import 'fragment_profiles.dart';
 import '../../data/app_storage.dart';
-import '../../settings/app_settings.dart';
 
 /// The freshness window of the per-subscription rung stats: probes older
 /// than this age out of the win-rate aggregation (network conditions, CDN

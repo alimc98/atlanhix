@@ -20,6 +20,18 @@ const vaultPrefix = '@vault:';
 bool isVaultRef(String? v) => v != null && v.startsWith(vaultPrefix);
 String vaultKeyOf(String v) => v.substring(vaultPrefix.length);
 
+/// v0.6.3 §boot-crash-fix: null-safe enum lookup for persisted names.
+/// An unknown/renamed/missing value decodes to `null` instead of throwing
+/// StateError out of the store-load path (e.g. a stale `userPinnedCore`
+/// pin must degrade to "auto", never fail the profile decode).
+T? _enumOrNull<T extends Enum>(Iterable<T> values, Object? name) {
+  if (name is! String) return null;
+  for (final v in values) {
+    if (v.name == name) return v;
+  }
+  return null;
+}
+
 /// Loads profiles from the store, resolving vault-backed secrets.
 ///
 /// v0.4.9 §boot: the resolve is TWO-PHASE — first every `@vault:` token in
@@ -47,9 +59,16 @@ Future<List<ProxyProfile>> loadProfiles(JsonStore store) async {
     try {
       final j = (entry.value as Map).cast<String, dynamic>();
       out.add(_profileFromStorable(j, resolve));
-    } on FormatException catch (e) {
+    // v0.6.3 §boot-crash-fix: catch ALL decode failures, not just
+    // FormatException — a `firstWhere` StateError (unknown enum name) or a
+    // cast TypeError (wrong JSON shape) used to escape this loop and kill
+    // `ProfileRepository.load()` → the whole node list (and bootstrap) died
+    // because of ONE bad record. Every failure class now skips just that
+    // profile with a log line.
+    } catch (e) {
+      final msg = e is FormatException ? e.message : '$e';
       Logger.instance.warn(
-          'profiles', 'Skipping corrupt profile ${entry.key}: ${e.message}');
+          'profiles', 'Skipping corrupt profile ${entry.key}: $msg');
     }
   }
   return out;
@@ -239,9 +258,7 @@ ProxyProfile _profileFromStorable(
     subscriptionId: j['subscriptionId'] as String?,
     tags: ((j['tags'] ?? const []) as List).cast<String>(),
     metadata: ((j['metadata'] ?? const {}) as Map).cast<String, String>(),
-    userPinnedCore: j['userPinnedCore'] == null
-        ? null
-        : CoreKind.values.firstWhere((e) => e.name == j['userPinnedCore']),
+    userPinnedCore: _enumOrNull(CoreKind.values, j['userPinnedCore']),
     enabled: j['enabled'] as bool? ?? true,
     createdAt: j['createdAt'] == null
         ? null

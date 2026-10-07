@@ -1,7 +1,6 @@
 import '../domain/entities/proxy_profile.dart';
 import 'profile_codec.dart';
 import 'secure_vault.dart';
-import 'app_storage.dart';
 
 /// Serializes a profile for storage; secrets are moved into the vault and
 /// replaced by references (§41).

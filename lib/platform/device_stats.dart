@@ -32,13 +32,21 @@ class DeviceStats {
       if (decoded is! Map) return null;
       final j = decoded.cast<String, dynamic>();
       return DeviceSample(
-        batteryPct: j['batteryPct'] as int?,
+        // v0.6.3 §poll-fix: `as num?` + conversion, not `as int?` — a vendor
+        // sending 87.0 (JSON double) made the hard int cast throw TypeError,
+        // which `on Exception` below did NOT catch: the poll future completed
+        // with an error on EVERY tick and the monitor silently froze.
+        batteryPct: (j['batteryPct'] as num?)?.toInt(),
         batteryTempC: (j['batteryTemp'] as num?)?.toDouble(),
         charging: j['charging'] as bool?,
         cpuPct: (j['cpuPct'] as num?)?.toDouble(),
-        ramBytes: j['ramBytes'] as int?,
+        ramBytes: (j['ramBytes'] as num?)?.toInt(),
       );
-    } on Exception catch (_) {
+    // v0.6.3 §poll-fix: catch EVERYTHING, not just Exception — the class
+    // doc says "Never throws" and the caller runs this inside a Timer with
+    // no error handler; a TypeError (wrong JSON type) used to escape as an
+    // unhandled async error and freeze the widget.
+    } catch (_) {
       return null; // desktop / channel hiccup — the UI shows '—'
     }
   }

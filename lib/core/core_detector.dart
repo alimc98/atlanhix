@@ -62,6 +62,12 @@ class CoreDetector {
         choose(CoreKind.masterDnsVpn, 0.99,
             'MasterDNSVPN transport requires the external mdvpn engine');
         return CoreDecision(core: core, confidence: score, reasons: reasons);
+      case ProxyProtocol.stormDns:
+        // v0.6.4 §stormdns: DNS tunnels can never ride sing-box/mihomo —
+        // the wire format lives only in the StormDNS client daemon.
+        choose(CoreKind.stormDns, 0.99,
+            'StormDNS transport requires the external StormDNS engine');
+        return CoreDecision(core: core, confidence: score, reasons: reasons);
       case ProxyProtocol.custom:
         choose(CoreKind.singbox, 0.4,
             'Custom payload — engine inferred from origin format');

@@ -1,7 +1,7 @@
 ﻿import 'dart:async';
 import 'dart:convert';
+import '../core/logger.dart';
 import '../domain/entities/subscription.dart';
-import '../domain/entities/proxy_profile.dart';
 import '../routing/routing_models.dart';
 import '../chain/chain_planner.dart';
 import '../warp/warp_registrar.dart';
@@ -294,15 +294,33 @@ class _ListSection<T> {
   final _items = <T>[];
   final _controller = StreamController<List<T>>.broadcast();
 
-  List<T> get items => List.unmodifiable(_items);
+  // v0.6.4 §speed: cached unmodifiable view — `items` is read from build
+  // methods and stream handlers; a fresh N-element copy per access was
+  // pure allocation churn. Invalidated on every mutation below.
+  List<T>? _view;
+
+  List<T> get items => _view ??= List.unmodifiable(_items);
   Stream<List<T>> get changes => _controller.stream;
 
   Future<void> load() async {
     final raw = store.section(key);
+    _view = null;
+    final decoded = <T>[];
+    // v0.6.3 §boot-crash-fix: decode PER ENTRY — one corrupt record used to
+    // throw inside `.map` (unknown enum name → StateError, wrong type →
+    // TypeError) and take the WHOLE section (and the bootstrap) down with
+    // it. A bad entry is skipped with a log; every healthy neighbor loads.
+    for (final e in raw.entries) {
+      try {
+        decoded.add(decode((e.value as Map).cast<String, dynamic>()));
+      } catch (err) {
+        Logger.instance
+            .warn('store', 'skipping corrupt $key entry ${e.key}: $err');
+      }
+    }
     _items
       ..clear()
-      ..addAll(raw.values
-          .map((v) => decode((v as Map).cast<String, dynamic>())));
+      ..addAll(decoded);
     _controller.add(items);
   }
 
@@ -311,6 +329,7 @@ class _ListSection<T> {
   // mutation threw `Cannot add to an unmodifiable list`. Mutate the backing
   // `_items` and expose typed operations to the repositories instead.
   Future<void> upsert(T item) async {
+    _view = null;
     final id = idOf(item);
     final idx = _items.indexWhere((x) => idOf(x) == id);
     if (idx >= 0) {
@@ -322,6 +341,7 @@ class _ListSection<T> {
   }
 
   Future<void> removeById(String id) async {
+    _view = null;
     _items.removeWhere((x) => idOf(x) == id);
     await save();
   }

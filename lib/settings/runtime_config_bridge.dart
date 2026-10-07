@@ -437,7 +437,17 @@ class RoutingSettingsRepository {
   Future<void> load() async {
     final section = _store.section('routingSettings');
     if (section.isEmpty) return;
-    _current = RoutingSettings.fromJson(section);
+    // v0.6.3 §boot-crash-fix: a corrupt stored section (unknown enum name
+    // in a custom rule, wrong JSON type) used to throw straight out of
+    // bootstrap. Fall back to the DEFAULT routing settings with a log —
+    // routing degrades to defaults instead of taking the app down.
+    try {
+      _current = RoutingSettings.fromJson(section);
+    } catch (e) {
+      Logger.instance.warn(
+          'routing', 'corrupt stored routingSettings — using defaults: $e');
+      _current = RoutingSettings();
+    }
   }
 
   /// Validates BEFORE persisting (§10) — invalid input never reaches disk.

@@ -44,7 +44,7 @@ class ClipboardImportService {
   final bool Function(String payload)? knownPayload;
 
   static final _subUri = RegExp(
-    r'^(vless|vmess|ss|ssr|trojan|hysteria2?|tuic|juicity|socks5?|wireguard|wg|mdvpn)://',
+    r'^(vless|vmess|ss|ssr|trojan|hysteria2?|tuic|juicity|socks5?|wireguard|wg|mdvpn|stormdns|storm|masterdns)://',
     caseSensitive: false,
   );
 

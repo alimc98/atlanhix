@@ -10,6 +10,7 @@ enum CoreKind {
   wireguardSingbox, // WireGuard endpoint inside sing-box
   amneziaWg, // external amneziawg-go daemon
   masterDnsVpn, // external mdvpn-client daemon
+  stormDns, // external StormDNS client daemon (DNS tunnel → local SOCKS5)
   unknown,
 }
 
@@ -30,6 +31,7 @@ enum ProxyProtocol {
   naive,
   ssh,
   masterDnsVpn,
+  stormDns, // v0.6.4 §stormdns: DNS-tunnel transport (nullroute1970/StormDNS)
   custom,
 }
 

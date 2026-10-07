@@ -80,6 +80,7 @@ class DiagnosticsService {
         'singbox': _engineSection(sb),
         'xray': _engineSection(cores.xray),
         'masterDnsVpn': _engineSection(cores.masterDnsVpn),
+        'stormDns': _engineSection(cores.stormDns),
         'amneziaWg': _engineSection(cores.amneziaWg),
       },
       'ports': {
@@ -90,6 +91,9 @@ class DiagnosticsService {
             : null,
         'mdvpnSocks': cores.masterDnsVpn.status == RuntimeStatus.running
             ? cores.masterDnsVpn.socksPort
+            : null,
+        'stormSocks': cores.stormDns.status == RuntimeStatus.running
+            ? cores.stormDns.socksPort
             : null,
       },
       'dns': dns.toJson(),
