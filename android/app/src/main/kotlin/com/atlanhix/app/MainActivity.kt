@@ -12,7 +12,6 @@ import com.atlanhix.app.vpn.AtlanhixVpnChannel
 import com.atlanhix.app.vpn.AtlanhixXrayChannel
 import com.atlanhix.app.vpn.AtlanhixMihomoChannel
 import com.atlanhix.app.vpn.AtlanhixUpdaterChannel
-import com.atlanhix.app.vpn.InstalledAppsSource
 
 class MainActivity : FlutterActivity() {
 
@@ -30,8 +29,6 @@ class MainActivity : FlutterActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             AtlanhixXrayChannel.CHANNEL
         ).setMethodCallHandler { call, result ->
-            // v0.4.3: Xray runtime control (`:xray` process). JSON-string
-            // contract mirrors the VPN channel.
             try {
                 val rawArg: Any? = call.arguments()
                 val arg: JSONObject? =
@@ -40,9 +37,7 @@ class MainActivity : FlutterActivity() {
             } catch (e: Exception) {
                 result.error("xray_channel", e.message, null)
             } catch (t: Throwable) {
-                // v0.6.4 §crash-fix: same core-ABI guard as the VPN channel —
-                // a core .so this device cannot load is an error, not a crash.
-                Log.w(TAG, "core unavailable: %s".format(t.message))
+                Log.w(TAG, "core unavailable on ${Build.SUPPORTED_ABIS.joinToString()}: ${t.message}")
                 result.error("core_unavailable", t.message ?: "core_unavailable", null)
             }
         }
@@ -50,8 +45,6 @@ class MainActivity : FlutterActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             AtlanhixMihomoChannel.CHANNEL
         ).setMethodCallHandler { call, result ->
-            // v0.5.3: mihomo runtime control (`:mihomo` process) — same
-            // JSON-string contract as the Xray channel.
             try {
                 val rawArg: Any? = call.arguments()
                 val arg: JSONObject? =
@@ -60,15 +53,10 @@ class MainActivity : FlutterActivity() {
             } catch (e: Exception) {
                 result.error("mihomo_channel", e.message, null)
             } catch (t: Throwable) {
-                // v0.6.4 §crash-fix: same core-ABI guard as the VPN channel —
-                // a core .so this device cannot load is an error, not a crash.
-                Log.w(TAG, "core unavailable: %s".format(t.message))
+                Log.w(TAG, "core unavailable on ${Build.SUPPORTED_ABIS.joinToString()}: ${t.message}")
                 result.error("core_unavailable", t.message ?: "core_unavailable", null)
             }
         }
-        // v0.4.9 §user: transient probe engine (real delay tests with no
-        // active VPN). libbox start is a blocking native call — run it off
-        // the MAIN thread or ANR (same pattern as installedApps above).
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             AtlanhixProbeChannel.CHANNEL
@@ -88,9 +76,6 @@ class MainActivity : FlutterActivity() {
                 }
             }.start()
         }
-        // v0.6.0 §in-app-update: DownloadManager download + system installer
-        // (status() queries may run while the DownloadManager works — the
-        // whole handler is off the main thread like installedApps above).
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             AtlanhixUpdaterChannel.CHANNEL
@@ -104,6 +89,8 @@ class MainActivity : FlutterActivity() {
                     runOnUiThread { result.success(resp.toString()) }
                 } catch (e: Exception) {
                     runOnUiThread { result.error("updater_channel", e.message, null) }
+                } catch (t: Throwable) {
+                    runOnUiThread { result.error("core_unavailable", t.message, null) }
                 }
             }.start()
         }
@@ -128,13 +115,6 @@ class MainActivity : FlutterActivity() {
                             result.success(resp.toString())
                         }
                     }
-                    // v0.4.7 §fix(black-screen): the PackageManager scan
-                    // (labels + launch intents for ~200 packages) blocked the
-                    // MAIN thread for seconds and some broken half-uninstalled
-                    // packages (e.g. com.openai.chatgpt with a dangling APK
-                    // path) even threw `Failed to open APK` mid-scan — the
-                    // apps-routing screen rendered BLACK. The scan now runs on
-                    // a background thread; only the channel reply hops back.
                     "installedApps" -> {
                         val appContext = applicationContext
                         Thread {
@@ -151,14 +131,6 @@ class MainActivity : FlutterActivity() {
             } catch (e: Exception) {
                 result.error("vpn_channel", e.message, null)
             } catch (t: Throwable) {
-                // v0.6.4 §crash-fix: the core AAR ships ONE ABI. On a device
-                // whose ABI it does not cover, `Libbox.<clinit>` throws
-                // UnsatisfiedLinkError (an Error, NOT an Exception) on the
-                // very first channel call — which used to kill the process
-                // at startup, taking the whole UI with it. A missing core is
-                // a device capability question, not a crash: answer the
-                // platform channel with an honest error so Dart can surface
-                // "engine unavailable" and the rest of the app keeps working.
                 Log.w(TAG, "core unavailable on ${Build.SUPPORTED_ABIS.joinToString()}: ${t.message}")
                 result.error("core_unavailable", t.message ?: "core_unavailable", null)
             }
