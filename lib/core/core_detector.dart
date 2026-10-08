@@ -1,4 +1,5 @@
 import '../domain/entities/proxy_profile.dart';
+import 'engine_availability.dart' show MihomoCoreState;
 import '../settings/app_settings.dart' show CorePreference;
 
 /// Which core a configuration should run on + why.
@@ -163,12 +164,31 @@ class CoreDetector {
       );
     }
     if (preference == CorePreference.mihomo && _mihomoRunnable(p)) {
+      // v0.6.5 §fix (user report: «انجین mihomo هست، کانفیگ‌ها وصل نمیشن
+      // ولی عوض می‌کنیم وصل می‌شن»): the preference must only steer when the
+      // mihomo runtime was actually PROBED on this device. On Android — and
+      // on any desktop without the binary — `runtimeLoaded` is false, and
+      // steering to mihomo made EVERY connect die with binary-missing while
+      // the very same configs connected the moment the user changed the
+      // engine. Fall back to the capability decision instead; the reason
+      // trail records why, so the UI/logs stay honest.
+      if (MihomoCoreState.instance.runtimeLoaded) {
+        return CoreDecision(
+          core: CoreKind.mihomo,
+          confidence: 0.95,
+          reasons: [
+            ...decision.reasons,
+            'Engine preference: mihomo (full xhttp/XMUX support)',
+          ],
+        );
+      }
       return CoreDecision(
-        core: CoreKind.mihomo,
-        confidence: 0.95,
+        core: decision.core,
+        confidence: decision.confidence,
         reasons: [
           ...decision.reasons,
-          'Engine preference: mihomo (full xhttp/XMUX support)',
+          'Engine preference mihomo ignored: the mihomo binary is not '
+              'available on this device — fell back to ${decision.core.name}',
         ],
       );
     }

@@ -14,7 +14,7 @@ import 'dns_scan_screen.dart';
 /// v0.4.1 §7 — the REAL Settings screen. Every control reads and writes the
 /// persistent [AppSettings] model (no hardcoded toggles); each save flows
 /// through the RuntimeConfigBridge so it actually affects runtime behavior.
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     super.key,
     required this.deps,
@@ -28,11 +28,16 @@ class SettingsScreen extends StatelessWidget {
   final ValueChanged<NexusThemeMode> onThemeChanged;
   final ValueChanged<Locale> onLocaleChanged;
 
-  @override
+    @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+@override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context)!;
     final c = ThemeExt.of(context);
-    final s = deps.appSettings;
+    final s = widget.deps.appSettings;
 
     String dnsLabel(DnsModeUi m) => switch (m) {
           DnsModeUi.auto => 'Auto',
@@ -100,8 +105,8 @@ class SettingsScreen extends StatelessWidget {
                       NexusThemeMode.light => l.themeLight,
                       NexusThemeMode.oled => l.themeOled,
                     }),
-                    selected: themeMode == m,
-                    onSelected: (_) => onThemeChanged(m),
+                    selected: widget.themeMode == m,
+                    onSelected: (_) => widget.onThemeChanged(m),
                   ),
                 ),
             ],
@@ -117,7 +122,7 @@ class SettingsScreen extends StatelessWidget {
                     selected:
                         Localizations.localeOf(context).languageCode ==
                             loc.languageCode,
-                    onSelected: (_) => onLocaleChanged(loc),
+                    onSelected: (_) => widget.onLocaleChanged(loc),
                   ),
                 ),
             ],
@@ -216,7 +221,7 @@ class SettingsScreen extends StatelessWidget {
             subtitle: Text(s.mtu == 0 ? 'Auto (8500)' : '${s.mtu} bytes'),
             trailing: _MtuField(
               s: s,
-              deps: deps,
+              deps: widget.deps,
               onSave: _save,
             ),
           ),
@@ -379,7 +384,7 @@ class SettingsScreen extends StatelessWidget {
                     // v0.5.0 §user: live-apply cadence/tolerance to a running
                     // ladder without force-enabling it (the old call here
                     // silently re-armed a switch the user had turned off).
-                    deps.vpnSession.syncSmartTuning();
+                    widget.deps.vpnSession.syncSmartTuning();
                   } else {
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                         content: Text('Interval must be 0–3600 seconds')));
@@ -407,7 +412,7 @@ class SettingsScreen extends StatelessWidget {
                   final n = int.tryParse(v.trim());
                   if (n != null && n >= 0 && n <= 5000) {
                     _save(s..smartSwitchMarginMs = n);
-                    deps.vpnSession.syncSmartTuning();
+                    widget.deps.vpnSession.syncSmartTuning();
                   } else {
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                         content: Text('Tolerance must be 0–5000 ms')));
@@ -433,7 +438,7 @@ class SettingsScreen extends StatelessWidget {
                   final n = int.tryParse(v.trim());
                   if (n != null && n >= 0 && n <= 95) {
                     _save(s..smartSwitchMarginPercent = n);
-                    deps.vpnSession.syncSmartDials();
+                    widget.deps.vpnSession.syncSmartDials();
                   } else {
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                         content: Text('Margin must be 0–95 percent')));
@@ -458,7 +463,7 @@ class SettingsScreen extends StatelessWidget {
                   final n = int.tryParse(v.trim());
                   if (n != null && n >= 5 && n <= 600) {
                     _save(s..smartSwitchActiveRecheckSeconds = n);
-                    deps.vpnSession.syncSmartDials();
+                    widget.deps.vpnSession.syncSmartDials();
                   } else {
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                         content: Text('Recheck must be 5–600 seconds')));
@@ -483,7 +488,7 @@ class SettingsScreen extends StatelessWidget {
                   final n = int.tryParse(v.trim());
                   if (n != null && n >= 0 && n <= 720) {
                     _save(s..smartSwitchOthersRescanMinutes = n);
-                    deps.vpnSession.syncSmartDials();
+                    widget.deps.vpnSession.syncSmartDials();
                   } else {
                     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                         content: Text('Rescan must be 0–720 minutes')));
@@ -527,9 +532,9 @@ class SettingsScreen extends StatelessWidget {
                   _save(s..delayTestUrl = url);
                   // Live-apply to every consumer (same contract as the
                   // scheduler's constructor seed above).
-                  deps.realDelay.probeUrl = s.effectiveDelayTestUrl;
-                  deps.scheduler.testUrl = s.effectiveDelayTestUrl;
-                  deps.vpnSession.syncSmartTuning();
+                  widget.deps.realDelay.probeUrl = s.effectiveDelayTestUrl;
+                  widget.deps.scheduler.testUrl = s.effectiveDelayTestUrl;
+                  widget.deps.vpnSession.syncSmartTuning();
                 },
               ),
             ),
@@ -549,8 +554,8 @@ class SettingsScreen extends StatelessWidget {
             leading: const Icon(Icons.apps),
             title: const Text('Application rules'),
             subtitle: Text(
-                '${deps.routingSettings.directApps.length} direct · '
-                '${deps.routingSettings.proxyApps.length} proxy apps'),
+                '${widget.deps.routingSettings.directApps.length} direct · '
+                '${widget.deps.routingSettings.proxyApps.length} proxy apps'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).pushNamed('/routing/apps'),
           ),
@@ -629,8 +634,8 @@ class SettingsScreen extends StatelessWidget {
 
   String _modeLabel() {
     // OPT-IN: show Off until the user explicitly enables routing.
-    if (!deps.routingSettings.enabled) return 'Off';
-    final mode = deps.routingSettings.mode.name;
+    if (!widget.deps.routingSettings.enabled) return 'Off';
+    final mode = widget.deps.routingSettings.mode.name;
     return mode[0].toUpperCase() + mode.substring(1);
   }
 
@@ -647,14 +652,18 @@ class SettingsScreen extends StatelessWidget {
       };
 
   Future<void> _save(AppSettings s) async {
-    await deps.appSettingsRepo.save(s);
+    // v0.6.5 §ui-fix: this screen is stateful now — without setState the
+    // engine chips (and every other control) kept showing the OLD value
+    // after a change, even though the setting had actually been saved.
+    if (mounted) setState(() {});
+    await widget.deps.appSettingsRepo.save(s);
     // v0.4.7 §user: the fragment dial + preset live on the core manager —
     // persist AND propagate so the next start honors the change.
-    deps.cores.fragmentPreset = s.fragmentPreset;
-    deps.connection.fragmentPreset = s.fragmentPreset;
-    deps.cores.fragmentManualPackets = s.fragmentManualPackets;
-    deps.cores.fragmentManualLength = s.fragmentManualLength;
-    deps.cores.fragmentManualInterval = s.fragmentManualInterval;
+    widget.deps.cores.fragmentPreset = s.fragmentPreset;
+    widget.deps.connection.fragmentPreset = s.fragmentPreset;
+    widget.deps.cores.fragmentManualPackets = s.fragmentManualPackets;
+    widget.deps.cores.fragmentManualLength = s.fragmentManualLength;
+    widget.deps.cores.fragmentManualInterval = s.fragmentManualInterval;
   }
 
   /// v0.5.0 §user-fix: single source of truth for the displayed version —
@@ -691,9 +700,9 @@ class SettingsScreen extends StatelessWidget {
   Future<void> _runDiagnostics(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
     final report = await DiagnosticsService(
-      cores: deps.cores,
-      routing: deps.connection.routing,
-      dns: deps.connection.dns,
+      cores: widget.deps.cores,
+      routing: widget.deps.connection.routing,
+      dns: widget.deps.connection.dns,
     ).collect();
     final text = DiagnosticsService.renderText(report);
     if (!context.mounted) return;

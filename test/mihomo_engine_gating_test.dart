@@ -74,6 +74,35 @@ void main() {
           reason: 'xhttp is upstream-Xray-only in the auto matrix');
     });
 
+    test('v0.6.5 §fix: preference mihomo FALLS BACK when the runtime is '
+        'not loaded on this device', () {
+      // The user report this pins: with Engine=mihomo on a device that has
+      // no mihomo binary (Android), every connect died with binary-missing
+      // while the same configs connected after changing the engine. The
+      // detector must fall back to the capability decision instead.
+      MihomoCoreState.instance.setRuntimeLoaded(false);
+      // A trojan node: mihomo-runnable by protocol, but the capability
+      // matrix alone picks sing-box.
+      final p = ProxyProfile(
+        id: 'trojan',
+        name: 'Trojan',
+        server: '203.0.113.20',
+        port: 443,
+        protocol: ProxyProtocol.trojan,
+      );
+      final d = CoreDetector().resolve(p, preference: CorePreference.mihomo);
+      expect(d.core, isNot(CoreKind.mihomo),
+          reason: 'unavailable engine must not capture the connect');
+      expect(d.core, CoreKind.singbox,
+          reason: 'fallback = capability-matrix decision');
+      expect(d.reasons.join(' '), contains('not available on this device'),
+          reason: 'the reason trail must say WHY the preference was ignored');
+      // And the engine steering still works once the runtime IS loaded.
+      MihomoCoreState.instance.setRuntimeLoaded(true);
+      final d2 = CoreDetector().resolve(p, preference: CorePreference.mihomo);
+      expect(d2.core, CoreKind.mihomo);
+    });
+
     test('a per-node PIN beats the app preference', () {
       final p = _xhttp()..userPinnedCore = CoreKind.xray;
       final d = CoreDetector().resolve(p, preference: CorePreference.mihomo);

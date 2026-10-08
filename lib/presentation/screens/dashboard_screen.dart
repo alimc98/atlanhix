@@ -921,7 +921,9 @@ class _HeroStat extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = ThemeExt.of(context);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      // v0.6.5 §ui-fit (user: «فیلدها یه ذره بزرگن»): trimmed paddings so the
+      // three stat cards breathe on narrow phones without losing content.
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
       decoration: BoxDecoration(
         color: c.surface,
         borderRadius: BorderRadius.circular(14),
@@ -936,15 +938,15 @@ class _HeroStat extends StatelessWidget {
               // v0.6.4 §redesign: the glyph rides a soft disc, like the
               // mockup's round icon chips.
               Container(
-                width: 20,
-                height: 20,
+                width: 18,
+                height: 18,
                 decoration: BoxDecoration(
                   color: c.border.withValues(alpha: 0.45),
                   shape: BoxShape.circle,
                 ),
-                child: Icon(icon, size: 12, color: c.textSecondary),
+                child: Icon(icon, size: 11, color: c.textSecondary),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 5),
               Expanded(
                 child: Text(
                   label,
@@ -962,18 +964,20 @@ class _HeroStat extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
+          // v0.6.5 §ui-fit: titleMedium (16px) → titleSmall (14px) — the
+          // user-found "fields a bit too big" on the dashboard stat cards.
           Text(
             value,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
                   color: c.textPrimary,
                   fontWeight: FontWeight.w600,
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
           _MiniSparkline(samples: samples, color: seriesColor),
         ],
       ),
@@ -1134,7 +1138,8 @@ class _MiniSparkline extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 24,
+      // v0.6.5 §ui-fit: 24 → 20 to match the trimmed stat card.
+      height: 20,
       width: double.infinity,
       child: CustomPaint(painter: _MiniSparkPainter(samples, color)),
     );
