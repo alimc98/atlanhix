@@ -10,8 +10,7 @@ Summary: Proxy/VPN client for VLESS, VMess, Trojan, Hysteria2, TUIC and more
 Description: |-
     Production-grade cross-platform proxy/VPN client (Windows, Linux, Android).
 
-    * Protocols: VLESS (incl. XHTTP/REALITY), VMess, Trojan, Shadowsocks,
-      Hysteria2/TUIC (via sing-box), WireGuard/AmneziaWG, MasterDNSVPN
+    * Protocols: VLESS (incl. XHTTP/REALITY), VMess, Trojan, Shadowsocks, Hysteria2/TUIC (via sing-box), WireGuard/AmneziaWG, MasterDNSVPN
     * Engines: sing-box (embedded libbox) and Xray-core (user-supplied, desktop)
     * Routing: global / rule mode, per-app lists, custom rules, subscriptions
     * Health-based scoring, smart switching and connection fragmentation ladder
@@ -30,7 +29,7 @@ Repo: https://github.com/alimc98/atlanhix.git
 Builds:
   - versionName: 0.6.6
     versionCode: 21
-    commit: 068e023
+    commit: 068e0237b7cf418cda83a6f99594d3ae03d548ee
     subdir: android/app
     sudo:
       - apt-get update
@@ -46,7 +45,7 @@ Builds:
       - flutter build apk --release
     ndk: r28
 
-AutoUpdateMode: None
+AutoUpdateMode: Version v%v
 UpdateCheckMode: Tags
 CurrentVersion: 0.6.6
 CurrentVersionCode: 21

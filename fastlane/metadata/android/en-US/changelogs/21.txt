@@ -1,0 +1,1 @@
+* v21 — fix: mihomo engine preference now falls back cleanly when the core is absent on the device; settings screen updates immediately; dashboard stat cards trimmed.

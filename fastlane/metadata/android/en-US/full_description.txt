@@ -1,0 +1,25 @@
+Production-grade cross-platform proxy/VPN client for Android, Windows and Linux.
+
+Atlanhix brings a full-featured proxy client to everyday users: import a node link
+(VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, WireGuard/AmneziaWG,
+MasterDNSVPN), pick an engine, and connect with a single tap.
+
+Why Atlanhix exists
+* Most open-source proxy clients on F-Droid focus on one protocol family or one
+  engine. Atlanhix unifies sing-box and Xray-core behind one UI with a
+  capability-aware engine matrix that picks the right core per protocol.
+* The connection layer is built for unstable networks: health-based node
+  scoring, automatic smart switching, and a connection fragmentation ladder for
+  hostile middleboxes.
+
+Features
+* Engines: sing-box (embedded libbox) and Xray-core (user-supplied on desktop)
+* Routing: global / rule mode, per-app lists, custom rules, subscriptions
+* Health checks, latency scoring and automatic failover
+* Fragmentation / anti-censorship options out of the box
+* No ads, no tracking, no analytics. The app never downloads executable code at
+  runtime — the embedded sing-box core (libbox) is built from source at build
+  time; desktop cores are supplied by the user.
+
+This F-Droid build is distributed under GPL-3.0-or-later (the app is MIT but
+links against sing-box's GPL-3.0 libbox).
