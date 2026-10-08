@@ -4,7 +4,6 @@ import 'package:nexus/core/configgen/singbox_config_generator.dart';
 import 'package:nexus/domain/entities/proxy_profile.dart';
 import 'package:nexus/routing/builtin_profiles.dart';
 import 'package:nexus/routing/routing_models.dart';
-import 'package:nexus/warp/warp_http.dart';
 import 'package:nexus/warp/warp_registrar.dart';
 
 /// v0.4.9 §user — WARP = AmneziaWG 3.1 wiring contract:
@@ -264,7 +263,7 @@ void main() {
         warpProfile: WarpRegistrar.profileFor(_acct()),
         chainWarpOutside: true,
       );
-      final endpoints = (cfg['endpoints'] as List).cast<Map>();
+      final endpoints = (cfg['endpoints'] as List).cast<Map<dynamic, dynamic>>();
       final nodeEp =
           endpoints.firstWhere((e) => e['tag'] == 'node:wgnode');
       expect(nodeEp['detour'], 'warp',
@@ -298,7 +297,7 @@ void main() {
         warpProfile: WarpRegistrar.profileFor(_acct()),
         chainWarpOutside: true,
       );
-      final outs = (cfg['outbounds'] as List).cast<Map>();
+      final outs = (cfg['outbounds'] as List).cast<Map<dynamic, dynamic>>();
       // v0.4.9 §connect-fix: WITH a live upstream port the stub IS emitted
       // (the connect path's real :xray child) — but it stays DIRECT: the
       // child dials the node on its own protected path, and `detour: warp`

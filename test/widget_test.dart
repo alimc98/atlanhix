@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/application/connection_controller.dart';
-import 'package:nexus/domain/entities/health.dart';
-import 'package:nexus/domain/entities/proxy_profile.dart';
 import 'package:nexus/localization/generated/app_localizations.dart';
 import 'package:nexus/presentation/widgets/common_widgets.dart';
 import 'package:nexus/presentation/widgets/speed_graph.dart';

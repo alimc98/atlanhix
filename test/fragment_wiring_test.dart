@@ -23,14 +23,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nexus/core/configgen/singbox_config_generator.dart';
-import 'package:nexus/core/configgen/xray_config_generator.dart';
 import 'package:nexus/core/fragmentation/fragment_profiles.dart';
-import 'package:nexus/core/runtime/binary_manager.dart';
-import 'package:nexus/core/runtime/core_manager.dart';
-import 'package:nexus/domain/entities/proxy_profile.dart';
 import 'package:nexus/routing/builtin_profiles.dart';
-import 'package:nexus/routing/routing_models.dart';
 import 'package:nexus/settings/app_settings.dart';
 
 import 'helpers/prepare_node.dart';

@@ -306,13 +306,15 @@ class ProbeEngine {
       // parallel nodes cannot collide.
       final ren = <String, String>{};
       for (final inb
-          in ((single['inbounds'] as List?) ?? const []).cast<Map>()) {
+          in ((single['inbounds'] as List?) ?? const [])
+              .cast<Map<dynamic, dynamic>>()) {
         final m = inb.cast<String, dynamic>();
         m['tag'] = 'probe-in-$i';
         inbounds.add(m);
       }
       for (final ob
-          in ((single['outbounds'] as List?) ?? const []).cast<Map>()) {
+          in ((single['outbounds'] as List?) ?? const [])
+              .cast<Map<dynamic, dynamic>>()) {
         final m = ob.cast<String, dynamic>();
         final old = m['tag'] as String;
         final nw = '$old-$i';
@@ -322,7 +324,7 @@ class ProbeEngine {
       }
       for (final r
           in (((single['routing'] as Map?)?['rules'] as List?) ?? const [])
-              .cast<Map>()) {
+              .cast<Map<dynamic, dynamic>>()) {
         final m = r.cast<String, dynamic>();
         final t = m['outboundTag'] as String?;
         // The generator's per-node catch-all (proxy-out, network tcp,udp)

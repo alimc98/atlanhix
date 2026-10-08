@@ -26,18 +26,6 @@ Widget _wrap(Widget child) => MaterialApp(
       home: Scaffold(body: Center(child: child)),
     );
 
-NodeHealthStats _seeded(HealthStore h, String id, int latMs, int variance) {
-  // Two identical samples with the requested spread → HealthStore computes
-  // the variance over the recent window exactly as on device.
-  h.record(HealthRecord(
-      profileId: id, at: DateTime.now(), ok: true, latencyMs: latMs));
-  h.record(HealthRecord(
-      profileId: id,
-      at: DateTime.now(),
-      ok: true,
-      latencyMs: variance == 0 ? latMs : (variance.isEven ? latMs + 1 : latMs - 1)));
-  return h.statsOf(id)!;
-}
 
 void main() {
   test('nodeMetricSubline: stdDev is derived from the stored variance', () {

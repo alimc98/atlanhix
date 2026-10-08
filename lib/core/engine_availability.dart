@@ -76,13 +76,13 @@ class CoreAvailabilityStatus {
       'CoreAvailabilityStatus($protocol/$transport, xray=$xrayAarLoaded)';
 
   @override
-  bool operator ==(Object o) =>
-      o is CoreAvailabilityStatus &&
-      o.android == android &&
-      o.xrayAarLoaded == xrayAarLoaded &&
-      o.protocol == protocol &&
-      o.transport == transport &&
-      o.amnezia == amnezia;
+  bool operator ==(Object other) =>
+      other is CoreAvailabilityStatus &&
+      other.android == android &&
+      other.xrayAarLoaded == xrayAarLoaded &&
+      other.protocol == protocol &&
+      other.transport == transport &&
+      other.amnezia == amnezia;
   @override
   int get hashCode =>
       Object.hash(android, xrayAarLoaded, protocol, transport, amnezia);

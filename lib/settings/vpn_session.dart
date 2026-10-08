@@ -276,7 +276,7 @@ class VpnSession {
     // own dialect (proxy/node:<id> vs ATX/profile-name).
     final tables = <ClashApiClient, Future<Set<String>?>>{};
     await Future.wait(batch.map((p) async {
-      final api = await apiFor(p);
+      final api = apiFor(p);
       if (api == null) {
         // No listener serves this node → honest engine-off, never a
         // fabricated timeout (same contract as a missing tag below).

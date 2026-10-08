@@ -228,7 +228,7 @@ class _NodesScreenState extends State<NodesScreen> {
               _GhostIconButton(
                   icon: Icons.add,
                   tooltip: 'Add node manually',
-                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
                       builder: (_) =>
                           NodeEditorScreen(deps: widget.deps)))),
               const SizedBox(width: 6),
@@ -331,7 +331,7 @@ class _NodesScreenState extends State<NodesScreen> {
                       onConnect: () => _onNodeTap(context, p),
                       onCoreTap: () => _showCorePicker(context, p),
                       onEdit: () async {
-                        await Navigator.of(context).push(MaterialPageRoute(
+                        await Navigator.of(context).push(MaterialPageRoute<void>(
                             builder: (_) => NodeEditorScreen(
                                 deps: widget.deps, profile: p)));
                         if (mounted) setState(() {});

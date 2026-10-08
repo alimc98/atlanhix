@@ -22,7 +22,7 @@ Future<void> main() async {
     return;
   }
   final endpointV4 = reg['endpointV4'] as String;
-  final endpointV6 = reg['endpointV6'] as String?;
+  final endpointV6 = reg['endpointV6'];
   final serverPub = reg['serverPub'] as String;
   final clientId = reg['clientId'] as String;
   stdout.writeln('endpoint.v4  = "$endpointV4"');
@@ -92,7 +92,7 @@ Future<void> main() async {
     '188.114.97.1',
   ];
   for (final c in candidates) {
-    final pkt = winner != null && winner!.startsWith('tool-hmac')
+    final pkt = winner != null && winner.startsWith('tool-hmac')
         ? await _buildHmac(
             initiatorStaticPrivate: priv,
             responderStaticPublic: responder,
@@ -188,7 +188,7 @@ Future<Map<String, String>?> _register() async {
     }
     final j = jsonDecode(text) as Map<String, dynamic>;
     final config = j['config'] as Map<String, dynamic>;
-    final peers = (config['peers'] as List).cast<Map>();
+    final peers = (config['peers'] as List).cast<Map<dynamic, dynamic>>();
     final peer0 = peers.first;
     final endpoint = (peer0['endpoint'] as Map?) ?? const {};
     final iface = (config['interface'] as Map?) ?? const {};

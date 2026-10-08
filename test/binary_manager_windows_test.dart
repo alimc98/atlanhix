@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nexus/core/core_detector.dart';
 import 'package:nexus/core/runtime/binary_manager.dart';
 
 void main() {

@@ -9,7 +9,6 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/configgen/singbox_config_generator.dart';
-import 'package:nexus/domain/entities/proxy_profile.dart';
 import 'package:nexus/protocols/adapters/hysteria2.dart';
 import 'package:nexus/routing/routing_models.dart';
 

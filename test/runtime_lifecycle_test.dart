@@ -1,13 +1,11 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nexus/core/health/test_scheduler.dart';
 import 'package:nexus/core/logger.dart';
 import 'package:nexus/core/runtime/binary_manager.dart';
 import 'package:nexus/core/runtime/core_manager.dart';
 import 'package:nexus/core/runtime/core_process.dart';
 import 'package:nexus/core/runtime/core_runtime.dart';
-import 'package:nexus/domain/entities/health.dart';
 import 'package:nexus/domain/entities/proxy_profile.dart';
 import 'package:nexus/routing/builtin_profiles.dart';
 import 'package:nexus/routing/routing_models.dart';

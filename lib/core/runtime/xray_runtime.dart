@@ -59,6 +59,7 @@ class XrayRuntime implements CoreRuntime {
 
   int get localPort => _localPort;
   ProxyProfile? get currentProfile => _profile;
+  @override
   int? get lastPid => _process?.pid;
 
   @override

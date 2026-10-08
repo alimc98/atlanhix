@@ -117,7 +117,7 @@ void main() {
     }
     final avg = durations.reduce((a, b) => a + b) ~/ durations.length;
     // ignore: avoid_print
-    print('METRIC cleanup: $cycles cycles, 0 leaked, avg cycle ${avg} ms, '
+    print('METRIC cleanup: $cycles cycles, 0 leaked, avg cycle $avg ms, '
         'max ${durations.reduce((a, b) => a > b ? a : b)} ms');
   }, timeout: const Timeout(Duration(minutes: 12)));
 

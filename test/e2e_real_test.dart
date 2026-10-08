@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -7,7 +6,6 @@ import 'package:nexus/core/health/latency_tester.dart';
 import 'package:nexus/core/runtime/binary_manager.dart';
 import 'package:nexus/core/runtime/core_manager.dart';
 import 'package:nexus/core/runtime/core_process.dart';
-import 'package:nexus/core/runtime/core_runtime.dart';
 import 'package:nexus/domain/entities/proxy_profile.dart';
 import 'package:nexus/protocols/importer.dart';
 import 'package:nexus/routing/builtin_profiles.dart';

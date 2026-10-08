@@ -6,7 +6,7 @@ import '../common/uri_utils.dart';
 /// `masterking32 / MasterDnsVPN`) adapter.
 ///
 /// Import formats:
-///  * mdvpn://<base64url(toml)>#name           — exported config snippet
+///  * `mdvpn://<base64url(toml)>#name`         — exported config snippet
 ///  * raw client_config.toml text pasted/imported
 ///
 /// Runtime: NEXUS generates the TOML + resolvers file, launches the external

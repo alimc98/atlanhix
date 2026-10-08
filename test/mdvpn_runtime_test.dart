@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/health/latency_tester.dart';
-import 'package:nexus/core/primitives.dart';
 import 'package:nexus/core/runtime/binary_manager.dart';
 import 'package:nexus/core/runtime/core_process.dart';
 import 'package:nexus/core/runtime/core_runtime.dart';

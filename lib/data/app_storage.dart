@@ -36,7 +36,8 @@ class JsonStore {
         final text = await _file.readAsString();
         final doc = jsonDecode(text) as Map<String, dynamic>;
         final version = (doc['schemaVersion'] ?? 1) as int;
-        var payload = (doc['data'] ?? {}) as Map<String, dynamic>;
+        var payload =
+            (doc['data'] ?? const <String, dynamic>{}) as Map<String, dynamic>;
         if (version < schemaVersion) {
           payload = _migrate(payload, version, schemaVersion);
         }

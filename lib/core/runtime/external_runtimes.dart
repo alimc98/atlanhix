@@ -64,6 +64,7 @@ abstract class ExternalDaemonRuntime implements CoreRuntime {
 
   /// PID of the daemon process while running (diagnostics §19); null when
   /// stopped. [ManagedProcess] PID is OS-real, never synthesized.
+  @override
   int? get lastPid => _process?.pid;
 
   @override

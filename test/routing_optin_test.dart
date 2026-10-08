@@ -2,10 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:nexus/application/connection_controller.dart';
-import 'package:nexus/core/configgen/singbox_config_generator.dart';
-import 'package:nexus/core/configgen/xray_config_generator.dart';
-import 'package:nexus/core/runtime/core_manager.dart';
 import 'helpers/prepare_node.dart';
 
 /// Routing is OPT-IN (default OFF) — contract tests.
@@ -90,8 +86,8 @@ void main() {
       final bridge = RoutingSettingsBridge(RoutingSettings()); // default OFF
       final cfg = buildViaConnectPipeline(bridge);
 
-      final route = cfg['route'] as Map;
-      final rules = (route['rules'] as List).cast<Map>();
+      final route = cfg['route'] as Map<dynamic, dynamic>;
+      final rules = (route['rules'] as List).cast<Map<dynamic, dynamic>>();
       // Engine minimum: sniff + DNS hijack + the ALWAYS-ON private→direct
       // safety rule (v0.4.4 device fix: also keeps the `direct` outbound
       // referenced so sing-box 1.14 does not reject the clean-DNS detour).
@@ -113,13 +109,13 @@ void main() {
     test('default connect config has the real outbound topology', () {
       final bridge = RoutingSettingsBridge(RoutingSettings());
       final cfg = buildViaConnectPipeline(bridge);
-      final outbounds = (cfg['outbounds'] as List).cast<Map>();
+      final outbounds = (cfg['outbounds'] as List).cast<Map<dynamic, dynamic>>();
       final selector = outbounds.firstWhere((o) => o['tag'] == 'proxy');
       expect(selector['type'], 'selector');
       expect((selector['outbounds'] as List), contains('node:optin-node'));
       expect(outbounds.any((o) => o['tag'] == 'direct'), isTrue);
       // DNS handling present (minimum the engine needs).
-      expect((cfg['dns'] as Map)['servers'], isNotEmpty);
+      expect((cfg['dns'] as Map<dynamic, dynamic>)['servers'], isNotEmpty);
     });
   });
 
@@ -130,8 +126,8 @@ void main() {
       final bridge = RoutingSettingsBridge(s);
       final cfg = buildViaConnectPipeline(bridge);
 
-      final route = cfg['route'] as Map;
-      final rules = (route['rules'] as List).cast<Map>();
+      final route = cfg['route'] as Map<dynamic, dynamic>;
+      final rules = (route['rules'] as List).cast<Map<dynamic, dynamic>>();
       // sniff, hijack-dns, private-networks → DIRECT (as ip_is_private rule
       // plus the generator's explicit private-CIDR rule). Nothing else.
       expect(rules, hasLength(4));
@@ -145,7 +141,7 @@ void main() {
       expect(rules.where((r) => r.containsKey('domain')), isEmpty);
       final cidrRules = rules
           .where((r) => r.containsKey('ip_cidr'))
-          .cast<Map>()
+          .cast<Map<dynamic, dynamic>>()
           .toList();
       final privateCidrs = {'10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
         '127.0.0.0/8', '169.254.0.0/16', '::1/128', 'fc00::/7', 'fe80::/10'};
@@ -161,8 +157,8 @@ void main() {
         ..proxyDomains.add('openai.com');
       final bridge = RoutingSettingsBridge(s);
       final rules = ((buildViaConnectPipeline(bridge)['route']
-              as Map)['rules'] as List)
-          .cast<Map>();
+              as Map<dynamic, dynamic>)['rules'] as List)
+          .cast<Map<dynamic, dynamic>>();
       expect(rules, hasLength(4));
       expect(rules.where((r) => r['domain'] != null), isEmpty,
           reason: 'Global mode must not compile per-domain rules');
@@ -180,8 +176,8 @@ void main() {
       final bridge = RoutingSettingsBridge(s);
       final cfg = buildViaConnectPipeline(bridge);
 
-      final route = cfg['route'] as Map;
-      final rules = (route['rules'] as List).cast<Map>();
+      final route = cfg['route'] as Map<dynamic, dynamic>;
+      final rules = (route['rules'] as List).cast<Map<dynamic, dynamic>>();
       // sniff + hijack + private (2 rules) + 4 user rules (exact dom,
       // suffix dom, direct cidr, proxy cidr).
       expect(rules, hasLength(8));
@@ -231,9 +227,9 @@ void main() {
         'safety rule (empty lists apply nothing)', () {
       final s = RoutingSettings(enabled: true, mode: RoutingMode.rule);
       final bridge = RoutingSettingsBridge(s);
-      final rules = ((buildViaConnectPipeline(bridge)['route'] as Map)['rules']
+      final rules = ((buildViaConnectPipeline(bridge)['route'] as Map<dynamic, dynamic>)['rules']
               as List)
-          .cast<Map>();
+          .cast<Map<dynamic, dynamic>>();
       expect(rules, hasLength(4)); // sniff, hijack-dns, private → direct ×2
       expect(rules.any((r) => r['ip_is_private'] == true), isTrue);
     });
@@ -333,9 +329,9 @@ void main() {
         localSocksPort: 2081,
         routing: RoutingSettings().toRoutingProfile(),
       );
-      final rules = (cfg['routing'] as Map)['rules'] as List;
+      final rules = (cfg['routing'] as Map<dynamic, dynamic>)['rules'] as List;
       final userRules = rules
-          .where((r) => (r as Map)['domain'] != null || r['ip'] != null)
+          .where((r) => (r as Map<dynamic, dynamic>)['domain'] != null || r['ip'] != null)
           .toList();
       expect(userRules, isEmpty);
     });

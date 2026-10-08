@@ -104,7 +104,7 @@ void main() {
       expect(cores.currentAutoFragment!.id, 'aggressive');
       // Engine restarts happen BETWEEN rungs — stop() must NOT rewind the
       // ladder, or the escalation loop would loop rung 0↔1 forever.
-      cores.stop();
+      await cores.stop();
       expect(cores.currentAutoFragment!.id, 'aggressive',
           reason: 'stop() keeps the climbed position');
       // A fresh connect rewinds exactly here.

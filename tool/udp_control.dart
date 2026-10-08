@@ -28,15 +28,15 @@ Future<void> main() async {
   });
   try {
     final n = dns.send(q, InternetAddress('1.1.1.1'), 53);
-    print('DNS sent $n bytes');
+    stdout.writeln('DNS sent $n bytes');
   } catch (e) {
-    print('DNS send threw: $e');
+    stdout.writeln('DNS send threw: $e');
   }
   final r1 = await Future.any([
     done.future,
     Future.delayed(const Duration(seconds: 4), () => 'DNS TIMEOUT'),
   ]);
-  print(r1);
+  stdout.writeln(r1);
   dns.close();
 
   // --- 2) WARP endpoint, tiny garbage datagram ----------------------
@@ -56,22 +56,22 @@ Future<void> main() async {
   try {
     final n = s2.send(Uint8List.fromList([1, 0, 0, 0]),
         InternetAddress('162.159.192.1'), 2408);
-    print('WG garbage sent $n bytes');
+    stdout.writeln('WG garbage sent $n bytes');
   } catch (e) {
-    print('WG send threw: $e');
+    stdout.writeln('WG send threw: $e');
   }
   final r2 = await Future.any([
     done2.future,
     Future.delayed(const Duration(seconds: 4), () => 'WG TIMEOUT (silent)'),
   ]);
-  print(r2);
+  stdout.writeln(r2);
   s2.close();
 
   // --- 3) is any local VPN/proxy interface up? ----------------------
-  print('--- interfaces ---');
+  stdout.writeln('--- interfaces ---');
   for (final i in await NetworkInterface.list()) {
     for (final a in i.addresses) {
-      print('${i.name}: ${a.address}');
+      stdout.writeln('${i.name}: ${a.address}');
     }
   }
 }

@@ -95,7 +95,7 @@ Future<void> main(List<String> args) async {
       ..['ip'] = 'quic';
   }
   if (mode == 'awgmasc2') {
-    endpoint..['ib'] = 'chrome';
+    endpoint['ib'] = 'chrome';
   }
   if (mode == 'awgjt') {
     endpoint
@@ -144,7 +144,7 @@ Future<void> main(List<String> args) async {
     'route': {'final': 'warp'},
   };
   await File(out).writeAsString(jsonEncode(config));
-  stdout.writeln('wrote $out (${mode} mode)');
+  stdout.writeln('wrote $out ($mode mode)');
 }
 
 String _pfx(String entry) {

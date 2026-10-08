@@ -25,7 +25,6 @@ import 'dart:io';
 
 import 'package:nexus/core/runtime/binary_manager.dart';
 import 'package:nexus/core/runtime/core_manager.dart';
-import 'package:nexus/core/runtime/core_runtime.dart';
 import 'package:nexus/data/app_storage.dart';
 import 'package:nexus/data/profile_repository.dart';
 import 'package:nexus/data/secure_vault.dart';

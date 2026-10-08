@@ -9,7 +9,6 @@ import 'package:nexus/protocols/adapters/vless.dart';
 import 'package:nexus/protocols/adapters/trojan.dart';
 import 'package:nexus/protocols/adapters/shadowsocks.dart';
 import 'package:nexus/protocols/adapters/hysteria2.dart';
-import 'package:nexus/protocols/adapters/tuic_socks.dart';
 import 'package:nexus/protocols/adapters/wireguard_conf.dart';
 import 'package:nexus/protocols/importer.dart';
 

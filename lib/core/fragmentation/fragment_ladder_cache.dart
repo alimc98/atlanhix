@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'fragment_profiles.dart';
 import '../../data/app_storage.dart';
 
@@ -163,12 +165,12 @@ class FragmentLadderCache {
   }
 
   Future<void> _persistStats() async {
-    _store.putSection(_statsSection, {
+    unawaited(_store.putSection(_statsSection, {
       for (final e in _statMap.entries)
         e.key: {
           for (final r in e.value.entries) r.key: [for (final ev in r.value) List<int>.of(ev)],
         },
-    });
+    }));
   }
 
   /// Per-rung [attempts, wins] for [subscriptionId], aggregated over probe

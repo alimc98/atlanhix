@@ -13,7 +13,7 @@ class ManagedProcess {
     required this.pid,
     required this.commandLine,
   }) {
-    _exitFuture = _process.exitCode.then((code) {
+    _process.exitCode.then((code) {
       exitCode = code;
       Logger.instance
           .info('process', 'exit pid=$pid code=$code cmd=$commandLine');
@@ -25,7 +25,6 @@ class ManagedProcess {
   final Process _process;
   final int pid;
   final String commandLine;
-  late final Future<int> _exitFuture;
   final _exitCompleter = Completer<int>();
 
   int? exitCode;

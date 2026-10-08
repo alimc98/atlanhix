@@ -203,7 +203,7 @@ void main() {
     final r = await WgHandshakeProbe.probe(
         InternetAddress.loopbackIPv4.address, port, pkt,
         timeout: const Duration(seconds: 2));
-    listen.cancel();
+    await listen.cancel();
     responder.close();
     expect(r, isNotNull, reason: 'a type-2 reply proves endpoint liveness');
   }, timeout: const Timeout(Duration(seconds: 15)));

@@ -18,7 +18,7 @@ import '../core/net/clean_dns_client.dart';
 /// bumped with it. That invariant is now ENFORCED by
 /// `test/app_version_consistency_test.dart`, which fails the build when the
 /// two disagree — which is how the drift stayed invisible for five releases.
-const String kAppVersion = '0.6.3+19';
+const String kAppVersion = '0.6.5+20';
 
 /// v0.4.7 §user — the release update checker.
 ///

@@ -191,7 +191,7 @@ class BootstrapResolver {
     try {
       return await fut;
     } finally {
-      _inFlight.remove(host);
+      unawaited(_inFlight.remove(host));
     }
   }
 

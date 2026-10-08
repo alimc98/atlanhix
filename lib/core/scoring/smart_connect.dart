@@ -33,7 +33,7 @@ class SmartConnectSelector {
   final Duration cooldown;
   final int maxPreprobeCandidates;
 
-  Future<ProbeResult> Function(ProxyProfile p, Duration timeout) _prober;
+  final Future<ProbeResult> Function(ProxyProfile p, Duration timeout) _prober;
 
   static Future<ProbeResult> _defaultProber(
           ProxyProfile p, Duration timeout) async =>
@@ -90,14 +90,12 @@ class SmartConnectSelector {
     final results = List<(ProxyProfile, ProbeResult)?>.filled(
         pool.length, null);
     var next = 0;
-    var inFlight = 0;
     final k = concurrency ?? maxConcurrentProbes;
 
     Future<void> worker() async {
       while (true) {
         final i = next++;
         if (i >= pool.length) return;
-        inFlight++;
         try {
           results[i] = (pool[i], await _prober(pool[i], preprobeTimeout));
         } catch (_) {
@@ -105,8 +103,6 @@ class SmartConnectSelector {
             pool[i],
             ProbeResult(ok: false, errorKind: 'tcp', detail: 'probe threw')
           );
-        } finally {
-          inFlight--;
         }
       }
     }

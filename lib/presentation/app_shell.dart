@@ -51,8 +51,8 @@ class _AppShellState extends State<AppShell>
   ConnectionPhase _phase = ConnectionPhase.disconnected;
   ProxyProfile? _active;
   AppError? _lastError;
-  StreamSubscription? _sub;
-  StreamSubscription? _vpnSub;
+  StreamSubscription<void>? _sub;
+  StreamSubscription<void>? _vpnSub;
   StreamSubscription<void>? _selSub;
 
   /// v0.4.1: on Android the VpnSession owns the connect lifecycle.

@@ -107,7 +107,8 @@ class Subscription {
   }
 
   static Subscription fromJson(Map<String, dynamic> j) {
-    final infoRaw = (j['info'] ?? {}) as Map<String, dynamic>;
+    final infoRaw =
+        (j['info'] ?? const <String, dynamic>{}) as Map<String, dynamic>;
     final expire = infoRaw['expire'] as int?;
     return Subscription(
       id: j['id'] as String,

@@ -295,7 +295,8 @@ class AppDependencies {
     await deps.warpRepo.load();
     _mark('warpRepo.load');
     deps.warpService = WarpService(registrar: WarpRegistrar(http: HttpWarpApi()));
-    deps.geo ??= GeoLocator();
+    // geo: non-late with a default initializer (see field doc) — preseeded
+    // stubs in tests survive, production gets a fresh GeoLocator for free.
     deps.connection = ConnectionController(
       repository: deps.profiles,
       healthStore: deps.healthStore,
@@ -467,7 +468,11 @@ class AppDependencies {
   // about). It is only safe today because BOTH construction paths
   // (bootstrap and bootstrapForTest) assign `geo` before that line runs.
   // Non-late would make the preseed actually work.
-  late GeoLocator geo;
+  // v0.5.6: non-late default (per the v0.5.2 §doc-fix note above) — `??=`
+  // on a late field reads it first and would throw LateInitializationError;
+  // with a non-late initializer the preseed-in-tests path actually works and
+  // the analyzer's dead-null-aware warning disappears.
+  GeoLocator geo = GeoLocator();
   late NodeUsage nodeUsage; // v0.5.2 §user: per-node up/down accounting
   late final CoreDetector detector;
   late final MultiFormatImporter importer;
@@ -498,7 +503,7 @@ class AppDependencies {
   /// its OWN slot — with mihomo as default BOTH listeners answer while the
   /// VPN is up (the front owns the TUN, the child owns the node pool), so
   /// a single shared slot could only ever remember whoever answered first.
-  /// The two engines speak different selector dialects (proxy/node:<id> vs
+  /// The two engines speak different selector dialects (proxy/`node:<id>` vs
   /// ATX/profile-name), so callers must be able to ask for the one they
   /// mean instead of guessing from a shared cache.
   static ClashApiClient? _mihomoClashApi;

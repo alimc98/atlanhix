@@ -1,14 +1,11 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/core_detector.dart';
 import 'package:nexus/core/health/latency_tester.dart';
-import 'package:nexus/core/primitives.dart';
 import 'package:nexus/core/runtime/binary_manager.dart';
 import 'package:nexus/core/runtime/core_manager.dart';
-import 'package:nexus/core/runtime/core_process.dart';
 import 'package:nexus/core/runtime/core_runtime.dart';
 import 'package:nexus/core/scoring/smart_connect.dart';
 import 'package:nexus/core/configgen/singbox_config_generator.dart';
@@ -22,7 +19,7 @@ import 'package:nexus/routing/routing_models.dart';
 ///
 /// Gated by:
 ///   ATLANHIX_SUBSCRIPTION_E2E=1
-///   ATLANHIX_SUBSCRIPTION_URL=<real subscription URL>   (SECRET — never
+///   ATLANHIX_SUBSCRIPTION_URL=`<real subscription URL>`  (SECRET — never
 ///                                                        printed/committed)
 ///
 /// Pipeline: fetch → validate HTTP → detect encoding → parse → sanitized
@@ -38,7 +35,7 @@ Map<String, dynamic> _inventoryLine(ProxyProfile p, CoreDecision d,
     {required bool sbConfigOk}) {
   return {
     'protocol': p.protocol.name,
-    'transport': p.transport?.name ?? 'none',
+    'transport': p.transport.name,
     'tls': p.security.name,
     'reality': p.security == Security.reality,
     'server': p.server,
@@ -156,7 +153,7 @@ Future<void> _continueSubscriptionE2E(List<ProxyProfile> profiles) async {
     } else if (d.core != CoreKind.xray) {
       genFail++;
     }
-    final combo = '${p.protocol.name}/${p.transport?.name}/${p.security.name}';
+    final combo = '${p.protocol.name}/${p.transport.name}/${p.security.name}';
     byCombo.putIfAbsent(combo, () => _inventoryLine(p, d, sbConfigOk: sbOk));
   }
   for (final e in byCombo.entries) {
@@ -174,7 +171,7 @@ Future<void> _continueSubscriptionE2E(List<ProxyProfile> profiles) async {
       final d = detector.resolve(p);
       if (d.core == CoreKind.xray) continue; // xray-owned, not native
       final combo =
-          '${p.protocol.name}/${p.transport?.name}/${p.security.name}';
+          '${p.protocol.name}/${p.transport.name}/${p.security.name}';
       if (!validated.add(combo)) continue;
       final cfg = gen.generate(
         runnableProfiles: [p],
@@ -230,7 +227,7 @@ Future<void> _continueSubscriptionE2E(List<ProxyProfile> profiles) async {
         dns: DnsSettings(mode: DnsMode.automatic));
     final startMs = swStart.elapsedMilliseconds;
     final label = '${profile.protocol.name}/'
-        '${profile.transport?.name ?? "-"}/${profile.security.name}';
+        '${profile.transport.name}/${profile.security.name}';
     if (!start.ok) {
       results[profile.id] = 'FAIL';
       details.add('$label via ${d.core.name}: START_FAIL '
@@ -275,11 +272,9 @@ Future<void> _continueSubscriptionE2E(List<ProxyProfile> profiles) async {
   }
   // Unsupported/not-alive nodes are reported, not silently dropped.
   final aliveIds = probed.map((r) => r.$1.id).toSet();
-  var skipped = 0;
   for (final p in profiles) {
     if (!aliveIds.contains(p.id) && !results.containsKey(p.id)) {
       results[p.id] = 'SKIPPED';
-      skipped++;
     }
   }
   final counts = <String, int>{};

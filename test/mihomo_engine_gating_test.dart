@@ -18,17 +18,6 @@ ProxyProfile _xhttp() => ProxyProfile(
       sni: 'cdn.example.com',
     );
 
-ProxyProfile _ws() => ProxyProfile(
-      id: 'ws',
-      name: 'WS',
-      server: '203.0.113.11',
-      port: 443,
-      protocol: ProxyProtocol.vless,
-      transport: Transport.ws,
-      security: Security.none,
-      uuid: 'u1',
-      path: '/ws',
-    );
 
 ProxyProfile _mdvpn() => ProxyProfile(
       id: 'md',

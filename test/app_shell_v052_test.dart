@@ -41,11 +41,6 @@ void main() {
   });
 
   group('GlobeBackdrop', () {
-    Widget wrap(Widget child) => MaterialApp(
-          theme: NexusTheme.theme(NexusThemeMode.dark),
-          home: const Scaffold(body: SizedBox.expand()),
-        ).letScaffold(child: child);
-
     testWidgets('mounts behind the app without gestures', (tester) async {
       await tester.pumpWidget(MaterialApp(
         theme: NexusTheme.theme(NexusThemeMode.dark),
@@ -86,8 +81,4 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   });
-}
-
-extension _Let on Widget {
-  Widget letScaffold({required Widget child}) => child;
 }

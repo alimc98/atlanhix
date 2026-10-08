@@ -12,6 +12,7 @@ import com.atlanhix.app.vpn.AtlanhixVpnChannel
 import com.atlanhix.app.vpn.AtlanhixXrayChannel
 import com.atlanhix.app.vpn.AtlanhixMihomoChannel
 import com.atlanhix.app.vpn.AtlanhixUpdaterChannel
+import com.atlanhix.app.vpn.InstalledAppsSource
 
 class MainActivity : FlutterActivity() {
 

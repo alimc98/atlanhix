@@ -144,7 +144,7 @@ class CoreManager {
   /// W4: every engine's exit stream, tagged with the owning engine —
   /// the controller routes crash recovery per engine.
   final _anyExitCtrl = StreamController<EngineExitEvent>.broadcast();
-  final _exitSubs = <StreamSubscription>[];
+  final _exitSubs = <StreamSubscription<void>>[];
   bool _exitWired = false;
 
   Stream<EngineExitEvent> get onAnyExit {

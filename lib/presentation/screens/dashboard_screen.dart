@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../../application/connection_controller.dart';
 import '../../application/dependencies.dart';
@@ -44,9 +43,9 @@ class _DashboardScreenState extends State<DashboardScreen>
   ConnectionPhase _phase = ConnectionPhase.disconnected;
   ProxyProfile? _active;
   int? _latencyMs;
-  StreamSubscription? _sub;
-  StreamSubscription? _trafficSub;
-  StreamSubscription? _vpnSub;
+  StreamSubscription<void>? _sub;
+  StreamSubscription<void>? _trafficSub;
+  StreamSubscription<void>? _vpnSub;
   // Growable rings: the 1s ticker mutates them with removeAt(0)/add —
   // a fixed-length List.filled crashed with "Cannot remove from a
   // fixed-length list" the moment the tunnel connected (device log
@@ -80,8 +79,8 @@ class _DashboardScreenState extends State<DashboardScreen>
   // state machine (tap while disconnected emits no VPN phase), so the
   // dashboard also listens to explicit selection events and re-reads
   // selectedNode — the tapped node shows immediately, BEFORE any connect.
-  StreamSubscription? _selectionSub;
-  StreamSubscription? _counterSub;
+  StreamSubscription<void>? _selectionSub;
+  StreamSubscription<void>? _counterSub;
   StreamSubscription<HealthRecord>? _healthSub;
 
   // v0.5.2 §user — LIVE PRE-CONNECT LADDER: while the smart switch measures
@@ -645,7 +644,7 @@ class _DashboardScreenState extends State<DashboardScreen>
         final failed = vpn.controller.phase == AndroidVpnPhase.failed ||
             vpn.controller.phase == AndroidVpnPhase.permissionDenied ||
             vpn.controller.phase == AndroidVpnPhase.revoked;
-        if (!ok && failed && mounted) {
+        if (!ok && failed && context.mounted) {
           final req = vpn.selectedNode;
           final why = req == null
               ? ''

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../settings/app_settings.dart';
@@ -106,34 +108,38 @@ class _ModeTab extends StatelessWidget {
           ),
           const Divider(height: 32),
           const SectionHeader('Routing mode'),
-          RadioListTile<RoutingMode>(
-            title: const Text('Global'),
-            subtitle: const Text(
-                'All traffic through the VPN/proxy, except Direct Apps '
-                'and private networks.'),
-            value: RoutingMode.global,
+          // v0.6.4: migrated off the deprecated RadioListTile groupValue/
+          // onChanged params to the RadioGroup ancestor API (Flutter 3.35+).
+          RadioGroup<RoutingMode>(
             groupValue: routing.mode,
-            onChanged: routing.enabled
-                ? (m) async {
-                    routing.mode = m!;
-                    await onPersist();
-                  }
-                : null,
-          ),
-          RadioListTile<RoutingMode>(
-            title: const Text('Rule'),
-            subtitle: const Text(
-                'Evaluate rules: private networks and Direct Apps → DIRECT; '
-                'direct/proxy domains, CIDRs and custom rules; '
-                'everything else → final outbound (default proxy).'),
-            value: RoutingMode.rule,
-            groupValue: routing.mode,
-            onChanged: routing.enabled
-                ? (m) async {
-                    routing.mode = m!;
-                    await onPersist();
-                  }
-                : null,
+            // RadioGroup.onChanged is required (non-nullable): keep a no-op
+            // when routing is disabled and disable the tiles themselves.
+            onChanged: (m) {
+              if (!routing.enabled) return;
+              routing.mode = m!;
+              unawaited(onPersist());
+            },
+            child: Column(
+              children: [
+                RadioListTile<RoutingMode>(
+                  title: const Text('Global'),
+                  subtitle: const Text(
+                      'All traffic through the VPN/proxy, except Direct Apps '
+                      'and private networks.'),
+                  value: RoutingMode.global,
+                  enabled: routing.enabled,
+                ),
+                RadioListTile<RoutingMode>(
+                  title: const Text('Rule'),
+                  subtitle: const Text(
+                      'Evaluate rules: private networks and Direct Apps → DIRECT; '
+                      'direct/proxy domains, CIDRs and custom rules; '
+                      'everything else → final outbound (default proxy).'),
+                  value: RoutingMode.rule,
+                  enabled: routing.enabled,
+                ),
+              ],
+            ),
           ),
           const Divider(height: 32),
           const SectionHeader('Application rules'),
@@ -170,7 +176,7 @@ class _ModeTab extends StatelessWidget {
 }
 
 class _DomainListTab extends StatefulWidget {
-  _DomainListTab({
+  const _DomainListTab({
     required this.title,
     required this.hint,
     required this.entries,
@@ -303,7 +309,7 @@ class _AdvancedTab extends StatelessWidget {
 }
 
 class _CidrEditor extends StatefulWidget {
-  _CidrEditor({required this.title, required this.entries, required this.onChanged});
+  const _CidrEditor({required this.title, required this.entries, required this.onChanged});
   final String title;
   final List<String> entries;
   final Future<void> Function() onChanged;

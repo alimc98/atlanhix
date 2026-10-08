@@ -34,7 +34,7 @@ Future<void> main() async {
 
   var port = 21910;
   for (final p in xrayNodes) {
-    final label = '${p.name ?? p.protocol.name}'.replaceAll('\n', ' ');
+    final label = p.name.replaceAll('\n', ' ');
     port++;
     try {
       final cfg = XrayConfigGenerator().generate(
@@ -52,12 +52,12 @@ Future<void> main() async {
         final slog = StringBuffer();
         proc.stdout.transform(utf8.decoder).listen(slog.write);
         proc.stderr.transform(utf8.decoder).listen(slog.write);
-        await Future.delayed(const Duration(seconds: 3));
+        await Future<void>.delayed(const Duration(seconds: 3));
         final r = await LatencyTester().testHttpViaSocksProxy(
             '127.0.0.1', port, 'http://www.gstatic.com/generate_204',
             timeout: const Duration(seconds: 15));
         stdout.writeln('${r.ok ? "PASS" : "FAIL"}  $label  '
-            '(${p.transport?.name ?? '-'}  / ${p.security.name}) '
+            '(${p.transport.name}  / ${p.security.name}) '
             'kind=${r.errorKind} ${r.latencyMs ?? '-'}ms');
         if (!r.ok) {
           final tail = slog
@@ -74,7 +74,7 @@ Future<void> main() async {
       } finally {
         proc?.kill();
         await dir.delete(recursive: true);
-        await Future.delayed(const Duration(milliseconds: 400));
+        await Future<void>.delayed(const Duration(milliseconds: 400));
       }
     } catch (e) {
       stdout.writeln('GENFAIL $label  $e');

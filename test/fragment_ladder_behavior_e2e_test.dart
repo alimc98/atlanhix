@@ -26,7 +26,6 @@ import 'package:nexus/core/fragmentation/fragment_profiles.dart';
 import 'package:nexus/core/health/latency_tester.dart';
 import 'package:nexus/core/runtime/binary_manager.dart';
 import 'package:nexus/core/runtime/core_manager.dart';
-import 'package:nexus/core/runtime/core_process.dart';
 import 'package:nexus/data/app_storage.dart';
 import 'package:nexus/domain/entities/proxy_profile.dart';
 import 'package:nexus/protocols/importer.dart';

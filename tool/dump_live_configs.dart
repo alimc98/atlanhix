@@ -37,7 +37,9 @@ Future<void> main() async {
     try {
       final d = utf8.decode(base64.decode(payload));
       if (d.contains('://')) payload = d;
-    } on FormatException {}
+    } on FormatException {
+      // not base64 — keep the raw payload
+    }
   }
   final profiles = MultiFormatImporter().import(payload).profiles;
   final target = profiles
@@ -59,7 +61,7 @@ Future<void> main() async {
   print(redact(const JsonEncoder.withIndent('  ').convert({
     'server': target.server,
     'port': target.port,
-    'transport': target.transport?.name,
+    'transport': target.transport.name,
     'security': target.security.name,
     'path': target.path,
     'host': target.host,
@@ -86,13 +88,7 @@ Future<void> main() async {
   final wd = await Directory.systemTemp.createTemp('xray-live-probe');
   final cfgFile = File('${wd.path}${Platform.pathSeparator}x.json');
   await cfgFile.writeAsString(jsonEncode(xrayJson));
-  final xrayExe = File(Directory.current.path +
-      Platform.pathSeparator +
-      'cores' +
-      Platform.pathSeparator +
-      'windows-x64' +
-      Platform.pathSeparator +
-      'xray.exe');
+  final xrayExe = File('${Directory.current.path}${Platform.pathSeparator}cores${Platform.pathSeparator}windows-x64${Platform.pathSeparator}xray.exe');
   final p = await Process.start(xrayExe.path, ['run', '-c', cfgFile.path]);
   final errs = <String>[];
   p.stderr.transform(utf8.decoder).listen(errs.add);

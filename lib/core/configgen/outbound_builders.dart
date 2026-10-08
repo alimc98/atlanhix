@@ -480,8 +480,8 @@ class OutboundBuilders {
           'alpn': p.alpn.isNotEmpty
               ? p.alpn
               : (p.transport == Transport.xhttp
-                  ? const ['http/1.1']
-                  : const []),
+                  ? const <String>['http/1.1']
+                  : const <String>[]),
           if (p.fingerprint != null) 'fingerprint': p.fingerprint,
         }..removeWhere((k, v) => v is List && v.isEmpty));
       case Security.none:

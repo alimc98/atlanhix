@@ -82,6 +82,7 @@ class SingBoxRuntime implements CoreRuntime {
   @override
   TrafficSnapshot? get traffic => _traffic;
 
+  @override
   int? get lastPid => _process?.pid;
 
   @override

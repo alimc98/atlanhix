@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:nexus/core/configgen/xray_config_generator.dart';
 import 'package:nexus/core/health/latency_tester.dart';
-import 'package:nexus/domain/entities/proxy_profile.dart';
 import 'package:nexus/protocols/importer.dart';
 import 'package:nexus/routing/builtin_profiles.dart';
 const xrayExe = r'C:\Users\Hosna\dev-tools\xray-win\xray.exe';
@@ -10,7 +9,7 @@ Future<void> main() async {
   final raw = File(Platform.environment['SUB_FILE']!).readAsStringSync().trim();
   var payload = raw;
   if (!raw.contains('://')) { try { payload = utf8.decode(base64.decode(raw)); } catch (_) {} }
-  final p = MultiFormatImporter().import(payload).profiles.firstWhere((e) => (e.name ?? '').contains('GM-USA'));
+  final p = MultiFormatImporter().import(payload).profiles.firstWhere((e) => e.name.contains('GM-USA'));
   final base = XrayConfigGenerator().generate(profile: p, routing: BuiltinRoutingProfiles.all().first, localSocksPort: 40990, dnsServer: '8.8.8.8');
   for (var v = 0; v < 4; v++) {
     final cfg = jsonDecode(jsonEncode(base)) as Map<String, dynamic>;
@@ -28,7 +27,7 @@ Future<void> main() async {
     final slog = StringBuffer();
     proc.stdout.transform(utf8.decoder).listen(slog.write);
     proc.stderr.transform(utf8.decoder).listen(slog.write);
-    await Future.delayed(const Duration(seconds: 3));
+    await Future<void>.delayed(const Duration(seconds: 3));
     final r = await LatencyTester().testHttpViaSocksProxy('127.0.0.1', 40990+v, 'http://www.gstatic.com/generate_204', timeout: const Duration(seconds: 12));
     final tag = ['as-generated','no-xhttp-host','drop-mlkem','both'][v];
     stdout.writeln('${r.ok ? "PASS" : "FAIL"}  $tag  kind=${r.errorKind} ${r.latencyMs ?? '-'}ms');
@@ -38,7 +37,7 @@ Future<void> main() async {
     }
     proc.kill();
     await dir.delete(recursive: true);
-    await Future.delayed(const Duration(milliseconds: 300));
+    await Future<void>.delayed(const Duration(milliseconds: 300));
   }
   exit(0);
 }

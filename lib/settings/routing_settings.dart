@@ -135,7 +135,7 @@ class RoutingSettings {
     }
     final rules = <RoutingRule>[];
     var n = 0;
-    String nextId(String kind) => 'rs-${kind}-${n++}';
+    String nextId(String kind) => 'rs-$kind-${n++}';
 
     if (mode == RoutingMode.rule) {
       // Private networks → DIRECT (sing-box generator adds ip_is_private for

@@ -94,9 +94,6 @@ class SmartSwitch {
   bool _sweeping = false;
   int _sweepSeq = 0;
 
-  /// Candidates snapshot (kept between sweeps for debug logging).
-  List<ProxyProfile> _candidates = const [];
-
   /// Node the switcher currently recommends (may be null while sweeping).
   ProxyProfile? best;
 
@@ -156,7 +153,6 @@ class SmartSwitch {
     if (currentId != null) {
       best = candidates.where((p) => p.id == currentId).firstOrNull;
     }
-    _candidates = candidates;
     _resultsSub = scheduler.results.listen((_) => _evaluate(candidates));
     _sweep(candidates, announce: true);
     _armTimers(candidates);
@@ -260,7 +256,6 @@ class SmartSwitch {
     Duration maxWait = const Duration(milliseconds: 3500),
     void Function(ProxyProfile node)? earlyPick,
   }) async {
-    _candidates = candidates;
     // v0.5.2 §user: announced runs feed the hero's live count. If a sweep
     // is ALREADY in flight (resume re-arm racing the connect tap) this
     // call no-ops inside [_sweep] and the in-flight run's own count keeps

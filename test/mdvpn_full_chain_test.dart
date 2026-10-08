@@ -2,11 +2,9 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/health/latency_tester.dart';
-import 'package:nexus/core/primitives.dart';
 import 'package:nexus/core/runtime/binary_manager.dart';
 import 'package:nexus/core/runtime/core_manager.dart';
 import 'package:nexus/core/runtime/core_process.dart';
-import 'package:nexus/core/runtime/core_runtime.dart';
 import 'package:nexus/core/runtime/core_runtime.dart';
 import 'package:nexus/domain/entities/proxy_profile.dart';
 import 'package:nexus/routing/builtin_profiles.dart';
@@ -101,7 +99,7 @@ void _verifyWiring(CoreManager mgr, ProxyProfile profile) {
           }) as Map<String, dynamic>);
   final stubs = (cfg['outbounds'] as List)
       .where((o) => o is Map && o['type'] == 'socks')
-      .cast<Map>()
+      .cast<Map<dynamic, dynamic>>()
       .toList();
   expect(stubs, isNotEmpty,
       reason: 'sing-box config must contain the MDVPN SOCKS stub');

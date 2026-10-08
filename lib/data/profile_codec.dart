@@ -140,7 +140,7 @@ Future<void> resolveProfileSecrets(
     }
     final wg = p.wireguard;
     if (wg != null) {
-      if (wg.privateKey != null && isVaultRef(wg.privateKey!)) {
+      if (isVaultRef(wg.privateKey)) {
         // WireGuardConfig.privateKey is non-nullable: a missing vault entry
         // resolves to '' (same treatment as the original decode path).
         wg.privateKey = swap(wg.privateKey) ?? '';
@@ -171,9 +171,11 @@ ProxyProfile _profileFromStorable(
           endpointHost: (wgRaw['endpointHost'] ?? '') as String,
           endpointPort: (wgRaw['endpointPort'] ?? 0) as int,
           preSharedKey: secret(wgRaw['preSharedKey'] as String?),
-          allowedIps: ((wgRaw['allowedIps'] ?? const []) as List).cast<String>(),
-          dns: ((wgRaw['dns'] ?? const []) as List).cast<String>(),
-          addresses: ((wgRaw['addresses'] ?? const []) as List).cast<String>(),
+          allowedIps:
+              ((wgRaw['allowedIps'] ?? const <String>[]) as List).cast<String>(),
+          dns: ((wgRaw['dns'] ?? const <String>[]) as List).cast<String>(),
+          addresses:
+              ((wgRaw['addresses'] ?? const <String>[]) as List).cast<String>(),
           mtu: wgRaw['mtu'] as int?,
           persistentKeepalive: wgRaw['persistentKeepalive'] as int?,
           reserved: (wgRaw['reserved'] as List?)
@@ -203,7 +205,7 @@ ProxyProfile _profileFromStorable(
     sni: j['sni'] as String?,
     fingerprint: j['fingerprint'] as String?,
     allowInsecure: j['allowInsecure'] as bool? ?? false,
-    alpn: ((j['alpn'] ?? const []) as List).cast<String>(),
+    alpn: ((j['alpn'] ?? const <String>[]) as List).cast<String>(),
     realityPublicKey: j['realityPublicKey'] as String?,
     realityShortId: j['realityShortId'] as String?,
     realitySpiderX: j['realitySpiderX'] as String?,
@@ -250,14 +252,16 @@ ProxyProfile _profileFromStorable(
             randomTrailers: j['amnezia']['randomTrailers'] as bool?,
             disableCookies: j['amnezia']['disableCookies'] as bool?,
           ),
-    rawParams: ((j['rawParams'] ?? const {}) as Map).cast<String, String>(),
+    rawParams: ((j['rawParams'] ?? const <String, String>{}) as Map)
+        .cast<String, String>(),
     rawConfig: secret((j['raw']?['secret']) as String?) ??
         (j['raw']?['text']) as String?,
     source: ProfileSource.values.firstWhere((e) => e.name == j['source'],
         orElse: () => ProfileSource.manual),
     subscriptionId: j['subscriptionId'] as String?,
-    tags: ((j['tags'] ?? const []) as List).cast<String>(),
-    metadata: ((j['metadata'] ?? const {}) as Map).cast<String, String>(),
+    tags: ((j['tags'] ?? const <String>[]) as List).cast<String>(),
+    metadata: ((j['metadata'] ?? const <String, String>{}) as Map)
+        .cast<String, String>(),
     userPinnedCore: _enumOrNull(CoreKind.values, j['userPinnedCore']),
     enabled: j['enabled'] as bool? ?? true,
     createdAt: j['createdAt'] == null

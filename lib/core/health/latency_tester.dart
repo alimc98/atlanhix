@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 /// One connectivity probe result.
 class ProbeResult {
@@ -370,7 +371,7 @@ class LatencyTester {
       final deadline = DateTime.now().add(const Duration(seconds: 5));
       while (written < bytes.length) {
         final n = transport is RawSecureSocket
-            ? (transport as RawSecureSocket).write(bytes.sublist(written))
+            ? (transport).write(bytes.sublist(written))
             : (transport as RawSocket).write(bytes.sublist(written));
         if (n > 0) {
           written += n;
@@ -465,62 +466,3 @@ class LatencyTester {
   }
 }
 
-/// Single-subscription-safe socket reader: pumps the socket stream ONCE and
-/// lets callers take bytes as they arrive. (Fixes the double-listen crash
-/// found by the runtime integration tests.)
-class _SockReader {
-  _SockReader(Socket s) {
-    _sub = s.listen(
-      (chunk) => _buf.addAll(chunk),
-      onDone: () => _done = true,
-      onError: (Object _) => _done = true,
-      cancelOnError: false,
-    );
-  }
-
-  final List<int> _buf = [];
-  StreamSubscription<List<int>>? _sub;
-  bool _done = false;
-
-  /// Releases the raw subscription so a TLS upgrade can re-listen the
-  /// underlying socket (v0.3.2 — required before SecureSocket.secure).
-  Future<void> detach() async {
-    await _sub?.cancel();
-    _sub = null;
-  }
-
-  /// Waits until at least [n] bytes are buffered, the stream ends, or the
-  /// timeout passes. Returns (and consumes) the first bytes.
-  Future<List<int>> waitAndTake(int n, Duration timeout) async {
-    final stop = DateTime.now().add(timeout);
-    while (_buf.length < n && !_done && DateTime.now().isBefore(stop)) {
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-    }
-    final take = _buf.length < n ? _buf.length : n;
-    final out = _buf.sublist(0, take);
-    _buf.removeRange(0, take);
-    return out;
-  }
-
-  /// Reads buffered bytes until CRLF (HTTP status line).
-  Future<String> readLine(Duration timeout) async {
-    final stop = DateTime.now().add(timeout);
-    while (!_done && DateTime.now().isBefore(stop)) {
-      final idx = _findCrlf();
-      if (idx >= 0) {
-        final line = utf8.decode(_buf.sublist(0, idx));
-        _buf.removeRange(0, idx + 2);
-        return line.trim();
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-    }
-    return utf8.decode(_buf, allowMalformed: true).trim();
-  }
-
-  int _findCrlf() {
-    for (var i = 0; i + 1 < _buf.length; i++) {
-      if (_buf[i] == 0x0D && _buf[i + 1] == 0x0A) return i;
-    }
-    return -1;
-  }
-}

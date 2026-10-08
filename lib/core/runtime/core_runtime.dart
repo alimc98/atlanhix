@@ -77,8 +77,3 @@ class TrafficSnapshot {
   final int downBytes;
 }
 
-/// Shared helpers for runtimes.
-mixin RuntimeLog on Object {
-  Never _missing(String what) =>
-      throw StateError('$runtimeType does not implement $what');
-}

@@ -40,12 +40,6 @@ class SettingsScreen extends StatelessWidget {
           DnsModeUi.remote => 'Remote (encrypted)',
           DnsModeUi.custom => 'Custom',
         };
-    String ipv6Label(IpV6Mode m) => switch (m) {
-          IpV6Mode.auto => 'Auto',
-          IpV6Mode.on => 'On',
-          IpV6Mode.off => 'Off',
-        };
-
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [

@@ -326,7 +326,7 @@ class _AtlanhixAppState extends State<AtlanhixApp>
     final info = await UpdateChecker().check(currentVersion: kAppVersion);
     if (info == null || !mounted) return;
     final navCtx = _navKey.currentContext;
-    if (navCtx == null) return;
+    if (navCtx == null || !navCtx.mounted) return;
     // v0.4.9 §user-fix: same above-MaterialApp context bug — the `!` here
     // crashed whenever an update was actually available.
     final l = AppLocalizations.of(navCtx);
@@ -546,13 +546,16 @@ class _AtlanhixAppState extends State<AtlanhixApp>
     // and if even that fails SHOW the user the URL instead of failing
     // silently.
     final opened = await _openExternalUrl(info.url);
-    if (!opened && mounted) {
+    if (!opened) {
       // v0.5.6: localize through the MaterialApp context (the State's own
       // context sits above LocalizationsScope — `of()` there is null, which
-      // is why this dialog used to bail).
-      final l = AppLocalizations.of(navCtx);
-      final fa = Localizations.localeOf(navCtx).languageCode == 'fa';
-      final messenger = ScaffoldMessenger.maybeOf(navCtx);
+      // is why this dialog used to bail). Re-resolve across the async gap
+      // and guard the SNACKBAR context with its own `mounted`.
+      final snCtx = _navKey.currentContext;
+      if (snCtx == null || !snCtx.mounted) return;
+      final l = AppLocalizations.of(snCtx);
+      final fa = Localizations.localeOf(snCtx).languageCode == 'fa';
+      final messenger = ScaffoldMessenger.maybeOf(snCtx);
       messenger?.showSnackBar(SnackBar(
         duration: const Duration(seconds: 12),
         content: Text(
@@ -741,7 +744,7 @@ class _AtlanhixAppState extends State<AtlanhixApp>
         await service.onAddNodes(result.profiles);
       }
       final snCtx = _navKey.currentContext;
-      if (mounted && snCtx != null) {
+      if (snCtx != null && snCtx.mounted) {
         ScaffoldMessenger.of(snCtx).showSnackBar(
           const SnackBar(content: Text('✔')),
         );

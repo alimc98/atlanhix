@@ -1,0 +1,23 @@
+// Gradle init script: add mirror-first BUILDSCRIPT repositories on this
+// network (plugin projects declare their own buildscript deps from
+// dl.google.com / repo.maven.apache.org, both unreachable here).
+// Project-level repositories are left alone — this project uses
+// RepositoriesMode.PREFER_SETTINGS with its own mirror list.
+def mirrors = [
+    'https://maven.aliyun.com/repository/google',
+    'https://maven.aliyun.com/repository/central',
+    'https://maven.aliyun.com/repository/gradle-plugin',
+    'https://storage.flutter-io.cn/download.flutter.io',
+]
+
+def addMirrors = { repos ->
+    mirrors.each { mv -> repos.maven { url mv } }
+}
+
+allprojects {
+    buildscript {
+        repositories {
+            addMirrors(repositories)
+        }
+    }
+}

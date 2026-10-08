@@ -71,7 +71,7 @@ class DiagnosticsService {
               'id': active.id,
               'name': active.name,
               'protocol': active.protocol.name,
-              'transport': active.transport?.name,
+              'transport': active.transport.name,
               'security': active.security.name,
               // effective core AFTER detector/pin resolution (§12)
               'effectiveCore': active.effectiveCore.name,
@@ -172,7 +172,7 @@ class DiagnosticsService {
         : await tester.testTcp(active.server, active.port);
     final tls = (tcp == null || !tcp.ok || udpTransport)
         ? null
-        : await tester.testTls(active!.server, active!.port);
+        : await tester.testTls(active!.server, active.port);
 
     String? verdict(ProbeResult? r, String label) {
       if (r == null) return udpTransport ? 'n/a (UDP transport)' : 'skipped';

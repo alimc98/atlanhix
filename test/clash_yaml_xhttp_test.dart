@@ -126,9 +126,9 @@ proxies:
       expect(opts['mode'], 'stream-one');
       expect(opts['x-padding-bytes'], '100-200');
       expect(px['tls'], true);
-      expect((px['reality-opts'] as Map)['public-key'],
+      expect((px['reality-opts'] as Map<dynamic, dynamic>)['public-key'],
           'SbVKOEMjK0sIlbwg4akyBg5mL5KZwwB-ed4eEE7YnRc');
-      expect((px['reality-opts'] as Map)['short-id'], '6ba85179');
+      expect((px['reality-opts'] as Map<dynamic, dynamic>)['short-id'], '6ba85179');
     });
 
     test('ATX selector boots on the parsed xhttp node', () {
@@ -174,8 +174,8 @@ proxies:
       final px = (cfg['proxies'] as List).first as Map<String, dynamic>;
       final opts = px['xhttp-opts'] as Map<String, dynamic>;
       final reuse = opts['reuse-settings'];
-      expect(reuse, isA<Map>());
-      expect((reuse as Map)['maxConcurrency'], '13-17');
+      expect(reuse, isA<Map<dynamic, dynamic>>());
+      expect((reuse as Map<dynamic, dynamic>)['maxConcurrency'], '13-17');
     });
   });
 }

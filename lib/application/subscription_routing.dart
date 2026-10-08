@@ -8,8 +8,8 @@ import '../settings/routing_settings.dart';
 /// v0.4.7 §user — subscription-carried routing (the Happ / Incy feature).
 ///
 /// A subscription URL may carry a routing profile in its query string, e.g.
-///   https://provider/sub?token=…&routing=<base64url-json>
-///   …&routing-data=<base64url-json>          (Happ's parameter name)
+///   https://provider/sub?token=…`&routing=<base64url-json>`
+///   `…&routing-data=<base64url-json>`        (Happ's parameter name)
 ///
 /// Accepted JSON (all keys optional; unknown keys ignored):
 /// {

@@ -28,7 +28,7 @@ Future<void> main() async {
       final sock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
       final q = _query('n2.meta-design.ir');
       final n = sock.send(q, InternetAddress(r), 53);
-      final completer = Completer();
+      final completer = Completer<String>();
       Timer(const Duration(seconds: 4), () {
         if (!completer.isCompleted) completer.complete('TIMEOUT');
       });

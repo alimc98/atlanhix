@@ -77,7 +77,7 @@ Future<void> main(List<String> args) async {
             reserved: reserved,
             senderIndex: senderIdx,
           );
-    stdout.writeln('built ${pkt.length}B initiation (${mode})');
+    stdout.writeln('built ${pkt.length}B initiation ($mode)');
     await _validate(pkt, myPriv, rsPub, reserved);
   }
 }

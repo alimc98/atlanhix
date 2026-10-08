@@ -150,33 +150,6 @@ class MockHttpServer {
   }
 }
 
-/// Single-subscription-safe socket byte reader (mirror of the production
-/// _SockReader approach — tests must not use shortcuts the app doesn't).
-class _Reader {
-  _Reader(Socket s) {
-    _sub = s.listen(
-      (chunk) => _buf.addAll(chunk),
-      onDone: () => _done = true,
-      onError: (Object _) => _done = true,
-    );
-  }
-
-  final List<int> _buf = [];
-  StreamSubscription<List<int>>? _sub;
-  bool _done = false;
-
-  Future<List<int>> waitAndTake(int n, Duration timeout) async {
-    final stop = DateTime.now().add(timeout);
-    while (_buf.length < n && !_done && DateTime.now().isBefore(stop)) {
-      await Future<void>.delayed(const Duration(milliseconds: 5));
-    }
-    final take = _buf.length < n ? _buf.length : n;
-    final out = _buf.sublist(0, take);
-    _buf.removeRange(0, take);
-    return out;
-  }
-}
-
 /// Fetches the current external IP via Cloudflare trace (internet optional).
 Future<String?> fetchExternalIp() async {
   try {

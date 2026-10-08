@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/core/fragmentation/fragment_profiles.dart';
-import 'package:nexus/routing/builtin_profiles.dart';
 import 'package:nexus/settings/app_settings.dart';
 import 'package:nexus/settings/runtime_config_bridge.dart';
 import 'package:nexus/settings/routing_settings.dart';

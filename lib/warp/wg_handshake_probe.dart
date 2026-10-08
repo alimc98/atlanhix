@@ -191,7 +191,7 @@ class WgHandshakeProbe {
     body.addByte(1); // type: initiation
     // Cloudflare WARP: the 3-byte client id rides here on every packet.
     final res = reserved ?? const <int>[];
-    body.addByte(res.length > 0 ? res[0] & 0xFF : 0);
+    body.addByte(res.isNotEmpty ? res[0] & 0xFF : 0);
     body.addByte(res.length > 1 ? res[1] & 0xFF : 0);
     body.addByte(res.length > 2 ? res[2] & 0xFF : 0);
     final idxB = ByteData(4)..setUint32(0, idx, Endian.little);

@@ -2,7 +2,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexus/application/dependencies.dart';
 import 'package:nexus/core/health/latency_tester.dart';
 import 'package:nexus/core/health/test_scheduler.dart';
-import 'package:nexus/domain/entities/health.dart';
 import 'package:nexus/domain/entities/proxy_profile.dart';
 import 'package:nexus/settings/app_settings.dart';
 import 'package:nexus/settings/vpn_session.dart';
