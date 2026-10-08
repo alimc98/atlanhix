@@ -42,8 +42,8 @@ F-Droid اجازه نمی‌دهد باینری (AAR/JAR/so) کامیت‌شده
    flutter build apk --release          # باید مثل قبل بیلد شود
    ```
 2. **Fork** کنید: `gitlab.com/fdroid/fdroiddata`
-3. متادیتای آماده را کپی کنید: [`fdroid/com.atlanhix.app.yml`](fdroid/com.atlanhix.app.yml)
-   → به ریشه fdroiddata با نام `com.atlanhix.app.yml`.
+3. متادیتای آماده را کپی کنید: [`fdroid/metadata/com.atlanhix.app.yml`](fdroid/metadata/com.atlanhix.app.yml)
+   → به ریشه fdroiddata با نام `metadata/com.atlanhix.app.yml` (همان ساختار رسمی CONTRIBUTING).
 4. تست محلی با fdroidserver:
    ```bash
    pip install fdroidserver
