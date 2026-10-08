@@ -40,3 +40,5 @@ cores/
 #   node tools/build_planet_preview.js  (writes planet_preview.html)
 /tools/planet_preview.html
 /tools/land_mask.json
+android/app/libs/libbox-sources.jar
+android/app/libs/libbox.provenance.txt

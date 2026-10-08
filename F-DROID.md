@@ -22,6 +22,14 @@ F-Droid اجازه نمی‌دهد باینری (AAR/JAR/so) کامیت‌شده
 از سورس بیلد شود. libbox (سینگ‌باکس) GPL-3.0 است و باید با `gomobile` در خود recipe بیلد شود.
 اسکریپت مرجع: [`tools/build_libbox.sh`](tools/build_libbox.sh) — همین منطق را در recipe استفاده می‌کنیم.
 
+> ✅ **تأیید محلی (0.6.6):** اسکریپت روی همین ماشین با موفقیت اجرا شد و `libbox.aar` از سورس
+> sing-box v1.14.0 ساخته شد. نکات تله‌ای که در اسکریپت حل شده‌اند:
+> - `gomobile bind` باید با `-ldflags=-checklinkname=0` اجرا شود — `pidfd_android.go` خودِ sing-box
+>   با `//go:linkname` به `os.checkPidfdOnce` ارجاع می‌دهد و linker بدون این فلگ رد می‌کند
+> - x/mobile باید روی `v0.0.0-20260611195102-4dd8f1dbf5d2` پین شود و `GOTOOLCHAIN=go1.25.5`
+>   قفل گردد (x/mobile جدیدتر toolchain را به 1.26 می‌برد و همان خطای لینکر برمی‌گردد)
+> - `javac` (JDK) باید در PATH باشد و خروجی AAR با مسیر مطلق نوشته شود
+
 > نکته لایسنس: چون libbox (GPL-3.0) به اپ MIT لینک می‌شود، عملاً اپ اندروید باید تحت
 > GPL-3.0 توزیع شود. در متادیتای F-Droid مقدار `License: MIT` اپ اصلی + ذکر باندل
 > GPL-3.0 معمولاً پذیرفته می‌شود؛ در صورت درخواست reviewers، `License: GPL-3.0-or-later` بگذارید.
