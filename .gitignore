@@ -42,3 +42,4 @@ cores/
 /tools/land_mask.json
 android/app/libs/libbox-sources.jar
 android/app/libs/libbox.provenance.txt
+.loc/
