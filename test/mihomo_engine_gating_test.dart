@@ -111,6 +111,77 @@ void main() {
     });
   });
 
+  group('v0.6.7 §sub-engine: Clash-origin auto steering', () {
+    test('a Clash-origin node steers to mihomo even with Engine=auto', () {
+      // The user scenario: subscription content is Clash.Meta; the global
+      // engine preference stays whatever it was — the CONTENT decides.
+      final p = ProxyProfile(
+        id: 'clash-node',
+        name: 'Clash node',
+        server: '203.0.113.30',
+        port: 443,
+        protocol: ProxyProtocol.vless,
+        metadata: {'origin': 'clash'},
+      );
+      final d = CoreDetector().resolve(p, preference: CorePreference.auto);
+      expect(d.core, CoreKind.mihomo,
+          reason: 'Clash payload IS the format mihomo runs natively');
+    });
+
+    test('a Clash-origin node steers to mihomo even while the runtime '
+        'probe is unset', () {
+      // The exact report: «ساب کلش وصل میشه، ساب معمولی با انجین mihomo
+      // نمیشه» — a plain sub + Engine=mihomo used to die on the binary gate.
+      // The fix lets the CONTENT-proven Clash sub steer regardless.
+      MihomoCoreState.instance.setRuntimeLoaded(false);
+      final p = ProxyProfile(
+        id: 'clash-node-2',
+        name: 'Clash node 2',
+        server: '203.0.113.31',
+        port: 443,
+        protocol: ProxyProtocol.trojan,
+        metadata: {'origin': 'clash'},
+      );
+      final d = CoreDetector().resolve(p, preference: CorePreference.mihomo);
+      expect(d.core, CoreKind.mihomo,
+          reason: 'content-proven Clash node skips the probe gate');
+    });
+
+    test('a plain (non-Clash) sub node NEVER steers to mihomo on auto', () {
+      // The other half of the report: plain subscription + Engine auto →
+      // the capability matrix decides (no mihomo capture).
+      final p = ProxyProfile(
+        id: 'plain-node',
+        name: 'Plain node',
+        server: '203.0.113.32',
+        port: 443,
+        protocol: ProxyProtocol.trojan,
+      );
+      final d = CoreDetector().resolve(p, preference: CorePreference.auto);
+      expect(d.core, CoreKind.singbox,
+          reason: 'plain subscriptions keep the per-node matrix (auto)');
+    });
+
+    test('Android gate admits a Clash-origin mihomo node while the probe '
+        'is unsettled', () {
+      MihomoCoreState.instance.setRuntimeLoaded(false);
+      final p = ProxyProfile(
+        id: 'clash-node-3',
+        name: 'Clash node 3',
+        server: '203.0.113.33',
+        port: 443,
+        protocol: ProxyProtocol.trojan,
+        metadata: {'origin': 'clash'},
+      )..core = CoreKind.mihomo;
+      expect(AndroidNodeSupport.coreAllowedOnAndroid(CoreKind.mihomo,
+          profile: p), isTrue);
+      // A NON-Clash mihomo node stays gated on the probe.
+      final q = _xhttp()..core = CoreKind.mihomo;
+      expect(AndroidNodeSupport.coreAllowedOnAndroid(CoreKind.mihomo,
+          profile: q), isFalse);
+    });
+  });
+
   group('sing-box front load', () {
     test('mihomo-owned nodes never ride the sing-box front', () {
       // _singboxLoad is private; exercise via the same predicate family:

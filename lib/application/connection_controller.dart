@@ -20,6 +20,7 @@ import '../data/profile_repository.dart';
 import '../data/repositories.dart';
 import '../platform/system_proxy.dart';
 import '../settings/app_settings.dart';
+import '../domain/entities/subscription.dart';
 
 /// Strict connection state machine (Phase 25).
 ///
@@ -180,6 +181,13 @@ class ConnectionController {
 
   final ProfileRepository repository;
   final HealthStore healthStore;
+
+  /// v0.6.7 §sub-engine: id → Subscription lookup so the connect flow can
+  /// honor a subscription's own engine choice (Clash.Meta → mihomo, plain
+  /// sub → auto). Null (tests) = the global Engine setting applies.
+  Subscription? Function(String subscriptionId)? _subscriptionLookup;
+  void setSubscriptionLookup(Subscription? Function(String id)? lookup) =>
+      _subscriptionLookup = lookup;
   final LatencyTester tester;
   final CoreDetector detector;
   final CoreManager cores;
@@ -361,9 +369,17 @@ class ConnectionController {
           phase: ConnectionPhase.validating, activeProfile: profile));
       // v0.5.3 §mihomo: the app-level engine choice reaches detection —
       // `mihomo` steers mihomo-runnable nodes to the standalone engine.
+      // v0.6.7 §sub-engine: the owning subscription's engine choice
+      // (Clash.Meta → mihomo, plain sub → auto) wins over the global
+      // Engine setting, same as the Android connect path.
+      var pref = _settings?.corePreference ?? CorePreference.auto;
+      if (profile.subscriptionId != null && _subscriptionLookup != null) {
+        final sub = _subscriptionLookup!(profile.subscriptionId!);
+        if (sub != null) pref = sub.effectiveCoreOverride;
+      }
       final decision = detector.resolve(
           profile,
-          preference: _settings?.corePreference ?? CorePreference.auto);
+          preference: pref);
       final problems = _validateProfile(profile);
       if (problems.isNotEmpty) {
         throw ConfigValidationError(

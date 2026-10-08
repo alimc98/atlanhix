@@ -171,7 +171,7 @@ class AndroidNodeSupport {
   /// Android — a connection must never be built across two cores. `unknown`
   /// and `wireguardSingbox` pass here; protocol-level exclusions (plain
   /// WireGuard profiles, MDVPN protocol…) are enforced by [isRunnable].
-  static bool coreAllowedOnAndroid(CoreKind core) => switch (core) {
+  static bool coreAllowedOnAndroid(CoreKind core, {ProxyProfile? profile}) => switch (core) {
         CoreKind.singbox ||
         CoreKind.wireguardSingbox ||
         CoreKind.unknown =>
@@ -179,7 +179,14 @@ class AndroidNodeSupport {
         CoreKind.xray => XrayCoreState.instance.runtimeLoaded,
         // v0.5.3: mihomo runs as a child process (same shape as :xray) —
         // gated on its own boot-time version probe, never an AAR.
-        CoreKind.mihomo => MihomoCoreState.instance.runtimeLoaded,
+        // v0.6.7 §sub-engine: a Clash-origin node is content-proven — the
+        // subscription IS Clash.Meta. Steering it to mihomo even while the
+        // boot probe is still settling is safe: the child start owns a
+        // per-node fallback (UPSTREAM_START_FAILED → the caller's ladder),
+        // never a silent dial on the wrong engine.
+        CoreKind.mihomo =>
+          profile?.metadata['origin'] == 'clash' ||
+              MihomoCoreState.instance.runtimeLoaded,
         // v0.4.9: AWG executes in-libbox on the forked engine (with_awg).
         CoreKind.amneziaWg =>
           AmneziaWgCoreState.instance.runtimeLoaded,

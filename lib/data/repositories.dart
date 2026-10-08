@@ -399,6 +399,8 @@ class SubscriptionRepository {
         'updateIntervalMinutes': s.updateIntervalMinutes,
         'lastError': s.lastError,
         'etag': s.etag,
+        // v0.6.7 §sub-engine: the per-subscription engine choice.
+        'coreOverride': s.coreOverride,
       };
 }
 

@@ -140,7 +140,17 @@ class MultiFormatImporter {
         }
       case SourceFormat.clashYaml:
         final r = _clash.parse(payload);
-        profiles.addAll(r.profiles);
+        // v0.6.7 §sub-engine: tag Clash-origin nodes so the connect pipeline
+        // can steer them to the mihomo engine automatically (see
+        // CoreDetector.resolve). Non-Clash imports keep the metadata absent,
+        // which resolves to the capability matrix (auto). The default
+        // metadata map is unmodifiable — replace it wholesale.
+        profiles.addAll(r.profiles.map((p) => p
+          ..metadata = {
+            ...p.metadata,
+            'origin': 'clash',
+          }
+          ..core = CoreKind.mihomo));
         warnings.addAll(r.skipped.map((s) => 'Clash: $s'));
       case SourceFormat.singBoxJson:
         final r = _singbox.parse(payload);

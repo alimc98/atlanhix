@@ -1,3 +1,5 @@
+import '../../settings/app_settings.dart' show CorePreference;
+
 /// Traffic / account metadata advertised by providers via the standard
 /// `subscription-userinfo` response header. Absent values mean the provider
 /// does not expose them (never fabricated in UI).
@@ -79,6 +81,7 @@ class Subscription {
     this.updateIntervalMinutes = 360,
     this.lastError,
     this.etag,
+    this.coreOverride,
   });
 
   final String id;
@@ -100,6 +103,24 @@ class Subscription {
   int updateIntervalMinutes;
   String? lastError;
   String? etag;
+
+  /// v0.6.7 §sub-engine (user request): the ENGINE this subscription's
+  /// content selected at import time.
+  ///
+  /// * `'mihomo'` — the payload was Clash.Meta (the format mihomo runs
+  ///   natively); its nodes steer to the mihomo engine even on a device
+  ///   whose mihomo probe has not settled yet (the child start owns a
+  ///   per-node fallback).
+  /// * `'auto'` — a plain URI/base64 subscription; the per-node capability
+  ///   matrix decides (the exact fix for «ساب معمولی + mihomo وصل نمیشه»).
+  /// * null — legacy row: falls back to the global Engine setting.
+  String? coreOverride;
+
+  CorePreference get effectiveCoreOverride => switch (coreOverride) {
+        'mihomo' => CorePreference.mihomo,
+        'auto' => CorePreference.auto,
+        _ => CorePreference.auto,
+      };
 
   DateTime? get nextUpdate {
     if (!autoUpdate || lastUpdated == null) return null;
@@ -136,6 +157,7 @@ class Subscription {
       updateIntervalMinutes: j['updateIntervalMinutes'] as int? ?? 360,
       lastError: j['lastError'] as String?,
       etag: j['etag'] as String?,
+      coreOverride: j['coreOverride'] as String?,
     );
   }
 }

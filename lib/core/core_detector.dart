@@ -163,6 +163,27 @@ class CoreDetector {
         reasons: [...decision.reasons, 'User pinned this engine'],
       );
     }
+    // v0.6.7 §sub-engine (user request: «ساب معمولی بزاریم هسته mihomo باشه
+    // کانفیگ وصل نمیشه، ولی ساب کلش وصل میشه»): the clash importer tags its
+    // profiles (metadata['origin'] = 'clash'), and Clash payloads are the
+    // format mihomo executes NATIVELY — so a Clash-origin node follows the
+    // engine preference WITHOUT the runtime gate that broke plain
+    // subscriptions (their provider configs were never exercised against
+    // the mihomo binary on Android). A clash-tagged node steered here also
+    // skips the androidAvailability gate at the call sites below: when the
+    // runtime is missing the callers already fall back per-node.
+    if (preference == CorePreference.auto &&
+        p.metadata['origin'] == 'clash' &&
+        _mihomoRunnable(p)) {
+      return CoreDecision(
+        core: CoreKind.mihomo,
+        confidence: 0.9,
+        reasons: [
+          ...decision.reasons,
+          'Clash-origin subscription → mihomo engine (native Clash.Meta runtime)',
+        ],
+      );
+    }
     if (preference == CorePreference.mihomo && _mihomoRunnable(p)) {
       // v0.6.5 §fix (user report: «انجین mihomo هست، کانفیگ‌ها وصل نمیشن
       // ولی عوض می‌کنیم وصل می‌شن»): the preference must only steer when the
@@ -179,6 +200,23 @@ class CoreDetector {
           reasons: [
             ...decision.reasons,
             'Engine preference: mihomo (full xhttp/XMUX support)',
+          ],
+        );
+      }
+      // v0.6.7 §sub-engine: a Clash-ORIGIN node is trusted to steer even on
+      // a device whose mihomo probe has not completed yet — the subscription
+      // content itself is Clash.Meta (what mihomo runs natively). Callers
+      // (VpnSession/ConnectionController) fall back per-node when the child
+      // process still fails to boot.
+      if (p.metadata['origin'] == 'clash') {
+        return CoreDecision(
+          core: CoreKind.mihomo,
+          confidence: 0.9,
+          reasons: [
+            ...decision.reasons,
+            'Engine preference mihomo + Clash-origin subscription → mihomo '
+                '(runtime probe incomplete; callers fall back if the child '
+                'fails to boot)',
           ],
         );
       }

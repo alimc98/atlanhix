@@ -12,6 +12,7 @@ import '../core/net/bootstrap_dns.dart';
 import '../core/health/latency_tester.dart';
 import '../domain/entities/health.dart';
 import '../domain/entities/proxy_profile.dart';
+import '../domain/entities/subscription.dart';
 import '../core/configgen/mihomo_config_generator.dart';
 import '../core/configgen/xray_config_generator.dart';
 import '../core/runtime/core_manager.dart';
@@ -1189,10 +1190,27 @@ class VpnSession {
     // v0.5.3 §mihomo: the engine preference reaches the Android resolution
     // too — `mihomo` steers mihomo-runnable nodes to the standalone engine
     // (child-process shape, gated on its boot-time binary probe).
+    // v0.6.7 §sub-engine: the subscription's OWN engine choice wins over
+    // the global Engine setting — a Clash.Meta subscription steers its nodes
+    // to mihomo (the native Clash.Meta runtime), a plain URI/base64 sub
+    // stays on the per-node capability matrix. The user's global setting
+    // still applies to manual/clipboard imports (no owning subscription).
+    Subscription? sub;
+    if (profile.subscriptionId != null) {
+      for (final s in deps.subscriptions.all) {
+        if (s.id == profile.subscriptionId) {
+          sub = s;
+          break;
+        }
+      }
+    }
+    final effectivePreference = sub?.coreOverride != null
+        ? sub!.effectiveCoreOverride
+        : deps.appSettings.corePreference;
     var resolvedCore = deps.detector
         .resolve(
           profile,
-          preference: deps.appSettings.corePreference,
+          preference: effectivePreference,
         )
         .core;
     // v0.6.2 §engine-fallback: an APP-LEVEL engine preference must never take
@@ -1206,8 +1224,8 @@ class VpnSession {
     // here, fall back to the capability-matrix decision — for an xhttp node
     // that is the :xray upstream, which DOES run the transport.
     if (profile.userPinnedCore == null &&
-        deps.appSettings.corePreference != CorePreference.auto &&
-        !AndroidNodeSupport.coreAllowedOnAndroid(resolvedCore)) {
+        effectivePreference != CorePreference.auto &&
+        !AndroidNodeSupport.coreAllowedOnAndroid(resolvedCore, profile: profile)) {
       final fallback =
           deps.detector.resolve(profile, preference: CorePreference.auto).core;
       if (AndroidNodeSupport.coreAllowedOnAndroid(fallback)) {
@@ -1235,7 +1253,8 @@ class VpnSession {
     // external daemon processes that cannot spawn in-app. Fail here instead
     // of generating a merged dual-core config or a direct-only selector
     // over a dead stub.
-    if (!AndroidNodeSupport.coreAllowedOnAndroid(profile.effectiveCore)) {
+    if (!AndroidNodeSupport.coreAllowedOnAndroid(profile.effectiveCore,
+        profile: profile)) {
       Logger.instance.error('vpn-session',
           '$trace FAILED stage=CORE_SELECTED node=${profile.name} core=${profile.effectiveCore.name} reason=non-sing-box core has no in-app runtime (single-core guarantee)');
       // v0.5.8 §connect-fix: end the phase (was: `starting` forever).
@@ -1381,8 +1400,12 @@ class VpnSession {
 
           for (var i = 0; i < 3; i++) {
             if (superseded()) return false;
+            // v0.6.7 §connect-speed: 1.2 s grace between rounds was sized
+            // for a cold sing-box; the engines now warm up during the
+            // VALIDATING poll, so a short 400 ms gap keeps the retry loop
+            // inside one budget round instead of adding a full second.
             if (i > 0) {
-              await Future<void>.delayed(const Duration(milliseconds: 1200));
+              await Future<void>.delayed(const Duration(milliseconds: 400));
               Logger.instance.info('vpn-session',
                   '$trace HEALTH_RETRY attempt=${i + 1}/3 (engine warm-up grace)');
             }
@@ -1395,8 +1418,17 @@ class VpnSession {
             // the user's configured delay-test URL first, then independent
             // canaries, and only fail when none of them answers.
             final canaries = <String>[
+              // v0.6.7 §connect-speed: the FIRST canary is the plain-http
+              // Cloudflare 204 — no in-tunnel TLS handshake, decisive on the
+              // networks this app targets. The user's delay-test URL (often
+              // gstatic — frequently blocked and now paying a full cold
+              // start on it) moved to the fallbacks. The probe races them
+              // in parallel, so ordering costs nothing when the first pick
+              // answers first — but a SUCCESS now lands in one round trip
+              // instead of after the blocked gstatic canary's full timeout.
+              ConnectionController.probeFallbacks.first,
               deps.appSettings.effectiveDelayTestUrl,
-              ...ConnectionController.probeFallbacks,
+              ...ConnectionController.probeFallbacks.skip(1),
             ];
             // v0.6.0 §first-connect-fix: the canaries used to run SERIAL
             // (4 × 8 s = 32 s per round) while the whole probe was capped
@@ -1611,7 +1643,8 @@ class VpnSession {
         }
         if (!needsXrayUpstream &&
             !AndroidNodeSupport.coreAllowedOnAndroid(
-                profile.effectiveCore)) {
+                profile.effectiveCore,
+                profile: profile)) {
           throw StateError(
               'single-core violation: ${profile.effectiveCore.name}/${profile.transport.name} '
               'profile reached Android config generation');

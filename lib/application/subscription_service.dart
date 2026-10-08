@@ -120,6 +120,15 @@ class SubscriptionService {
 
       // Decode & normalize (off this frame; parsing is pure CPU).
       final result = importer.import(body);
+      // v0.6.7 §sub-engine: REMEMBER what the payload format chose —
+      // Clash.Meta content steers its nodes to the mihomo engine; plain
+      // URI/base64 subscriptions fall back to the per-node capability
+      // matrix (auto). Persisted on the subscription row so the decision
+      // survives restarts and reaches every future refresh.
+      sub.coreOverride = switch (result.format) {
+        SourceFormat.clashYaml => 'mihomo',
+        _ => 'auto',
+      };
       final fresh = <ProxyProfile>[];
       final seen = <String>{};
       for (final p in result.profiles) {

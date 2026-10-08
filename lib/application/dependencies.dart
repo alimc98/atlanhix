@@ -305,7 +305,14 @@ class AppDependencies {
       cores: deps.cores,
       warpRepo: deps.warpRepo,
       settings: deps.appSettings,
-    );
+    )
+      // v0.6.7 §sub-engine: wire the per-subscription engine lookup.
+      ..setSubscriptionLookup((id) {
+        for (final s in deps.subscriptions.all) {
+          if (s.id == id) return s;
+        }
+        return null;
+      });
     deps.subscriptionService = SubscriptionService(
       subscriptions: deps.subscriptions,
       profiles: deps.profiles,
