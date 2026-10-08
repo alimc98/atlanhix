@@ -1,0 +1,52 @@
+Categories:
+  - Connectivity
+  - Internet
+License: MIT
+AuthorName: NEXUS contributors
+SourceCode: https://github.com/alimc98/atlanhix
+IssueTracker: https://github.com/alimc98/atlanhix/issues
+Name: Atlanhix
+Summary: Proxy/VPN client for VLESS, VMess, Trojan, Hysteria2, TUIC and more
+Description: |-
+    Production-grade cross-platform proxy/VPN client (Windows, Linux, Android).
+
+    * Protocols: VLESS (incl. XHTTP/REALITY), VMess, Trojan, Shadowsocks,
+      Hysteria2/TUIC (via sing-box), WireGuard/AmneziaWG, MasterDNSVPN
+    * Engines: sing-box (embedded libbox) and Xray-core (user-supplied, desktop)
+    * Routing: global / rule mode, per-app lists, custom rules, subscriptions
+    * Health-based scoring, smart switching and connection fragmentation ladder
+
+    The app never downloads executable code at runtime. The embedded sing-box
+    core (libbox) is built from source during this F-Droid build with gomobile
+    (see the build recipe below); Xray-core is only used on desktop where the
+    user installs it separately.
+
+    NOTE on licensing: the MIT-licensed app links against sing-box's
+    GPL-3.0 libbox; the resulting Android build is therefore distributed
+    under GPL-3.0-or-later terms for the combined work.
+RepoType: git
+Repo: https://github.com/alimc98/atlanhix.git
+
+Builds:
+  - versionName: 0.6.5
+    versionCode: 20
+    commit: fed1e2f
+    subdir: android/app
+    sudo:
+      - apt-get update
+      - apt-get install -y golang-go golang-golang-x-mobile-dev
+    output: build/outputs/apk/release/app-release.apk
+    build:
+      # 1) Replace the prebuilt libbox.aar with one built from source.
+      - cd ../../ && rm -f android/app/libs/libbox.aar
+      - cd ../../ && bash tools/build_libbox.sh v1.14.0
+      # 2) Standard Flutter build (fdroidserver's flutter srclib provides the
+      #    SDK and a pub mirror).
+      - flutter pub get
+      - flutter build apk --release
+    ndk: r28
+
+AutoUpdateMode: None
+UpdateCheckMode: Tags
+CurrentVersion: 0.6.5
+CurrentVersionCode: 20
