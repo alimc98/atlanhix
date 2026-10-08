@@ -287,6 +287,18 @@ class AppLocalizationsFa extends AppLocalizations {
   String get nodesCount => 'گره‌ها';
 
   @override
+  String get subEngine => 'موتور';
+
+  @override
+  String get subEngineMihomo => 'mihomo (ساب کلش)';
+
+  @override
+  String get subEngineAuto => 'خودکار (per node)';
+
+  @override
+  String get subEngineGlobal => 'طبق تنظیم Engine';
+
+  @override
   String get healthyCount => 'سالم';
 
   @override

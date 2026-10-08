@@ -348,6 +348,11 @@ class _SubCard extends StatelessWidget {
                     : '${sub.info.expireAt!.difference(DateTime.now()).inDays}',
               ),
               _stat(context, l.nodesCount, '${sub.nodeCount}'),
+              // v0.6.7 §sub-engine (user request): which engine this sub's
+              // CONTENT selected — Clash payload → mihomo, plain sub → the
+              // per-node auto matrix. Rows with a null override (imported
+              // before this feature) show the global-Engine fallback text.
+              _stat(context, l.subEngine, _engineLabel(l)),
             ],
           ),
           // v0.5.0 §user: auto-update state — interval and the next due
@@ -403,6 +408,13 @@ class _SubCard extends StatelessWidget {
       ),
     );
   }
+
+  /// v0.6.7 §sub-engine: human label for this subscription's engine pick.
+  String _engineLabel(AppLocalizations l) => switch (sub.coreOverride) {
+        'mihomo' => l.subEngineMihomo,
+        'auto' => l.subEngineAuto,
+        _ => l.subEngineGlobal,
+      };
 
   Widget _stat(BuildContext context, String label, String value) {
     return Column(

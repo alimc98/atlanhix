@@ -650,6 +650,30 @@ abstract class AppLocalizations {
   /// **'Nodes'**
   String get nodesCount;
 
+  /// No description provided for @subEngine.
+  ///
+  /// In en, this message translates to:
+  /// **'Engine'**
+  String get subEngine;
+
+  /// No description provided for @subEngineMihomo.
+  ///
+  /// In en, this message translates to:
+  /// **'mihomo (Clash sub)'**
+  String get subEngineMihomo;
+
+  /// No description provided for @subEngineAuto.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto (per node)'**
+  String get subEngineAuto;
+
+  /// No description provided for @subEngineGlobal.
+  ///
+  /// In en, this message translates to:
+  /// **'Follows Engine setting'**
+  String get subEngineGlobal;
+
   /// No description provided for @healthyCount.
   ///
   /// In en, this message translates to:

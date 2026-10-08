@@ -287,6 +287,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get nodesCount => 'Nodes';
 
   @override
+  String get subEngine => 'Engine';
+
+  @override
+  String get subEngineMihomo => 'mihomo (Clash sub)';
+
+  @override
+  String get subEngineAuto => 'Auto (per node)';
+
+  @override
+  String get subEngineGlobal => 'Follows Engine setting';
+
+  @override
   String get healthyCount => 'Healthy';
 
   @override
