@@ -6,6 +6,7 @@ import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import org.json.JSONArray
 import org.json.JSONObject
 import com.atlanhix.app.vpn.AtlanhixProbeChannel
 import com.atlanhix.app.vpn.AtlanhixVpnChannel
@@ -24,6 +25,41 @@ class MainActivity : FlutterActivity() {
     private var vpnMethodSink: MethodChannel.Result? = null
     private var updaterChannel: AtlanhixUpdaterChannel? = null
 
+    /**
+     * v0.6.9 §update-fix — MethodChannel arguments arrive as a decoded
+     * Map, and `Map.toString()` is JAVA MAP SYNTAX (`{url=https://…}`),
+     * NOT JSON. Android's lenient org.json accepts the unquoted form but
+     * treats `//` as a line comment, so EVERY payload carrying a URL died
+     * at the scheme separator:
+     *
+     *   Unterminated object at character 27 of
+     *   {version=v0.6.8, url=https://github.com/…}
+     *
+     * That is why the in-app updater's Download button failed while its
+     * status/install payloads (no `//`) parsed fine. Convert Maps (and
+     * nested lists/maps) structurally instead of stringifying them.
+     */
+    private fun toJsonValue(v: Any?): Any? = when (v) {
+        null -> JSONObject.NULL
+        is Map<*, *> -> JSONObject().also { o ->
+            v.forEach { (k, w) -> o.put(k.toString(), toJsonValue(w)) }
+        }
+        // Android's org.json JSONArray spells it put() (add() is the
+        // JSON.org reference impl — unresolved against compileSdk here).
+        is List<*> -> JSONArray().also { a -> v.forEach { a.put(toJsonValue(it)) } }
+        is Boolean, is Number, is String -> v
+        else -> v.toString()
+    }
+
+    private fun argsToJson(raw: Any?): JSONObject? = when (raw) {
+        null -> null
+        is JSONObject -> raw
+        is Map<*, *> -> toJsonValue(raw) as JSONObject
+        // A pre-encoded JSON string (some Dart callers send one) parses
+        // verbatim; scalars keep the old lenient path.
+        else -> JSONObject(raw.toString())
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(
@@ -31,9 +67,7 @@ class MainActivity : FlutterActivity() {
             AtlanhixXrayChannel.CHANNEL
         ).setMethodCallHandler { call, result ->
             try {
-                val rawArg: Any? = call.arguments()
-                val arg: JSONObject? =
-                    if (rawArg == null) null else JSONObject(rawArg.toString())
+                val arg = argsToJson(call.arguments())
                 result.success(xrayChannelOrNew().handle(call.method, arg).toString())
             } catch (e: Exception) {
                 result.error("xray_channel", e.message, null)
@@ -47,9 +81,7 @@ class MainActivity : FlutterActivity() {
             AtlanhixMihomoChannel.CHANNEL
         ).setMethodCallHandler { call, result ->
             try {
-                val rawArg: Any? = call.arguments()
-                val arg: JSONObject? =
-                    if (rawArg == null) null else JSONObject(rawArg.toString())
+                val arg = argsToJson(call.arguments())
                 result.success(mihomoChannelOrNew().handle(call.method, arg).toString())
             } catch (e: Exception) {
                 result.error("mihomo_channel", e.message, null)
@@ -65,9 +97,7 @@ class MainActivity : FlutterActivity() {
             val appContext = applicationContext
             Thread {
                 try {
-                    val rawArg: Any? = call.arguments()
-                    val arg: JSONObject? =
-                        if (rawArg == null) null else JSONObject(rawArg.toString())
+                    val arg = argsToJson(call.arguments())
                     val resp = probeChannelOrNew().handle(call.method, arg)
                     runOnUiThread { result.success(resp.toString()) }
                 } catch (e: Exception) {
@@ -83,9 +113,7 @@ class MainActivity : FlutterActivity() {
         ).setMethodCallHandler { call, result ->
             Thread {
                 try {
-                    val rawArg: Any? = call.arguments()
-                    val arg: JSONObject? =
-                        if (rawArg == null) null else JSONObject(rawArg.toString())
+                    val arg = argsToJson(call.arguments())
                     val resp = updaterChannelOrNew().handle(call.method, arg)
                     runOnUiThread { result.success(resp.toString()) }
                 } catch (e: Exception) {
@@ -100,9 +128,7 @@ class MainActivity : FlutterActivity() {
             AtlanhixVpnChannel.CHANNEL
         ).setMethodCallHandler { call, result ->
             try {
-                val rawArg: Any? = call.arguments()
-                val arg: JSONObject? =
-                    if (rawArg == null) null else JSONObject(rawArg.toString())
+                val arg = argsToJson(call.arguments())
                 when (call.method) {
                     "prepare" -> {
                         val resp = vpnChannelOrNew().prepare()
