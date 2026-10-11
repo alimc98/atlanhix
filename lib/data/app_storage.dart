@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 /// JSON-file storage engine with schema versioning and forward-only
 /// migrations (§58, §65).
@@ -21,6 +22,8 @@ class JsonStore {
   final _controller = StreamController<String>.broadcast();
   bool _loaded = false;
   Timer? _flushTimer;
+  bool _pendingFlush = false;
+  Future<void>? _flushWorker;
 
   static const _fileName = 'nexus_store.json';
 
@@ -87,21 +90,52 @@ class JsonStore {
     });
   }
 
-  Future<void> flush() async {
+  /// Durable once this completes: at least one full write that started after
+  /// the call has landed. Concurrent callers coalesce into the SAME worker
+  /// loop — the loop re-runs while anything is still pending, so every
+  /// caller's data is covered by a write that began after its request.
+  Future<void> flush() {
     _flushTimer?.cancel();
-    await directory.create(recursive: true);
-    final tmp = File('${_file.path}.tmp');
-    await tmp.writeAsString(
-      const JsonEncoder.withIndent('  ').convert({
-        'schemaVersion': schemaVersion,
-        'savedAt': DateTime.now().toIso8601String(),
-        'data': _data,
-      }),
-      flush: true,
-    );
-    if (await _file.exists()) {
-      await _file.delete();
+    _pendingFlush = true;
+    return _flushWorker ??= _flushLoop();
+  }
+
+  Future<void> _flushLoop() async {
+    try {
+      while (_pendingFlush) {
+        _pendingFlush = false;
+        await _writeSnapshot();
+      }
+    } finally {
+      _flushWorker = null;
     }
-    await tmp.rename(_file.path);
+  }
+
+  Future<void> _writeSnapshot() async {
+    await directory.create(recursive: true);
+    // v0.6.9 §hang-fix ("بعضی وقتا هنگ می‌کنه و not responding میاد"): the
+    // whole store — every profile of every subscription, easily megabytes —
+    // was pretty-printed AND fsync'd HERE, on the UI isolate, on every write
+    // burst. While connected the usage fold writes every 2 s, so the window
+    // froze for hundreds of ms on a cadence (the desktop "Not responding"
+    // dialog). The snapshot below is copied to a worker isolate by
+    // [Isolate.run] (fast native object copy, no JSON cost on this thread);
+    // the encode + write + fsync + rename all happen OFF the UI isolate.
+    final doc = <String, dynamic>{
+      'schemaVersion': schemaVersion,
+      'savedAt': DateTime.now().toIso8601String(),
+      'data': _data,
+    };
+    final path = _file.path;
+    await Isolate.run(() {
+      final tmp = File('$path.tmp');
+      tmp.writeAsStringSync(
+        const JsonEncoder.withIndent('  ').convert(doc),
+        flush: true,
+      );
+      final file = File(path);
+      if (file.existsSync()) file.deleteSync();
+      tmp.renameSync(path);
+    });
   }
 }

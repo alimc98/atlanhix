@@ -1,5 +1,6 @@
 import 'dart:io' show Platform;
 
+import '../core/logger.dart';
 import '../routing/routing_models.dart';
 
 /// Compiles a routing profile + DNS settings into engine-specific rule sets.
@@ -35,11 +36,36 @@ class RoutingCompiler {
         case RuleMatchType.ipCidr:
           rule['ip_cidr'] = r.patterns;
         case RuleMatchType.geoip:
-          rule['geoip'] = r.patterns;
+          // v0.6.9 §routing-fix: the legacy `geoip` route-rule item was
+          // REMOVED in sing-box 1.12 — emitting it made `sing-box check -c`
+          // fail with "unknown field geoip" and took the WHOLE config down
+          // (every connect died for a user with a geoip rule). Country lists
+          // need downloaded rule-sets (not bundled); literal CIDRs the user
+          // typed still compile to `ip_cidr`. Anything else is dropped WITH
+          // a warning — one skipped rule, never a dead tunnel.
+          final cidrs =
+              r.patterns.where(_looksLikeCidrOrIp).toList(growable: false);
+          final dropped = r.patterns
+              .where((p) => !_looksLikeCidrOrIp(p))
+              .toList(growable: false);
+          if (dropped.isNotEmpty) {
+            Logger.instance.warn(
+                'routing',
+                'geoip rule ${r.id}: patterns $dropped need a GeoIP rule-set '
+                    '(the geoip route item was removed in sing-box 1.12) — '
+                    'skipped instead of failing the whole config');
+          }
+          if (cidrs.isNotEmpty) rule['ip_cidr'] = cidrs;
         case RuleMatchType.port:
           rule['port'] = r.patterns;
         case RuleMatchType.protocol:
-          rule['port'] = r.patterns; // approximated via port after sniff
+          // v0.6.9 §routing-fix: this used to map to `rule['port']` ("approx-
+          // imated via port") — a BitTorrent rule became `port: ["bittorrent"]`,
+          // which `sing-box check -c` REJECTS, killing the entire config.
+          // `protocol` is a first-class route-rule field in the bundled
+          // sing-box, and the generator ships a `sniff` route action, so the
+          // matcher is live.
+          rule['protocol'] = r.patterns;
         case RuleMatchType.network:
           rule['network'] = r.patterns;
         case RuleMatchType.process:
@@ -83,7 +109,14 @@ class RoutingCompiler {
         case RuleMatchType.port:
           rule['port'] = r.patterns.join(',');
         case RuleMatchType.protocol:
+          // v0.6.9 §routing-fix: Xray route rules DO support `protocol`
+          // (http/tls/bittorrent/…, sniffed) — it used to be dropped here,
+          // so a BitTorrent-direct rule silently did nothing on the Xray
+          // upstream.
+          rule['protocol'] = r.patterns;
         case RuleMatchType.network:
+          // Xray accepts "tcp" / "udp" / "tcp,udp".
+          rule['network'] = r.patterns.join(',');
         case RuleMatchType.process:
         case RuleMatchType.package:
           continue; // not directly expressible in Xray route rules
@@ -256,6 +289,14 @@ class RoutingCompiler {
     }
     return null;
   }
+
+  /// True for literal IPv4/IPv6 addresses and CIDRs (e.g. `1.2.3.4`,
+  /// `10.0.0.0/8`, `fc00::/7`) — the geoip patterns that remain compilable
+  /// after the geoip rule item was removed from sing-box. A GeoIP country
+  /// code (`ir`, `ir!ir`) never matches.
+  static bool _looksLikeCidrOrIp(String p) =>
+      RegExp(r'^[0-9a-fA-F:.]+(/\d{1,3})?$').hasMatch(p) &&
+      (p.contains('.') || p.contains(':'));
 
   static String _hostOf(String url) {
     final u = Uri.parse(url);

@@ -529,11 +529,16 @@ class MihomoConfigGenerator {
           RuleMatchType.port => 'DST-PORT,$p,$target',
           RuleMatchType.process || RuleMatchType.package =>
             'PROCESS-NAME,$p,$target',
-          // geoip / protocol / network have no 1:1 mihomo string rule —
-          // skipped honestly (the sing-box front config keeps them).
-          RuleMatchType.geoip ||
-          RuleMatchType.protocol ||
-          RuleMatchType.network => null,
+          // v0.6.9 §routing-fix: mihomo's rule set HAS first-class PROTOCOL
+          // and NETWORK matchers (Clash lineage) — they used to be skipped
+          // here, so a BitTorrent / UDP-direct rule silently did nothing on
+          // the mihomo engine.
+          RuleMatchType.protocol => 'PROTOCOL,$p,$target',
+          RuleMatchType.network => 'NETWORK,$p,$target',
+          // GEOIP needs mihomo's GeoIP database (auto-downloaded — routinely
+          // unreachable on the networks this app targets); skipped honestly
+          // instead of shipping rules that never evaluate.
+          RuleMatchType.geoip => null,
         };
         if (rule != null) out.add(rule);
       }
