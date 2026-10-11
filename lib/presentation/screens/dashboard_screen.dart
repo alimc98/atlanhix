@@ -659,7 +659,9 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(NexusSpacing.xl),
+      // v0.6.8 §ui-fit («آیتم‌های داشبورد کوچیک‌تر بشن که اسکرول نخوره»):
+      // trimmed page padding — the column must fit one phone screen.
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
       child: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 880),
@@ -672,8 +674,11 @@ class _DashboardScreenState extends State<DashboardScreen>
               // selected node's server pre-lights its pin, and once the
               // tunnel is up the great-circle ARC home → exit draws itself
               // (Iran → Romania). Traffic graph + pills ride it unchanged.
+              // v0.6.8 §ui-fit: 320 → 250 — the globe band still owns the
+      // chips + graph + phase pill, but the stats/usage/power rows now
+      // clear the fold on a phone without scrolling.
               SizedBox(
-                height: 320,
+                height: 250,
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
@@ -742,7 +747,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                     Positioned(
                       left: 0,
                       right: 0,
-                      bottom: 86,
+                      bottom: 64,
                       // v0.5.0 §battery-fix: the tab switch UNMOUNTS the
                       // dashboard, but the hero still animates whenever any
                       // ancestor keeps it alive (wide layouts). TickerMode
@@ -754,7 +759,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                         child: TrafficGraph(
                           downSamples: _down,
                           upSamples: _up,
-                          height: 132,
+                          height: 104,
                           transparentField: true,
                         ),
                       ),
@@ -790,10 +795,10 @@ class _DashboardScreenState extends State<DashboardScreen>
                 connected: connected,
                 onTap: widget.onOpenNodes,
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               if (lastErr != null && active != null &&
                   AndroidNodeSupport.notRunnableReason(active) != null) ...[
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 // Node-selection honesty: the tapped node cannot run on this
                 // device — the reason is visible here and in the log.
                 Row(
@@ -814,7 +819,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ],
                 ),
               ],
-              const SizedBox(height: 14),
+              const SizedBox(height: 8),
               // ── STATS ROW (mockup: Download · Upload · Latency) + the
               // session USAGE tile the mockup's "Total usage" asked for —
               // cumulative bytes since the tunnel came up.
@@ -848,18 +853,18 @@ class _DashboardScreenState extends State<DashboardScreen>
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               // v0.5.0 §user — TOTAL USAGE: cumulative up+down since the
               // connect (real engine counters, Phase 24). The old graph's
               // 216 px pushed the power pill below the fold; the graph now
               // lives ON the hero artwork instead.
               _UsageCard(
                   downBytes: _sessionDownBytes, upBytes: _sessionUpBytes),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
               // v0.5.2 §user — LIVE MONITOR: battery %/temp + app CPU/RAM
               // (Android only; a no-op SizedBox elsewhere).
               const LiveMonitor(),
-              const SizedBox(height: 18),
+              const SizedBox(height: 12),
               // ── NARROW POWER PILL (mockup bottom bar) — full width,
               // hairline ring + power glyph + LIVE localized label. ──
               _PowerPill(
@@ -870,16 +875,12 @@ class _DashboardScreenState extends State<DashboardScreen>
                     : (busy ? l.cancel : l.connect),
                 onToggle: toggle,
               ),
-              const SizedBox(height: 20),
-              // v0.4.7 §user: QUICK SETTINGS stays, but the CURRENT NODE card
-              // and QUICK ACTIONS row are gone — node identity now lives in
-              // the Nodes tab, and the power pill above is the single CTA.
-              const SizedBox(height: 16),
-              // v0.5.5 §user: RECOMMENDED NODES removed from the DASHBOARD
-              // (the hero + power pill are the whole story here; node
-              // identity/selection lives in the Nodes tab). The section
-              // card wrapper stays for the remaining sections.
-              const SizedBox(height: 32),
+              // v0.4.7 §user: QUICK SETTINGS / RECOMMENDED NODES rows are
+              // long gone — node identity lives in the Nodes tab and the
+              // power pill is the single CTA. v0.6.8 §ui-fit: the dead
+              // trailing spacers (20/16/32) that pushed the fold past the
+              // power pill are collapsed to one small one.
+              const SizedBox(height: 8),
               // v0.4.9 §user: the FAST/SECURE/FREEDOM brand card is REMOVED
               // from the dashboard tail (the hero artwork carries the brand
               // identity now).
@@ -1515,7 +1516,8 @@ class _PowerPill extends StatelessWidget {
           onTap: onToggle,
           borderRadius: BorderRadius.circular(999),
           child: Container(
-            height: 58,
+            // v0.6.8 §ui-fit: 58 → 52 — same tap target, one row shorter.
+            height: 52,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(999),
               border: Border.all(

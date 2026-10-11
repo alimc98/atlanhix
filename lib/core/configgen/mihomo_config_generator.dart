@@ -245,7 +245,34 @@ class MihomoConfigGenerator {
         'sni': p.sni ?? p.host ?? p.server,
         if ((p.fingerprint ?? '').isNotEmpty) 'client-fingerprint': p.fingerprint,
         if (p.allowInsecure) 'skip-cert-verify': true,
+        ..._echOpts(p),
       };
+
+  /// v0.6.8 §ech — ECH passthrough for the mihomo engine (wiki:
+  /// `ech-opts` is a TOP-LEVEL proxy field next to `tls`/`servername`,
+  /// mihomo ≥1.19.9 for vless/vmess/trojan/ss/anytls). The profile carries
+  /// the base64 ECHConfigList in rawParams['ech'] (share-link `ech=`) or
+  /// rawParams['echBase64'] (clash-style tls object / editor field). A
+  /// flag value ('1'/'true') means DNS discovery — `enable` with no
+  /// `config` (mihomo resolves the ECH config over DNS HTTPS records).
+  Map<String, dynamic> _echOpts(ProxyProfile p) {
+    final raw = (p.rawParams['ech'] ?? p.rawParams['echBase64'] ?? '').trim();
+    if (raw.isEmpty) return const {};
+    final dnsOnly = raw == '1' || raw.toLowerCase() == 'true';
+    // PEM armor (hand-pasted in the node editor) is not mihomo's dialect —
+    // strip it back to the base64 ECHConfigList.
+    final cfg = dnsOnly
+        ? null
+        : (raw.contains('-----BEGIN')
+            ? raw.replaceAll(RegExp(r'-----[^-]*-----|\s'), '')
+            : raw);
+    return {
+      'ech-opts': {
+        'enable': true,
+        if (cfg != null && cfg.isNotEmpty) 'config': cfg,
+      },
+    };
+  }
 
   /// mihomo has NO standalone `type: shadowtls` CLIENT proxy (wiki: only
   /// a server-side listener) — ShadowTLS rides as a PLUGIN on a
@@ -301,6 +328,7 @@ class MihomoConfigGenerator {
       if ((p.fingerprint ?? '').isNotEmpty) 'client-fingerprint': p.fingerprint,
       if (p.alpn.isNotEmpty) 'alpn': p.alpn,
       if (p.allowInsecure) 'skip-cert-verify': true,
+      ..._echOpts(p),
       ..._transport(p),
     };
   }
@@ -318,6 +346,7 @@ class MihomoConfigGenerator {
         'udp': true,
         if (p.security != Security.none) 'tls': true,
         if ((p.sni ?? '').isNotEmpty) 'servername': p.sni,
+        ..._echOpts(p),
         ..._transport(p),
       };
 
@@ -331,6 +360,7 @@ class MihomoConfigGenerator {
         'sni': p.sni ?? p.host ?? p.server,
         if ((p.fingerprint ?? '').isNotEmpty) 'client-fingerprint': p.fingerprint,
         if (p.allowInsecure) 'skip-cert-verify': true,
+        ..._echOpts(p),
         ..._transport(p),
       };
 

@@ -49,6 +49,10 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
   late final TextEditingController _xPadding;
   late final TextEditingController _xmux;
   late final TextEditingController _realitySpx;
+  // v0.6.8 §ech / §cdn-fragment: ECH config (base64 ECHConfigList or '1'
+  // = DNS discovery) + the per-config fragment preset id.
+  late final TextEditingController _ech;
+  String? _fragmentPresetId;
   // v0.4.9 §user: WireGuard / AWG 3.1 field controllers.
   late final TextEditingController _wgPrivateKey;
   late final TextEditingController _wgPeerKey;
@@ -121,6 +125,9 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
     _xPadding = tc(rp['xPaddingBytes'] ?? rp['x_padding_bytes']);
     _xmux = tc(rp['xmux']);
     _realitySpx = tc(p?.realitySpiderX ?? rp['spx']);
+    _ech = tc(rp['ech'] ?? rp['echBase64']);
+    _fragmentPresetId =
+        (rp['fragment'] ?? '').isEmpty ? null : rp['fragment'];
     // v0.4.9 §user: WireGuard / AmneziaWG fields (hand-added nodes).
     final wg = p?.wireguard;
     final awg = p?.amnezia;
@@ -157,7 +164,7 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
       _name, _server, _port, _uuid, _password, _alterId, _path, _host, _sni,
       _fp, _alpn, _flow, _pubKey, _shortId, _ssMethod, _obfs, _upMbps, _downMbps,
       _encryption, _xhttpMode, _xhttpExtra, _finalMask, _xPadding, _xmux,
-      _realitySpx,
+      _realitySpx, _ech,
       _wgPrivateKey, _wgPeerKey, _wgPreShared, _wgAddresses, _wgMtu,
       _awgJc, _awgJmin, _awgJmax, _awgS1, _awgS2, _awgS3, _awgS4,
       _awgH1, _awgH2, _awgH3, _awgH4,
@@ -205,7 +212,16 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
       if (_xPadding.text.trim().isNotEmpty) 'xPaddingBytes': _xPadding.text.trim(),
       if (_xmux.text.trim().isNotEmpty) 'xmux': _xmux.text.trim(),
       if (_realitySpx.text.trim().isNotEmpty) 'spx': _realitySpx.text.trim(),
+      // v0.6.8 §ech: base64 ECHConfigList (or '1' = DNS discovery) —
+      // feeds the sing-box PEM wrap, mihomo `ech-opts` and Xray
+      // `echConfigList` builders alike.
+      if (_ech.text.trim().isNotEmpty) 'ech': _ech.text.trim(),
+      // v0.6.8 §cdn-fragment: the per-config fragment rung (Off removes
+      // the key entirely — the node follows the global pill again).
+      if (_fragmentPresetId != null) 'fragment': _fragmentPresetId!,
     };
+    if (_ech.text.trim().isEmpty) extras.remove('ech');
+    if (_fragmentPresetId == null) extras.remove('fragment');
     for (final key in ['extra', 'finalmask', 'xmux']) {
       final v = extras[key];
       if (v != null && v.isNotEmpty) {
@@ -455,6 +471,36 @@ class _NodeEditorScreenState extends State<NodeEditorScreen> {
                 _field(context, _shortId, 'Reality short-id (sid)'),
                 _field(context, _realitySpx, 'Reality spiderX (spx)'),
               ],
+              // v0.6.8 §ech — Encrypted ClientHello. The share-link `ech=`
+              // param survives import; this field lets a hand-added node
+              // carry it too (all three engines re-emit it).
+              _field(context, _ech,
+                  'ECH config (base64 ECHConfigList, or 1 = auto/DNS)'),
+              // v0.6.8 §cdn-fragment — PER-CONFIG TLS fragmentation for
+              // CDN/DPI-blocked configs: no global Settings toggle
+              // needed. sing-box applies tls.fragment on/off; Xray gets
+              // the exact packets/length/interval rung; mihomo has no
+              // native fragment (the engine detector keeps such configs
+              // on sing-box/Xray automatically).
+              _label(context,
+                  l ? 'فرگمنت (هر کانفیگ)' : 'FRAGMENT (per-config)'),
+              Wrap(
+                spacing: 8,
+                children: [
+                  for (final e in const <(String?, String)>[
+                    (null, 'Off'),
+                    ('conservative', 'Conservative'),
+                    ('default', 'Default'),
+                    ('aggressive', 'Aggressive'),
+                  ])
+                    ChoiceChip(
+                      label: Text(e.$2),
+                      selected: _fragmentPresetId == e.$1,
+                      onSelected: (_) =>
+                          setState(() => _fragmentPresetId = e.$1),
+                    ),
+                ],
+              ),
               // FinalMask — Xray 26.x late-layer obfuscation, raw JSON.
               _field(context, _finalMask,
                   'FinalMask raw JSON — {FinalMaskObject} (optional)'),

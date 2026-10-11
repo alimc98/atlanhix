@@ -142,7 +142,7 @@ class OutboundBuilders {
 
   Map<String, dynamic>? _sbTls(ProxyProfile p, {bool quic = false}) {
     if (p.security == Security.none) return null;
-    final echPem = _echPemFromProfile(p);
+    final ech = _echOptions(p);
     return {
       'enabled': true,
       'server_name': p.sni ?? p.host,
@@ -155,8 +155,15 @@ class OutboundBuilders {
       // transport; the imported `fp=` hint is not applicable there.
       if (p.fingerprint != null && !quic)
         'utls': {'enabled': true, 'fingerprint': p.fingerprint},
-      // TLS Fragment pill: TCP-TLS only (QUIC stacks reject it).
-      if (tlsFragment && !quic) 'fragment': true,
+      // TLS Fragment: TCP-TLS only (QUIC stacks reject it). The GLOBAL
+      // pill OR a PER-CONFIG fragment preset (rawParams['fragment'] — the
+      // node editor's Fragment selector, v0.6.8 §cdn-fragment «فرگمنت برای
+      // کانفیگ‌های CDN») enables it for THIS node — a CDN config asks for
+      // fragmentation by itself, no Settings toggle needed. The preset's
+      // exact packets/length/interval only exist on Xray (freedom
+      // fragment); sing-box's option is on/off.
+      if ((tlsFragment || (p.rawParams['fragment'] ?? '').isNotEmpty) &&
+          !quic) 'fragment': true,
       // ECH (Encrypted ClientHello): subscriptions carry it as the `ech=`
       // URI param (base64 DER ECHConfigList) or `echBase64` in clash-style
       // tls objects. sing-box consumes it as a PEM block typed exactly
@@ -166,7 +173,9 @@ class OutboundBuilders {
       // and by `sing-box check` on a generated config (2026-09-13). Without
       // this, ECH-only servers reject the handshake ("Connection terminated
       // during handshake" — measured on hysteria2 uk/ro nodes, same day).
-      if (echPem != null) 'ech': {'enabled': true, 'config': [echPem]},
+      // v0.6.8 §ech: `ech=1` (the share-link flag) now ALSO works —
+      // enabled with no config = DNS HTTPS-record discovery.
+      if (ech != null) 'ech': ech,
       if (p.security == Security.reality)
         'reality': {
           'enabled': true,
@@ -176,16 +185,57 @@ class OutboundBuilders {
     };
   }
 
+  /// v0.6.8 §ech — the profile's ECH options in sing-box's dialect:
+  ///  * `ech=1`/`true` (the share-link flag) → `enabled` ONLY — sing-box
+  ///    then discovers the ECH config via DNS HTTPS records;
+  ///  * a base64 ECHConfigList → `enabled` + the single PEM block typed
+  ///    exactly "ECH CONFIGS" (libbox's pem.Decode contract);
+  ///  * an already-PEM value (clash sing-box dialect / hand-pasted in the
+  ///    node editor) → passed through verbatim.
+  /// Sources, in priority order: `ech` / `echBase64` in the profile's
+  /// preserved raw params (vless/trojan/hysteria URI params, clash-style
+  /// tls object, editor field).
+  Map<String, dynamic>? _echOptions(ProxyProfile p) {
+    final raw = (p.rawParams['ech'] ?? p.rawParams['echBase64'] ?? '').trim();
+    if (raw.isEmpty) return null;
+    if (raw == '1' || raw.toLowerCase() == 'true') {
+      return {'enabled': true};
+    }
+    if (raw.contains('-----BEGIN')) {
+      return {'enabled': true, 'config': [raw]};
+    }
+    final pem = _echPemFromBase64(raw);
+    if (pem == null) return null; // never emit a corrupt ECH block
+    return {'enabled': true, 'config': [pem]};
+  }
+
+  /// v0.6.8 §ech — the base64 ECHConfigList(s) a profile carries, PEM
+  /// armor stripped: Xray's `tlsSettings.echConfigList` shape (client ECH,
+  /// non-empty enables it — xtls.github.io/config/transports/tls). Null
+  /// when absent — and when the value is only the DNS-discovery flag
+  /// ('1'): Xray has no ECH DNS discovery, so emitting the flag would be
+  /// a lie that breaks config parse on older binaries.
+  static List<String>? echConfigListOf(ProxyProfile p) {
+    final raw = (p.rawParams['ech'] ?? p.rawParams['echBase64'] ?? '').trim();
+    if (raw.isEmpty || raw == '1' || raw.toLowerCase() == 'true') return null;
+    final out = <String>[];
+    for (final part in raw.split(',')) {
+      final v = _stripPem(part.trim());
+      if (v.isNotEmpty) out.add(v);
+    }
+    return out.isEmpty ? null : out;
+  }
+
+  static String _stripPem(String v) => v.contains('-----BEGIN')
+      ? v.replaceAll(RegExp(r'-----[^-]*-----|\s'), '')
+      : v;
+
   /// ECHConfigList (base64 DER) carried by a profile -> the sing-box PEM
   /// block format. Returns null when absent or unparseable.
   ///
-  /// Sources, in priority order: `ech` / `echBase64` in the profile's
-  /// preserved raw params (hysteria/vless/trojan URI params, clash-style tls
-  /// object). The block type MUST be "ECH CONFIGS" (sing-box's pem decoder
-  /// rejects any other) and MUST be a single block (it checks `rest` empty).
-  static String? _echPemFromProfile(ProxyProfile p) {
-    final raw = p.rawParams['ech'] ?? p.rawParams['echBase64'];
-    if (raw == null || raw.isEmpty) return null;
+  /// The block type MUST be "ECH CONFIGS" (sing-box's pem decoder rejects
+  /// any other) and MUST be a single block (it checks `rest` empty).
+  static String? _echPemFromBase64(String raw) {
     List<int> der;
     try {
       der = base64.decode(raw);
@@ -455,6 +505,9 @@ class OutboundBuilders {
 
   Map<String, dynamic> _xrStream(ProxyProfile p) {
     final s = <String, dynamic>{'network': _xrNetwork(p.transport)};
+    // v0.6.8 §ech: computed once — the TLS case below emits it as
+    // tlsSettings.echConfigList (client ECH, Xray ≥25.x).
+    final echList = echConfigListOf(p);
     switch (p.security) {
       case Security.reality:
         s['security'] = 'reality';
@@ -483,6 +536,11 @@ class OutboundBuilders {
                   ? const <String>['http/1.1']
                   : const <String>[]),
           if (p.fingerprint != null) 'fingerprint': p.fingerprint,
+          // v0.6.8 §ech: Xray client ECH — tlsSettings.echConfigList
+          // (non-empty enables it; xtls.github.io/config/transports/tls).
+          // PEM armor is stripped upstream; the '1' DNS-discovery flag is
+          // honestly omitted (Xray has no ECH DNS discovery).
+          if (echList != null) 'echConfigList': echList,
         }..removeWhere((k, v) => v is List && v.isEmpty));
       case Security.none:
         break;

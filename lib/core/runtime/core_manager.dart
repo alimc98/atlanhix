@@ -199,6 +199,16 @@ class CoreManager {
   FragmentLadderCache? fragmentLadder;
 
   FragmentProfile? _fragmentFor(ProxyProfile profile) {
+    // v0.6.8 §cdn-fragment («ما فرگمنت برای کانفیگ‌های CDN نداریم»): a
+    // PER-CONFIG fragment preset (rawParams['fragment'] — the node
+    // editor's Fragment selector) wins over the global pill entirely: the
+    // CDN config asks for fragmentation by ITSELF, no Settings toggle
+    // needed, and gets the exact packets/length/interval rung on the
+    // Xray path. (The sing-box on/off `tls.fragment` is emitted directly
+    // by OutboundBuilders from the same rawParams key; mihomo has no
+    // native fragment at all — the detector keeps such nodes off it.)
+    final perConfig = FragmentPresets.byId(profile.rawParams['fragment']);
+    if (perConfig != null) return perConfig;
     if (!tlsFragmentEnabled) return null;
     if (!FragmentationEngine().isEligible(profile)) return null;
     if (fragmentPreset == FragmentPreset.auto) {

@@ -1005,7 +1005,18 @@ class VpnSession {
       // veto; arming here is safe) — and best was pre-selected by the
       // pre-connect ladder's REAL measurements.
       if (smartSwitch) _armSmart(currentId: best.id);
-      return await _connectProfile(best, trace, attempt: attempt);
+      final ok = await _connectProfile(best, trace, attempt: attempt);
+      if (ok || !_ownsAttempt(attempt)) return ok;
+      // v0.6.8 §smart-fix ("وقتی اسمارت سوییچ فعال هست و کانکت می‌کنیم وصل
+      // نمی‌کنه، ولی دستی درست میشه"): the auto path used to dial EXACTLY
+      // ONE node — the ladder's early pick (or the health-store guess) —
+      // and reported failure the moment that single dial died, while a
+      // manual tap (a node the user can see is alive) worked. Auto is a
+      // REQUEST for a working node, not a single guess: walk the
+      // remaining ranked candidates before reporting failure. The explicit
+      // tap path above still fails honestly — the tapped node IS the
+      // request and is never silently swapped.
+      return await _fallbackWalk(best, trace, attempt);
     } finally {
       // v0.5.9 §retarget: the veto taken above is THIS flow's own — paired
       // release. (The hold is ref-counted since v0.5.9: a nested retarget
@@ -1998,24 +2009,93 @@ class VpnSession {
   }
 
   ProxyProfile? _bestNode() {
+    final ranked = _autoFallbackRanking();
+    if (ranked.isEmpty) return null;
+    // Prefer a healthy node (health store), fall back to the first
+    // runnable — the ranking's head IS that pick.
+    return ranked.first;
+  }
+
+  /// v0.6.8 §smart-fix: auto candidates ranked by the SAME healthy-first /
+  /// latency score [_bestNode] always used — the walk order and the pick
+  /// agree, so the fallback tries exactly what auto would have picked
+  /// next.
+  List<ProxyProfile> _autoFallbackRanking() {
     final all = deps.profiles.all
         .where((p) => p.enabled && _androidRunnable(p))
         .toList();
-    if (all.isEmpty) return null;
-    // Prefer a healthy node (health store), fall back to the first runnable.
-    ProxyProfile? best;
-    int bestScore = -1 << 30;
-    for (final ProxyProfile p in all) {
+    int scoreOf(ProxyProfile p) {
       final stats = deps.healthStore.all[p.id];
       final healthy = stats != null && stats.state == NodeHealth.healthy;
       final lat = stats?.lastLatencyMs ?? 5000;
-      final score = (healthy ? 1 << 20 : 0) + (100000 - lat.clamp(0, 100000));
-      if (score > bestScore) {
-        best = p;
-        bestScore = score;
-      }
+      return (healthy ? 1 << 20 : 0) + (100000 - lat.clamp(0, 100000));
     }
-    return best ?? all.first;
+    all.sort((a, b) => scoreOf(b).compareTo(scoreOf(a)));
+    return all;
+  }
+
+  /// v0.6.8 §smart-fix — the AUTO-path fallback walk. [first] (the
+  /// ladder's pick / health-store guess) just failed to connect; try the
+  /// next-best ranked candidates — a REAL dial each (engine resolution,
+  /// upstream boot, TUN, tunnel probe) — before the connect reports
+  /// failure. Every failed dial is a real measurement and lands in the
+  /// health store, so neither this walk nor the next auto pick re-chooses
+  /// the corpse. Bounded: at most 3 extra dials (same depth as the
+  /// desktop smartConnect walk). Explicit node taps never land here.
+  Future<bool> _fallbackWalk(
+      ProxyProfile first, String trace, _ConnectAttempt attempt) async {
+    final tried = <String>{first.id};
+    var failed = first;
+    var extra = 0;
+    for (final alt in _autoFallbackRanking()) {
+      if (tried.contains(alt.id)) continue;
+      if (extra >= 3) break;
+      // A node the device gates cannot run is not a candidate (the same
+      // honest exclusion the ladder's candidatesOf applies).
+      if (AndroidNodeSupport.androidExclusionReason(alt) != null) continue;
+      // The previous dial's honest verdict into the health store — the
+      // ladder's hysteresis and this walk's ranking both learn from it.
+      deps.healthStore.record(HealthRecord(
+        profileId: failed.id,
+        at: DateTime.now(),
+        ok: false,
+        errorKind: 'connect-fail',
+      ));
+      tried.add(alt.id);
+      extra++;
+      Logger.instance.warn(
+          'vpn-session',
+          '$trace FALLBACK_WALK try=$extra node=${alt.name} '
+          'proto=${alt.protocol.name} transport=${alt.transport.name} '
+          '(previous dial failed: ${lastError ?? 'unknown'})');
+      selectedNode = alt;
+      _connectTarget = alt;
+      persistState();
+      _selectionEvents.add(null); // the globe pin + hero move NOW
+      // Cosmetic: keep the "Connecting…" pill up across the handover —
+      // the user never asked to disconnect.
+      controller.markStarting(detail: 'fallback → ${alt.name}');
+      final ok = await _connectProfile(alt, trace, attempt: attempt);
+      if (ok) {
+        Logger.instance.info('vpn-session',
+            '$trace FALLBACK_WALK CONNECTED node=${alt.name} after $extra extra dial(s)');
+        // The ladder must hand over to the node that actually connected —
+        // its incumbent seed was the failed first pick.
+        if (smartSwitch) _armSmart(currentId: alt.id);
+        return true;
+      }
+      if (!_ownsAttempt(attempt)) return false;
+      failed = alt;
+    }
+    // Every dial the walk burned is a real measurement — close the books
+    // on the last failure too.
+    deps.healthStore.record(HealthRecord(
+      profileId: failed.id,
+      at: DateTime.now(),
+      ok: false,
+      errorKind: 'connect-fail',
+    ));
+    return false;
   }
 
   // ---------------------------------------------------------------------

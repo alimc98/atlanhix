@@ -174,7 +174,8 @@ class CoreDetector {
     // runtime is missing the callers already fall back per-node.
     if (preference == CorePreference.auto &&
         p.metadata['origin'] == 'clash' &&
-        _mihomoRunnable(p)) {
+        _mihomoRunnable(p) &&
+        !_wantsFragment(p)) {
       return CoreDecision(
         core: CoreKind.mihomo,
         confidence: 0.9,
@@ -193,7 +194,7 @@ class CoreDetector {
       // the very same configs connected the moment the user changed the
       // engine. Fall back to the capability decision instead; the reason
       // trail records why, so the UI/logs stay honest.
-      if (MihomoCoreState.instance.runtimeLoaded) {
+      if (MihomoCoreState.instance.runtimeLoaded && !_wantsFragment(p)) {
         return CoreDecision(
           core: CoreKind.mihomo,
           confidence: 0.95,
@@ -208,7 +209,7 @@ class CoreDetector {
       // content itself is Clash.Meta (what mihomo runs natively). Callers
       // (VpnSession/ConnectionController) fall back per-node when the child
       // process still fails to boot.
-      if (p.metadata['origin'] == 'clash') {
+      if (p.metadata['origin'] == 'clash' && !_wantsFragment(p)) {
         return CoreDecision(
           core: CoreKind.mihomo,
           confidence: 0.9,
@@ -217,6 +218,21 @@ class CoreDetector {
             'Engine preference mihomo + Clash-origin subscription → mihomo '
                 '(runtime probe incomplete; callers fall back if the child '
                 'fails to boot)',
+          ],
+        );
+      }
+      // v0.6.8 §cdn-fragment: a config that explicitly asks for
+      // ClientHello fragmentation cannot get it on mihomo (no native
+      // option) — run it on the capability decision's engine instead.
+      if (_wantsFragment(p) && _mihomoRunnable(p)) {
+        return CoreDecision(
+          core: decision.core,
+          confidence: decision.confidence,
+          reasons: [
+            ...decision.reasons,
+            'Engine preference mihomo skipped: this config requests TLS '
+                'fragmentation (mihomo has no native fragment) — ran on '
+                '${decision.core.name}',
           ],
         );
       }
@@ -233,9 +249,14 @@ class CoreDetector {
     return decision;
   }
 
-  /// Protocols the mihomo engine executes (v0.5.3): the classic four plus
-  /// anytls/shadowtls; everything else (wireguard/mhvpn/ssh…) stays on the
-  /// stock paths. Transport is NOT a restriction — xhttp/XMUX is exactly
+  /// Protocols the mihomo engine executes (v0.5.3, widened v0.6.8
+  /// §sub-engine «هسته mihomo اگر بتونه کانفیگ‌های معمولی مثل base64 رو هم
+  /// اجرا کنه»): EVERY protocol [MihomoConfigGenerator] translates — the
+  /// classic four, anytls/shadowtls AND hysteria2/hysteria/tuic/socks/http.
+  /// A plain URI/base64 subscription therefore rides mihomo end-to-end when
+  /// the user picks that engine (no more mixed-engine pools mid-switch);
+  /// wireguard/naive/ssh/custom stay on the stock paths (mihomo cannot
+  /// run them). Transport is NOT a restriction — xhttp/XMUX is exactly
   /// why this engine was added.
   static bool _mihomoRunnable(ProxyProfile p) => switch (p.protocol) {
         ProxyProtocol.vless ||
@@ -243,8 +264,22 @@ class CoreDetector {
         ProxyProtocol.trojan ||
         ProxyProtocol.shadowsocks ||
         ProxyProtocol.anytls ||
-        ProxyProtocol.shadowtls =>
+        ProxyProtocol.shadowtls ||
+        ProxyProtocol.hysteria2 ||
+        ProxyProtocol.hysteria ||
+        ProxyProtocol.tuic ||
+        ProxyProtocol.socks ||
+        ProxyProtocol.http =>
           true,
         _ => false,
       };
+
+  /// v0.6.8 §cdn-fragment: does this config explicitly ask for TLS
+  /// ClientHello fragmentation (the per-node `fragment` preset — the CDN /
+  /// DPI-bypass flag)? mihomo has NO native fragment option (no documented
+  /// field, verified vs wiki.metacubex.one 2026-10), so such a node must
+  /// never resolve to the mihomo engine — sing-box (tls.fragment) or Xray
+  /// (freedom fragment) honor it instead.
+  static bool _wantsFragment(ProxyProfile p) =>
+      (p.rawParams['fragment'] ?? '').isNotEmpty;
 }

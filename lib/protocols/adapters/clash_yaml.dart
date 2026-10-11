@@ -96,7 +96,7 @@ class ClashYamlParser {
       serviceName: _grpcName(m),
       fingerprint: _fp(m),
       allowInsecure: m['skip-cert-verify'] == true,
-      rawParams: _xhttpParams(m),
+      rawParams: {..._xhttpParams(m), ..._echParams(m)},
       source: ProfileSource.fileImport,
     );
   }
@@ -125,7 +125,7 @@ class ClashYamlParser {
           reality is Map ? (reality['public-key'] ?? '').toString() : null,
       realityShortId:
           reality is Map ? (reality['short-id'] ?? '').toString() : null,
-      rawParams: _xhttpParams(m),
+      rawParams: {..._xhttpParams(m), ..._echParams(m)},
       source: ProfileSource.fileImport,
     );
   }
@@ -146,7 +146,7 @@ class ClashYamlParser {
       serviceName: _grpcName(m),
       allowInsecure: m['skip-cert-verify'] == true,
       alpn: (m['alpn'] as List?)?.map((e) => e.toString()).toList() ?? const [],
-      rawParams: _xhttpParams(m),
+      rawParams: {..._xhttpParams(m), ..._echParams(m)},
       source: ProfileSource.fileImport,
     );
   }
@@ -254,8 +254,42 @@ class ClashYamlParser {
       password: (m['password'] ?? '').toString(),
       sni: _sni(m),
       allowInsecure: m['skip-cert-verify'] == true,
+      rawParams: _echParams(m),
       source: ProfileSource.fileImport,
     );
+  }
+
+  /// v0.6.8 §ech: Clash.Meta proxies carry ECH as the top-level
+  /// `ech-opts: {enable, config}` object (base64 ECHConfigList in
+  /// `config`, mihomo ≥1.19.9); sing-box-dialect clash files may nest it
+  /// under `tls.ech: {enabled, config}` (config = PEM blocks). Preserve
+  /// the value into rawParams['echBase64'] so every engine builder can
+  /// re-emit it — the sing-box builder wraps/unwraps the PEM contract,
+  /// mihomo passes the base64 through, Xray fills tlsSettings.
+  /// echConfigList. `enable` without a config = DNS discovery ('1').
+  static Map<String, String> _echParams(Map<String, dynamic> m) {
+    final opts = m['ech-opts'];
+    if (opts is Map && opts['enable'] == true) {
+      final cfg = opts['config'];
+      if (cfg is String && cfg.isNotEmpty) return {'echBase64': cfg};
+      if (cfg is List && cfg.isNotEmpty) {
+        return {'echBase64': cfg.map((e) => e.toString()).join(',')};
+      }
+      return const {'echBase64': '1'}; // enable + DNS discovery
+    }
+    final tls = m['tls'];
+    if (tls is Map) {
+      final ech = tls['ech'];
+      if (ech is Map && ech['enabled'] == true) {
+        final cfg = ech['config'];
+        if (cfg is List && cfg.isNotEmpty) {
+          return {'echBase64': cfg.map((e) => e.toString()).join(',')};
+        }
+        if (cfg is String && cfg.isNotEmpty) return {'echBase64': cfg};
+        return const {'echBase64': '1'};
+      }
+    }
+    return const {};
   }
 
   /// v0.6.0 §xhttp-yaml: `xhttp`/`splithttp` MUST parse to [Transport.xhttp].
