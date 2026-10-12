@@ -28,6 +28,7 @@ import '../settings/app_settings.dart';
 import '../settings/routing_settings.dart';
 import '../settings/runtime_config_bridge.dart';
 import '../settings/vpn_session.dart';
+import '../platform/desktop_privileges.dart';
 import '../platform/probe_engine.dart';
 import '../platform/vault_factory.dart';
 import '../warp/warp_http.dart';
@@ -159,6 +160,16 @@ class AppDependencies {
       // TODO(v0.3): read from Settings → Cores (user override dir).
       appDir: resolveCoresDir(),
     );
+    // v0.6.12 §windows-tun: a Windows TUN inbound may only be generated when
+    // this process is Administrator — sing-box 1.14.0 dies with
+    // `start inbound/tun[tun-in]: configure tun interface: Access is denied.`
+    // otherwise (reproduced on the dev box), and the upstream archive ships
+    // no wintun.dll (CI bundles one beside sing-box.exe since v0.6.12).
+    // [DesktopPrivileges] caches the probe: rights cannot change while the
+    // process lives, and the app offers an elevated relaunch in the UI.
+    final platformTun =
+        Platform.isAndroid || Platform.isIOS || Platform.isWindows;
+    final tunAvailable = platformTun && await DesktopPrivileges.isElevated();
     deps.cores = CoreManager(
       binaryManager: deps.binaryManager,
       // v0.6.11 §path-fix: `$baseDir` is a Directory OBJECT — interpolating
@@ -171,7 +182,8 @@ class AppDependencies {
           '${Platform.pathSeparator}runtime'),
       // v0.4.1 §2: on Android the front sing-box config MUST include the tun
       // inbound (libbox owns the tunnel via PlatformInterface.OpenTun).
-      enableTun: Platform.isAndroid || Platform.isIOS,
+      // v0.6.12 §windows-tun: Windows now does the same (elevated only).
+      enableTun: tunAvailable,
     );
 
     deps.tester = LatencyTester();

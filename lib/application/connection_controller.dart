@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import '../core/core_detector.dart';
 import '../core/fragmentation/fragment_profiles.dart';
 import '../core/health/latency_tester.dart';
@@ -21,6 +22,7 @@ import '../data/repositories.dart';
 import '../platform/system_proxy.dart';
 import '../settings/app_settings.dart';
 import '../domain/entities/subscription.dart';
+import 'tunnel_mode_resolver.dart';
 
 /// Strict connection state machine (Phase 25).
 ///
@@ -70,8 +72,9 @@ class ConnectionStateSnapshot {
       phase == ConnectionPhase.disconnecting;
 }
 
-/// Modes of exposing the tunnel to the OS (§22, §23).
-enum TunnelMode { off, systemProxy, tun, managed }
+// Modes of exposing the tunnel to the OS (§22, §23) now live in
+// tunnel_mode_resolver.dart — v0.6.12 §windows-tun moved the decision (and
+// the enum it returns) into a pure, unit-tested function.
 
 /// The application-layer orchestrator, driving the real [CoreManager].
 class ConnectionController {
@@ -210,6 +213,12 @@ class ConnectionController {
   Timer? _trafficTimer;
 
   TunnelMode tunnelMode = TunnelMode.systemProxy;
+
+  /// v0.6.12 §windows-tun: non-null only when the user chose TUN, the
+  /// platform supports it, and Administrator rights are the one thing
+  /// missing. The shell shows the relaunch dialog for it (once per session).
+  String? tunnelNotice;
+
   DnsSettings dns = DnsSettings(mode: DnsMode.automatic);
   /// Desktop connect path. OPT-IN default: a rule-less profile — the user
   /// gets no routing rules until they explicitly enable routing in settings
@@ -431,6 +440,10 @@ class ConnectionController {
               'WARP chain enabled (outside=$chainWarpOutside)');
         }
       }
+      // v0.6.12 §windows-tun: the mode (and therefore whether the front
+      // config carries a tun inbound) must be settled before any config is
+      // generated — startFor is what builds and launches it.
+      await _prepareTunnelMode();
       final start = await cores.startFor(
         profile,
         all: repository.all,
@@ -735,12 +748,44 @@ class ConnectionController {
     return problems;
   }
 
+  /// v0.6.12 §windows-tun: decide the tunnel mode BEFORE the front config
+  /// is generated, so a `tun` inbound is only ever emitted when it can
+  /// actually be created (elevated sing-box + the CI-bundled wintun.dll).
+  ///
+  /// [ConnectionController.connect] awaits this on every desktop connect:
+  /// the Settings toggle (`proxyMode`) and the boot-time privilege probe
+  /// ([CoreManager.enableTun]) are the only inputs, and the fallback keeps
+  /// the system-proxy behaviour Windows has always had instead of failing
+  /// the connect for every non-elevated user.
+  Future<void> _prepareTunnelMode() async {
+    final decision = resolveTunnelMode(
+      proxyModeSelected: _settings?.proxyMode ?? false,
+      tunAvailable: cores.enableTun,
+      tunSupported: Platform.isWindows,
+    );
+    tunnelMode = decision.mode;
+    cores.front.tunEnabled = decision.usingTun;
+    tunnelNotice = decision.needsAdminNotice
+        ? 'TUN mode needs Administrator rights. sing-box cannot create the '
+            'TUN device without them, so the connection is running in Proxy '
+            'mode. Restart as administrator to use TUN.'
+        : null;
+    Logger.instance.info(
+        'connection',
+        'tunnel mode -> ${tunnelMode.name} '
+        '(proxyMode=${_settings?.proxyMode ?? false}, '
+        'tunAvailable=${cores.enableTun}, windows=${Platform.isWindows})');
+  }
+
   void _applyTunnelMode() {
     switch (tunnelMode) {
       case TunnelMode.systemProxy:
       case TunnelMode.managed:
         SystemProxyController.instance.enable(port: mixedPortFor(null));
       case TunnelMode.tun:
+        // v0.6.12: the TUN inbound owns the network now — never leave an OS
+        // proxy from an earlier connect pointing at a port nobody needs.
+        SystemProxyController.instance.disable();
       case TunnelMode.off:
         break;
     }

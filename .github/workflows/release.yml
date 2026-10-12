@@ -125,13 +125,20 @@ jobs:
           Expand-Archive sb.zip -DestinationPath sb -Force
           # archive layouts differ (sing-box nests a version dir, Xray puts
           # the exe at the ROOT) — search recursively instead of guessing.
+          # v0.6.12 §ci-fix: if the expected name is absent, fall back to
+          # whatever exe the archive carries and NORMALIZE it, instead of
+          # dereferencing a $null and copying nothing.
           $sbExe = Get-ChildItem sb -Recurse -Filter sing-box.exe | Select-Object -First 1
-          Copy-Item $sbExe.FullName cores/windows-x64/sing-box.exe
+          if (-not $sbExe) { $sbExe = Get-ChildItem sb -Recurse -Filter *.exe | Select-Object -First 1 }
+          if (-not $sbExe) { throw 'no sing-box executable inside the archive' }
+          Copy-Item $sbExe.FullName cores/windows-x64/sing-box.exe -Force
           & curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 -o xr.zip 'https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-windows-64.zip'
           if (-not (Test-Path xr.zip)) { throw 'xray download failed (curl)' }
           Expand-Archive xr.zip -DestinationPath xr -Force
           $xrExe = Get-ChildItem xr -Recurse -Filter xray.exe | Select-Object -First 1
-          Copy-Item $xrExe.FullName cores/windows-x64/xray.exe
+          if (-not $xrExe) { $xrExe = Get-ChildItem xr -Recurse -Filter *.exe | Select-Object -First 1 }
+          if (-not $xrExe) { throw 'no xray executable inside the archive' }
+          Copy-Item $xrExe.FullName cores/windows-x64/xray.exe -Force
           # v0.5.3: mihomo (Clash.Meta) — the third standalone engine.
           #
           # v0.5.6 §ci-fix: this step is what killed the Windows job on
@@ -156,21 +163,94 @@ jobs:
           # the budget to 5000/hour. (The DOWNLOADS below were the actual
           # killer — replacing the one-shot Invoke-WebRequest with the
           # retrying curl call is what turned this step green.)
-          $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/MetaCubeX/mihomo/releases/latest' -Headers @{ 'User-Agent' = 'atlanhix-release'; 'Authorization' = 'Bearer ${{ github.token }}' }
-          $asset = $rel.assets |
-            Where-Object { $_.name -match '^mihomo-windows-amd64-v\d+\.\d+\.\d+\.zip$' } |
-            Select-Object -First 1
-          if (-not $asset) { throw "no mihomo windows-amd64 asset in $($rel.tag_name)" }
-          Write-Output "mihomo $($rel.tag_name) -> $($asset.name)"
-          & curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 -o mh.zip $asset.browser_download_url
+          # v0.6.12 §ci-fix (root cause of `mihomo.exe not found inside the
+          # release archive`): MetaCubeX v1.19.32 ships the binary INSIDE the
+          # zip as `mihomo-windows-amd64.exe`, so `-Filter mihomo.exe`
+          # matched nothing, this step threw, `continue-on-error` swallowed
+          # it — and v0.6.9/v0.6.10/v0.6.11 all published a Windows zip with
+          # NO mihomo.exe while the job stayed green. mihomo is the DEFAULT
+          # engine, so those installs could not connect. Now: take
+          # mihomo.exe when it exists, otherwise rename whatever exe upstream
+          # used (the app also accepts the `mihomo-windows-amd64.exe`
+          # alias, but normalizing keeps BinaryManager's first candidate
+          # hit). Resolution failure falls back to a PINNED asset URL so a
+          # flaky api.github.com can never cost the default engine.
+          $mhUrl = $null
+          try {
+            $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/MetaCubeX/mihomo/releases/latest' -Headers @{ 'User-Agent' = 'atlanhix-release'; 'Authorization' = 'Bearer ${{ github.token }}' }
+            $asset = $rel.assets |
+              Where-Object { $_.name -match '^mihomo-windows-amd64-v\d+\.\d+\.\d+\.zip$' } |
+              Select-Object -First 1
+            if ($asset) { $mhUrl = $asset.browser_download_url; Write-Output "mihomo $($rel.tag_name) -> $($asset.name)" }
+          } catch { Write-Warning "mihomo release lookup failed: $($_.Exception.Message)" }
+          if (-not $mhUrl) {
+            Write-Warning 'no mihomo windows-amd64 asset resolved — pinned fallback'
+            $mhUrl = 'https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-windows-amd64-v1.19.32.zip'
+          }
+          & curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 -o mh.zip $mhUrl
           if (-not (Test-Path mh.zip)) { throw 'mihomo download failed (curl)' }
           New-Item -ItemType Directory -Force -Path mh | Out-Null
           Expand-Archive mh.zip -DestinationPath mh -Force
-          # Archive layouts vary (some nest a version dir) — search, don't guess.
+          # Archive layouts vary (some nest a version dir, some rename the
+          # binary) — search the whole tree, never assume a single layout.
           $mhExe = Get-ChildItem mh -Recurse -Filter mihomo.exe | Select-Object -First 1
-          if (-not $mhExe) { throw 'mihomo.exe not found inside the release archive' }
-          Copy-Item $mhExe.FullName cores/windows-x64/mihomo.exe
+          if (-not $mhExe) {
+            $mhExe = Get-ChildItem mh -Recurse -Filter *.exe |
+              Where-Object { $_.Name -notmatch 'unins|setup|install' } |
+              Select-Object -First 1
+          }
+          if (-not $mhExe) { throw 'no executable inside the mihomo archive' }
+          Copy-Item $mhExe.FullName cores/windows-x64/mihomo.exe -Force
+          Write-Output "mihomo.exe <= $($mhExe.FullName)"
+          # v0.6.12 §windows-tun: sing-box dlopen()s `wintun.dll` when the
+          # config carries a tun inbound, and the upstream Windows archive
+          # ships NO such file — so even an elevated user would hit a missing
+          # module the moment TUN is selected. Pin the official build
+          # (wintun.net/builds/wintun-0.14.1.zip — verified live) and drop it
+          # NEXT TO sing-box.exe, which is where wintun's own instructions
+          # say it must live.
+          & curl.exe -fL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 -o wt.zip 'https://www.wintun.net/builds/wintun-0.14.1.zip'
+          if (-not (Test-Path wt.zip)) { throw 'wintun download failed (curl)' }
+          New-Item -ItemType Directory -Force -Path wt | Out-Null
+          Expand-Archive wt.zip -DestinationPath wt -Force
+          # archive is wintun/bin/<arch>/wintun.dll — take AMD64, never x86.
+          # v0.6.12 §ci-fix: this ran through a `[\/]amd64[\/]` regex first
+          # and matched NOTHING in PowerShell (proven locally: 4 DLLs found,
+          # 0 regex hits), so the step died before copying. Exact layout path
+          # first, wildcard search second — no backslash regex either way.
+          $wtDll = $null
+          $wtExact = Join-Path wt 'wintun\bin\amd64\wintun.dll'
+          if (Test-Path $wtExact) {
+            $wtDll = Get-Item $wtExact
+          } else {
+            $wtDll = Get-ChildItem wt -Recurse -Filter wintun.dll |
+              Where-Object { $_.FullName -like '*amd64*' } |
+              Select-Object -First 1
+          }
+          if (-not $wtDll) { throw 'amd64 wintun.dll not found inside the archive' }
+          Copy-Item $wtDll.FullName cores/windows-x64/wintun.dll -Force
           Get-ChildItem cores/windows-x64
+
+      - name: Verify bundled engines
+        # v0.6.12 §ci-fix: the download step above is continue-on-error by
+        # DESIGN (a third-party outage must not cost the release), which is
+        # precisely how three releases shipped a Windows zip without the
+        # default engine and nobody noticed. A bundle with a missing engine
+        # is not a working release — the zip must not be published in that
+        # state, so this check is FATAL. The extraction above is name-robust
+        # and pinned-fallback, so the only way to land here is a genuine
+        # upstream outage: fix the network and re-run the tag.
+        shell: pwsh
+        run: |
+          Get-ChildItem cores/windows-x64
+          $missing = @()
+          foreach ($e in 'sing-box.exe','xray.exe','mihomo.exe','wintun.dll') {
+            if (-not (Test-Path "cores/windows-x64/$e")) { $missing += $e }
+          }
+          if ($missing.Count -gt 0) {
+            throw "missing engines in the Windows bundle: $($missing -join ', ')"
+          }
+          Write-Output 'all engines present'
 
       - name: Stage + zip
         shell: pwsh
@@ -249,12 +329,18 @@ jobs:
           curl -fsSL -o tmp-cores/sb.tar.gz \
             https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box-1.14.0-linux-amd64.tar.gz
           tar -xzf tmp-cores/sb.tar.gz -C tmp-cores
-          cp "$(find tmp-cores -type f -name sing-box | head -n1)" cores/linux-x64/sing-box
+          # v0.6.12 §ci-fix: an empty find result used to make `cp "" dest`
+          # die with a bare cp error — say WHICH engine vanished instead.
+          sb="$(find tmp-cores -type f -name sing-box | head -n1)"
+          if [ -z "$sb" ]; then echo 'sing-box binary missing after extraction' >&2; exit 1; fi
+          cp "$sb" cores/linux-x64/sing-box
           # Xray
           curl -fsSL -o tmp-cores/xr.zip \
             https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip
           unzip -o -q tmp-cores/xr.zip -d tmp-cores/xr
-          cp "$(find tmp-cores/xr -type f -name xray | head -n1)" cores/linux-x64/xray
+          xr="$(find tmp-cores/xr -type f -name xray | head -n1)"
+          if [ -z "$xr" ]; then echo 'xray binary missing after extraction' >&2; exit 1; fi
+          cp "$xr" cores/linux-x64/xray
           # mihomo — resolve the newest asset by NAME (never a pinned URL: the
           # Windows job learned that lesson in v0.5.6) and accept either the
           # .zip or the .gz packaging upstream switches between.
@@ -266,7 +352,14 @@ jobs:
             https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)"
           url="$(printf '%s' "$assets" | \
             grep -o 'https://[^"]*mihomo-linux-amd64-v[0-9.]*\.\(zip\|gz\)' | head -n1)"
-          if [ -z "$url" ]; then echo 'no mihomo linux-amd64 asset'; exit 1; fi
+          if [ -z "$url" ]; then
+            # v0.6.12 §ci-fix: same lesson as the Windows job — resolution
+            # failure must not cost the DEFAULT engine. Pinned, verified-live
+            # asset so a rate-limited api.github.com still ships a working
+            # tarball.
+            echo 'no mihomo linux-amd64 asset resolved — pinned fallback' >&2
+            url='https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-linux-amd64-v1.19.32.gz'
+          fi
           echo "mihomo -> $url"
           case "$url" in
             *.zip)
@@ -280,9 +373,33 @@ jobs:
               mv tmp-cores/mihomo tmp-cores/mh/mihomo
               ;;
           esac
-          cp "$(find tmp-cores/mh -type f -name mihomo | head -n1)" cores/linux-x64/mihomo
+          # v0.6.12 §ci-fix: the binary inside the archive is not always
+          # literally named `mihomo` (upstream ships mihomo-linux-amd64-*),
+          # so accept any mihomo* file and NORMALIZE it to cores/mihomo.
+          mhbin="$(find tmp-cores/mh -type f \( -name mihomo -o -name 'mihomo-*' \) | head -n1)"
+          if [ -z "$mhbin" ]; then echo 'no mihomo binary inside the archive' >&2; exit 1; fi
+          cp "$mhbin" cores/linux-x64/mihomo
           chmod +x cores/linux-x64/*
           ls -la cores/linux-x64
+
+      - name: Verify bundled engines
+        # v0.6.12 §ci-fix: the download step is continue-on-error by DESIGN
+        # (a third-party outage must not cost the release) — which is how a
+        # bundle can silently ship WITHOUT its engines while the job stays
+        # green. A tarball missing the default engine is not a working
+        # release, so this check is FATAL.
+        run: |
+          set -euo pipefail
+          ls -la cores/linux-x64
+          missing=()
+          for e in sing-box xray mihomo; do
+            [ -f "cores/linux-x64/$e" ] || missing+=("$e")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "missing engines in the Linux bundle: ${missing[*]}" >&2
+            exit 1
+          fi
+          echo 'all engines present'
 
       - name: Stage + tarball
         run: |

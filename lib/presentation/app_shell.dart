@@ -8,6 +8,7 @@ import '../domain/errors/app_error.dart';
 import '../localization/generated/app_localizations.dart';
 import '../theme/theme.dart';
 import '../platform/android_vpn.dart' show AndroidVpnPhase;
+import '../platform/desktop_privileges.dart';
 import 'screens/dashboard_screen.dart';
 import 'tab_stage.dart';
 import 'screens/nodes_screen.dart';
@@ -541,7 +542,46 @@ class _AppShellState extends State<AppShell>
       await c.disconnect();
     } else {
       await c.smartConnect();
+      // v0.6.12 §windows-tun: the connect already ran (Proxy fallback or
+      // real TUN) — this only makes that choice honest to the user.
+      _maybeShowTunnelNotice(c);
     }
+  }
+
+  /// v0.6.12 §windows-tun: shown at most once per session, only when
+  /// Settings says TUN, the platform supports it, and the single missing
+  /// ingredient is Administrator rights. Offers the UAC relaunch that turns
+  /// TUN on; "Keep using Proxy" leaves the working connection alone.
+  bool _tunnelNoticeShown = false;
+
+  void _maybeShowTunnelNotice(ConnectionController c) {
+    final notice = c.tunnelNotice;
+    if (notice == null || _tunnelNoticeShown || !mounted) return;
+    _tunnelNoticeShown = true;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => AlertDialog(
+        title: const Text('TUN mode needs Administrator rights'),
+        content: Text(notice),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Keep using Proxy'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              final ok = await DesktopPrivileges.relaunchElevated();
+              // Only an ACCEPTED consent means a new elevated instance is
+              // coming up — on cancel we stay exactly where we are.
+              if (ok) exit(0);
+            },
+            child: const Text('Restart as administrator'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showConnectError(String message, bool permissionIssue) {
