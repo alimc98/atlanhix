@@ -151,7 +151,7 @@ class AppDependencies {
       final fallback = firstGuess ?? Directory('$exeDir$sep' 'cores$sep$plat');
       Logger.instance.warn('binary',
           '[ATX-DART] CORES_DIR resolved to a MISSING dir: '
-          '\${fallback.path} — engines will read as notInstalled');
+          '${fallback.path} — engines will read as notInstalled');
       return fallback;
     }
 
@@ -161,7 +161,14 @@ class AppDependencies {
     );
     deps.cores = CoreManager(
       binaryManager: deps.binaryManager,
-      workDir: Directory('$baseDir/.nexus/runtime'),
+      // v0.6.11 §path-fix: `$baseDir` is a Directory OBJECT — interpolating
+      // it stringified to `Directory: 'C:\Users\…\AppData\Roaming'/.nexus/…`,
+      // so EVERY desktop engine dir read as an invalid path (errno 123,
+      // "PathNotFoundException: Exists failed … runtime\singbox") and the
+      // Windows connect died before the tunnel started. Use `.path`.
+      workDir: Directory(
+          '${baseDir.path}${Platform.pathSeparator}.nexus'
+          '${Platform.pathSeparator}runtime'),
       // v0.4.1 §2: on Android the front sing-box config MUST include the tun
       // inbound (libbox owns the tunnel via PlatformInterface.OpenTun).
       enableTun: Platform.isAndroid || Platform.isIOS,

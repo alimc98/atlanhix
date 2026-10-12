@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.6.11 — رفع خطای اتصال ویندوز (`PathNotFoundException … errno = 123`) + بیلد هم‌تراز دسکتاپ
+
+> ۱- روی ویندوز موقع زدن Connect، تونل بالا نمی‌آمد و در لاگ این خطا بود:
+> `PathNotFoundException: Exists failed, path = 'Directory: 'C:\Users\…\AppData\Roaming'/.nexus/runtime\singbox' (OS Error: The filename, directory name, or volume label syntax is incorrect, errno = 123)`
+
+**۱. ریشهٔ خطا (یک خط، همهٔ پلتفرم‌ها):** `workDir` مشترک موتورها با
+`Directory('$baseDir/.nexus/runtime')` ساخته می‌شد؛ اما `$baseDir` یک **شیء**
+`Directory` بود و `toString()` آن می‌شود `Directory: '<path>'`. نتیجه این بود
+که مسیر کاریِ همهٔ موتورها (singbox / xray / mihomo / awg / mdvpn / stormdns)
+به `Directory: 'C:\…\AppData\Roaming'/.nexus/runtime/singbox` می‌شد — یک مسیر
+از لحاظ سینتکسی نامعتبر که اولین `exists()`/`create()` با errno 123 می‌ترکید.
+روی اندروید هم همین مسیر خراب ساخته می‌شد؛ حالا از `baseDir.path` با
+`Platform.pathSeparator` استفاده می‌شود. (لاگِ `CORES_DIR resolved to a
+MISSING dir` هم فراری بود: `\${fallback.path}` اسکیپ شده بود و مسیر واقعی را
+چاپ نمی‌کرد — درست شد.)
+
+**۲. تست رگرسیون جدید:** `test/path_interpolation_guard_test.dart` کل
+`lib/**.dart` را اسکن می‌کند و هر `$متغیر`ِ از نوع `Directory`/`File` را که بدون
+`.path` در مسیر به کار رفته باشد خطا می‌گیرد (اثبات شد: با بازگرداندنِ همان
+باگ، تست قرمز می‌شود). این کلاس از باگ را هیچ type-checkerی نمی‌گیرد، چون
+Dart هر شیء را خوش‌خیال stringify می‌کند.
+
+**۳. بیلد هم‌تراز:** نسخهٔ ۰.۶.۱۱ با همان کد برای اندروید (splitهای arm64/v7a +
+universal)، ویندوز (zip با هسته‌های sing-box/Xray/mihomo) و لینوکس ساخته می‌شود
+— دسکتاپ دیگر از APK عقب نیست.
+
 ## v0.6.10 — رفع «Not responding» (استور روی isolate رابط کاربری) + فیکس قواعد روتینگ در سه موتور
 
 > ۱- بعضی وقتا با برنامه کار می‌کردیم هنگ می‌کرد و پنجرهٔ Not responding می‌آمد
