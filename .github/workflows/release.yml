@@ -67,8 +67,15 @@ jobs:
       - name: Build split APKs (v7a + v8a)
         run: flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64
 
-      - name: Build universal APK
-        run: flutter build apk --release --target-platform android-arm,android-arm64
+      # v0.6.14 §packaging-fix: the universal APK MUST carry a Flutter engine
+      # for every ABI its manifest advertises. libbox.aar ships an x86_64
+      # .so, so the manifest said `native-code: arm64-v8a armeabi-v7a x86_64`
+      # while the build only produced ARM engines — the file then INSTALLS on
+      # an x86_64 device and dies on launch with
+      #   UnsatisfiedLinkError: libflutter.so is for EM_AARCH64 instead of
+      #   EM_X86_64   (reproduced on an Android 15 x86_64 emulator).
+      - name: Build universal APK (arm + arm64 + x64 engines)
+        run: flutter build apk --release --target-platform android-arm,android-arm64,android-x64
 
       - name: Rename artifacts
         run: |
