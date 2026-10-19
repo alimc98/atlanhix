@@ -2,7 +2,14 @@ name: nexus
 description: Atlanhix — production-grade cross-platform proxy/VPN client (Windows, Linux, Android).
 publish_to: "none"
 license: MIT
-version: 0.6.12+27
+# v0.6.13 §release-fix: versionCode MUST outrank every previously shipped
+# build. `flutter build apk --split-per-abi` (the CI release path) adds
+# 1000 * ABI to the pubspec code, so v0.6.12+27 shipped as 2027 for arm64 —
+# a v0.6.13 built from +27 was the SAME versionCode (still "0.6.12" on the
+# About screen, no update ever detected, and installs over the 27 universal
+# build refused as a downgrade: "App not installed"). 2028 sits above 2027
+# for the universal build; the split builds land at 2028/3028.
+version: 0.6.13+2028
 
 environment:
   sdk: ">=3.6.0 <4.0.0"
