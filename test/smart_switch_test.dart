@@ -97,6 +97,12 @@ void main() {
       'dead': (false, null),
       'good': (true, 400),
     });
+    // v0.6.13 §auto-select-fix: the first miss alone is only a SUSPECT (see
+    // the test below) — the second consecutive miss crosses
+    // TestScheduler.failureThreshold (2) and drops the pinnable claim, so
+    // the dead node is abandoned unconditionally again.
+    health.record(HealthRecord(
+        profileId: 'dead', at: DateTime.now(), ok: false, errorKind: 'timeout'));
     final switcher = SmartSwitch(
       scheduler: TestScheduler(tester: LatencyTester(), store: health),
       health: health,
@@ -113,6 +119,38 @@ void main() {
     switcher.start(cands, currentId: 'dead');
     await Future<void>.delayed(const Duration(milliseconds: 450));
     expect(seen, ['good']);
+  });
+
+  test('a single failed probe keeps the incumbent pinned (suspect ≠ dead)',
+      () async {
+    // v0.6.13 §auto-select-fix (ZedSecure alive/suspect/dead study): one
+    // 5 s blip on a busy link set state=timeout, `isUsable` flipped false
+    // and _evaluate migrated the LIVE tunnel unconditionally — auto-select
+    // hopped nodes on momentary noise. Below the failure threshold the
+    // incumbent stays pinnable: even an absurd challenger margin must not
+    // move the tunnel.
+    final health = _seedHealth({
+      'flappy': (false, null),
+      'good': (true, 400),
+    });
+    final switcher = SmartSwitch(
+      scheduler: TestScheduler(tester: LatencyTester(), store: health),
+      health: health,
+      interval: const Duration(seconds: 0),
+      marginMs: 5000, // absurd tolerance — even this must not force a hop
+    );
+    final cands = [_p('flappy'), _p('good')];
+    final seen = <String>[];
+    final sub = switcher.changes.listen((p) => seen.add(p.id));
+    addTearDown(() async {
+      await sub.cancel();
+      switcher.dispose();
+    });
+    switcher.start(cands, currentId: 'flappy');
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+    expect(seen, isEmpty,
+        reason: 'one blip is a suspect — the live tunnel must not hop');
+    expect(switcher.best?.id, 'flappy');
   });
 
   test('re-seeding on reconfigure keeps the current pick (no rollback)',

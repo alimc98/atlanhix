@@ -35,6 +35,36 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
     private var tun: ParcelFileDescriptor? = null
     private var engine: LibboxEngine? = null
 
+    // v0.6.13 §jank-fix — ONE worker owns every tunnel MUTATION (start,
+    // stop, crash-restart, revoke, teardown): FIFO against each other, so
+    // user actions and engine callbacks never race on `engine`/`tun`, and
+    // the main looper never runs the heavy path. The old code executed
+    // startTunnel() inside onStartCommand — the probe-latch wait alone is
+    // up to 40 × 100 ms of Thread.sleep, then a SYNCHRONOUS libbox start —
+    // freezing the UI for the whole Connect (ANR-class jank; engine.stop
+    // in the teardown path blocks ~150 ms for the same reason). The
+    // engine-callback thread already called startTunnel() directly before,
+    // so the work itself is thread-agnostic.
+    private val tunnelExecutor: java.util.concurrent.ExecutorService =
+        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "ATX-Tunnel").apply { isDaemon = true }
+        }
+
+    // Queues a tunnel mutation on tunnelExecutor. Failures land in the
+    // engine trace instead of the uncaught handler — an exception escaping
+    // this worker would kill the whole VPN process.
+    private fun onTunnelThread(label: String, body: () -> Unit) {
+        tunnelExecutor.execute {
+            try {
+                body()
+            } catch (t: Throwable) {
+                AtlanhixTrace.err(
+                    "TUNNEL_TASK_FAILED task=$label ${t.javaClass.simpleName}: ${t.message}"
+                )
+            }
+        }
+    }
+
     override fun context(): android.content.Context = this
 
     private fun setState(s: State, detail: String? = null, code: String? = null) {
@@ -81,7 +111,9 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                shutdown()
+                // v0.6.13 §jank-fix: teardown rides the tunnel worker too —
+                // engine.stop() alone blocks ~150 ms (serviceClose + join).
+                onTunnelThread("stop") { shutdown() }
                 return START_NOT_STICKY
             }
             ACTION_START -> {
@@ -90,7 +122,16 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
                 // Adopt THIS connect's generation atomically with the first
                 // state it produces (main-thread serialization), then run
                 // the state machine below.
-                generation = pendingConfig?.optString("generation", null)
+                //
+                // v0.6.13 §jank-fix: capture + consume the handoff HERE, on
+                // the main looper (same atomicity as the old synchronous
+                // path), then push the heavy part — the probe-latch wait and
+                // the synchronous libbox start — onto the tunnel worker.
+                // Running it inside onStartCommand froze the UI for the
+                // WHOLE connect on the thread Android's watchdog watches.
+                val handoff = pendingConfig
+                pendingConfig = null
+                generation = handoff?.optString("generation", null)
                     ?.takeIf { it.isNotEmpty() }
                 val s = state
                 if (s == State.VALIDATING) {
@@ -100,8 +141,10 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
                     // "session already active"). The Dart side already gave
                     // up on that attempt — replace it: tear down, rebuild.
                     setState(State.RECONNECTING)
-                    shutdownTunnelOnly()
-                    startTunnel()
+                    onTunnelThread("restart-validating") {
+                        shutdownTunnelOnly()
+                        startTunnel(handoff)
+                    }
                     return START_STICKY
                 }
                 if (s != State.IDLE && s != State.STOPPED && s != State.FAILED &&
@@ -115,7 +158,7 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
                     return START_NOT_STICKY
                 }
                 setState(State.PREPARING)
-                startTunnel()
+                onTunnelThread("start") { startTunnel(handoff) }
             }
             else -> {
                 // System restart delivery: rebuild the tunnel if we were up.
@@ -125,8 +168,12 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
                 // notification never resurrects on its own.
                 if (state == State.VALIDATING || state == State.CONNECTED) {
                     setState(State.RECONNECTING)
-                    shutdownTunnelOnly()
-                    startTunnel()
+                    val handoff = pendingConfig
+                    pendingConfig = null
+                    onTunnelThread("sticky-restart") {
+                        shutdownTunnelOnly()
+                        startTunnel(handoff)
+                    }
                 } else if (intent == null && AtlanhixVpnService.pendingConfig == null) {
                     AtlanhixTrace.log("STICKY_RESTART ignored (no owner)")
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -140,14 +187,14 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
 
     // ------------------------------------------------------------------ TUN
 
-    private fun startTunnel() {
+    private fun startTunnel(handoff: JSONObject?) {
         // Fresh trace id per connect intent + open the engine log BEFORE any
         // config capture, so CONFIG_SUMMARY / FINAL_CONFIG actually land in
         // the file (open() truncates — it must precede every append).
         AtlanhixTrace.new()
         EngineLogFile.open(this, AtlanhixTrace.id)
         AtlanhixTrace.log("CONNECT_REQUEST (native startTunnel)")
-        val config = pendingConfig
+        val config = handoff
         if (config == null) {
             AtlanhixTrace.err("FAILED stage=startTunnel error=no config handoff received")
             setState(State.FAILED, "no config handoff received", ERR_CONFIG_INVALID)
@@ -174,11 +221,11 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
         EngineLogFile.append(AtlanhixRedact.apply(configJson))
         EngineLogFile.append("FINAL_CONFIG_END")
         setState(State.STARTING)
-        // v0.4.9 §user-fix: the handoff is consumed here. Keeping it made a
-        // system START_STICKY redelivery (after the process was killed with
-        // the tunnel down) REBUILD a dead session — resurrecting the
+        // v0.4.9 §user-fix: the handoff is consumed at CAPTURE time (the
+        // main looper, ACTION_START) — keeping it alive here made a system
+        // START_STICKY redelivery (after the process was killed with the
+        // tunnel down) REBUILD a dead session — resurrecting the
         // "atlanhix core" notification after the user closed the app.
-        pendingConfig = null
         val include = stringList(config, "includeApps")
         val exclude = stringList(config, "excludeApps")
         // v0.5.2 §first-connect-fix: if the TRANSIENT probe engine was up
@@ -419,12 +466,16 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
         }
         override fun onFailed(reason: String) {
             setState(State.FAILED, reason, ERR_ENGINE_START_FAILED)
-            shutdownTunnelOnly()
+            onTunnelThread("engine-failed") { shutdownTunnelOnly() }
         }
         override fun onCrashed(reason: String) {
             setState(State.RECONNECTING)
-            shutdownTunnelOnly()
-            startTunnel()
+            val handoff = pendingConfig
+            pendingConfig = null
+            onTunnelThread("engine-crashed") {
+                shutdownTunnelOnly()
+                startTunnel(handoff)
+            }
         }
         override fun onStopped() {
             // Normal stop is handled by shutdown(); a surprise stop lands
@@ -488,27 +539,35 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
         // §4: user disabled the VPN in system settings — explicit REVOKED
         // transition (never FAILED; the UI distinguishes denial vs revoke).
         setState(State.REVOKED, "revoked by system", ERR_VPN_REVOKED)
-        shutdownTunnelOnly()
-        // v0.6.3 §notify-fix: a revoked tunnel must not leave the child cores
-        // (and their "Atlanhix core" pill) running.
-        stopChildCores()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        // v0.6.13 §jank-fix: teardown (engine.stop blocks ~150 ms) rides the
+        // tunnel worker — the state flip above stays synchronous for polls.
+        onTunnelThread("revoke") {
+            shutdownTunnelOnly()
+            // v0.6.3 §notify-fix: a revoked tunnel must not leave the child cores
+            // (and their "Atlanhix core" pill) running.
+            stopChildCores()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     override fun onDestroy() {
         if (instance === this) instance = null
-        shutdownTunnelOnly()
-        // v0.6.3 §notify-fix: whichever path destroyed the VPN service, the
-        // children go with it — an engine with no tunnel has no reason to
-        // exist (or to notify).
-        stopChildCores()
-        // v0.4.9 §user-fix ("atlanhix core even after closing the app"):
-        // whatever path destroyed the service, the notification must go —
-        // a sticky foreground notification on a dead tunnel is a lie.
-        try {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } catch (_: Exception) {}
+        // v0.6.13 §jank-fix: queued AFTER any in-flight tunnel task so the
+        // worker serializes teardown against start/stop (see tunnelExecutor).
+        onTunnelThread("destroy") {
+            shutdownTunnelOnly()
+            // v0.6.3 §notify-fix: whichever path destroyed the VPN service, the
+            // children go with it — an engine with no tunnel has no reason to
+            // exist (or to notify).
+            stopChildCores()
+            // v0.4.9 §user-fix ("atlanhix core even after closing the app"):
+            // whatever path destroyed the service, the notification must go —
+            // a sticky foreground notification on a dead tunnel is a lie.
+            try {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } catch (_: Exception) {}
+        }
         super.onDestroy()
     }
 
@@ -519,16 +578,20 @@ class AtlanhixVpnService : VpnService(), AtlanhixPlatformInterface {
     override fun onTaskRemoved(rootIntent: Intent?) {
         AtlanhixTrace.log("TASK_REMOVED — tearing session down")
         setState(State.STOPPING)
-        shutdownTunnelOnly()
-        // v0.6.3 §notify-fix: swiping the app away used to leave the :mihomo
-        // / :xray child running with its "Atlanhix core" notification.
-        stopChildCores()
-        setState(State.STOPPED)
-        AtlanhixTrace.log("STOPPED (task removed)")
-        try {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } catch (_: Exception) {}
-        stopSelf()
+        // v0.6.13 §jank-fix: heavy teardown on the tunnel worker (FIFO with
+        // any in-flight start/stop); state flips stay immediate for polls.
+        onTunnelThread("task-removed") {
+            shutdownTunnelOnly()
+            // v0.6.3 §notify-fix: swiping the app away used to leave the :mihomo
+            // / :xray child running with its "Atlanhix core" notification.
+            stopChildCores()
+            setState(State.STOPPED)
+            AtlanhixTrace.log("STOPPED (task removed)")
+            try {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } catch (_: Exception) {}
+            stopSelf()
+        }
         super.onTaskRemoved(rootIntent)
     }
 

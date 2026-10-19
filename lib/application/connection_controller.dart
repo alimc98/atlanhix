@@ -285,6 +285,11 @@ class ConnectionController {
   void setMonitorCadence({required bool foreground}) {
     if (_monitorForeground == foreground) return;
     _monitorForeground = foreground;
+    // v0.7.x §battery: the engines' 1 s counter poll exists for the visible
+    // graphs — park it while the app is hidden (both engines have their own
+    // timer; neither is needed for failover, which uses its own probe).
+    cores.front.setTrafficEnabled(foreground);
+    cores.mihomo.setTrafficEnabled(foreground);
     final p = _monitorProfile;
     // Restart a RUNNING monitor so the new cadence applies immediately.
     if (p != null && _monitorTimer != null) _startMonitor(p);

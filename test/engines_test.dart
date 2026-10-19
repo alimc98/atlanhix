@@ -141,6 +141,40 @@ void main() {
       expect(((ep['peers'] as List).first as Map)['public_key'], 'peer=');
     });
 
+    // v0.7.x §hy2-tls: sing-box 1.14 refuses the WHOLE config when a QUIC
+    // outbound (hysteria / hysteria2 / tuic) has no tls block —
+    // `initialize outbound[0]: TLS required` — and the engine exits before
+    // ANY node connects. Importers set security=tls, a hand-made node may
+    // not; the generator must not trust the flag for these protocols.
+    test('QUIC outbounds are TLS-mandatory even with security=none', () {
+      for (final proto in [
+        ProxyProtocol.hysteria2,
+        ProxyProtocol.hysteria,
+        ProxyProtocol.tuic,
+      ]) {
+        final cfg = gen.generate(
+          runnableProfiles: [
+            ProxyProfile(
+              id: '9',
+              name: 'quic-none',
+              server: '192.0.2.9',
+              port: 443,
+              protocol: proto,
+              password: 'pw',
+            ),
+          ],
+          routing: BuiltinRoutingProfiles.all().first,
+          dns: DnsSettings(mode: DnsMode.automatic),
+          selectedTag: 'node:9',
+        );
+        final out = (cfg['outbounds'] as List)
+            .firstWhere((o) => o['tag'] == 'node:9') as Map;
+        expect(out['tls'], isNotNull,
+            reason: '$proto without TLS makes sing-box reject the config');
+        expect((out['tls'] as Map)['enabled'], isTrue, reason: '$proto');
+      }
+    });
+
     test('fakeip dns mode adds fakeip object', () {
       final cfg = gen.generate(
         runnableProfiles: const [],

@@ -288,8 +288,27 @@ class SingBoxRuntime implements CoreRuntime {
     return false;
   }
 
+  /// v0.7.x §battery: the 1 s counter poll feeds ON-SCREEN graphs only. A
+  /// backgrounded app kept asking the engine's Clash API 60 times a minute
+  /// for a number nobody could see, keeping the CPU out of deep idle for the
+  /// whole session. main.dart now parks it on `AppLifecycleState.paused` and
+  /// resumes on `resumed`.
+  bool _trafficEnabled = true;
+
+  void setTrafficEnabled(bool on) {
+    if (_trafficEnabled == on) return;
+    _trafficEnabled = on;
+    if (!on) {
+      _trafficTimer?.cancel();
+      _trafficTimer = null;
+      return;
+    }
+    if (_status == RuntimeStatus.running) _startTrafficPolling();
+  }
+
   void _startTrafficPolling() {
     _trafficTimer?.cancel();
+    if (!_trafficEnabled) return;
     // v0.3.2: seed the counters immediately instead of waiting for the first
     // 1 s tick — the E2E probe (sub-second) used to read null and crash on
     // the traffic-delta assertion.

@@ -46,6 +46,12 @@ class MihomoRuntime {
   CoreExitEvent? _lastExit;
   StreamController<CoreExitEvent>? _exitEvents;
   final _stderrRing = <String>[];
+  /// v0.7.x §mihomo-diag: mihomo logs to STDOUT (unlike sing-box/xray, which
+  /// write to stderr) — the old collector dropped every line, and
+  /// [_stdoutTail] was a `=> ''` stub, so a failed start reported
+  /// "mihomo API did not come up — " with NOTHING after it: no port clash, no
+  /// config error, no clue. Keep the last lines so the failure is diagnosable.
+  final _stdoutRing = <String>[];
 
   /// v0.5.6 §leak-fix: held so [_collectLogs]/[stop] can release them.
   StreamSubscription<String>? _stdoutSub;
@@ -133,10 +139,16 @@ class MihomoRuntime {
 
     final ready = await _waitApiReady(timeout: const Duration(seconds: 15));
     if (!ready) {
-      final tail = _stderrTail();
+      // Both streams, in engine order: mihomo's own log names the exact
+      // reason (port in use, bad config, geo download failure).
+      final diag = [
+        if (_stdoutTail().isNotEmpty) _stdoutTail(),
+        if (_stderrTail().isNotEmpty) _stderrTail(),
+      ].join('\n');
       await stop();
       return StartResult(StartStatus.failed,
-          message: 'mihomo API did not come up — ${tail.isEmpty ? _stdoutTail() : tail}');
+          message: 'mihomo API did not come up on 127.0.0.1:$apiPort — '
+              '${diag.isEmpty ? 'engine logged nothing' : diag}');
     }
     _status = RuntimeStatus.running;
     _api = ClashApiClient(port: apiPort, secret: apiSecret);
@@ -193,7 +205,10 @@ class MihomoRuntime {
     _disposeLogSubs();
     final p = _process;
     if (p == null) return;
-    _stdoutSub = p.stdoutStream.listen((l) {}, onDone: () {});
+    _stdoutSub = p.stdoutStream.listen((l) {
+      _stdoutRing.add(l);
+      if (_stdoutRing.length > 50) _stdoutRing.removeAt(0);
+    }, onDone: () {});
     _stderrSub = p.stderrStream.listen((l) {
       _stderrRing.add(l);
       if (_stderrRing.length > 50) _stderrRing.removeAt(0);
@@ -214,10 +229,26 @@ class MihomoRuntime {
   /// copy; mirrors SingBoxRuntime.debugStderrTail).
   List<String> debugStderrTail() => List.unmodifiable(_stderrRing);
 
+  /// v0.7.x §battery — same contract as [SingBoxRuntime.setTrafficEnabled]:
+  /// stop asking the Clash API for counters while the app is hidden.
+  bool _trafficEnabled = true;
+
+  void setTrafficEnabled(bool on) {
+    if (_trafficEnabled == on) return;
+    _trafficEnabled = on;
+    if (!on) {
+      _trafficTimer?.cancel();
+      _trafficTimer = null;
+      return;
+    }
+    if (_status == RuntimeStatus.running) _startTrafficPolling();
+  }
+
   /// 1 s counter poll through the engine's own Clash API (parity with the
   /// sing-box front's [SingBoxRuntime._startTrafficPolling]).
   void _startTrafficPolling() {
     _trafficTimer?.cancel();
+    if (!_trafficEnabled) return;
     Future<void>.microtask(() async {
       final t0 = await _api?.connections();
       if (t0 != null) _traffic = t0;
@@ -228,5 +259,5 @@ class MihomoRuntime {
     });
   }
 
-  String _stdoutTail() => '';
+  String _stdoutTail() => _stdoutRing.join('\n').trim();
 }

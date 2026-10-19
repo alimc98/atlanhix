@@ -489,7 +489,18 @@ class CoreManager {
         .where((p) => p.enabled && p.effectiveCore == CoreKind.mihomo)
         .toList();
     if (mihomoSingletonPool(profile, pool)) pool.clear();
-    final cfg = MihomoConfigGenerator().build(
+    // v0.7.x §mihomo-ports: the generator was built with its DEFAULTS
+    // (mixed 2080 / controller 9097) while [MihomoRuntime] serves on
+    // mihomoMixedPort 2081 / mihomoApiPort 9099. The engine then listened on
+    // 9097, [_waitApiReady] polled 9099 for 15 s, never saw an answer and
+    // KILLED a perfectly healthy session: every mihomo config "did not
+    // connect" while the same node switched to sing-box worked. The config
+    // MUST carry the runtime's own ports.
+    final cfg = MihomoConfigGenerator.ports(
+      mixedPort: mihomoMixedPort,
+      apiPort: mihomoApiPort,
+      secret: mihomo.apiSecret,
+    ).build(
       profiles: pool.isEmpty ? [profile] : pool,
       selectedId: profile.id,
       routing: routing,

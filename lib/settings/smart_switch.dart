@@ -87,6 +87,35 @@ class SmartSwitch {
   /// v0.5.2 §user — other-servers rescan cadence (default 10 min).
   Duration othersRescanInterval;
 
+  /// v0.7.x §battery — foreground gate for the whole ladder.
+  ///
+  /// Every measurement here is a REAL delay test through the engine (a full
+  /// pool sweep boots probes, opens sockets and wakes the radio). On Android
+  /// the app is backgrounded seconds after a connect, yet the ladder kept its
+  /// 30 s incumbent recheck and periodic full sweeps alive all night for a
+  /// dashboard nobody was looking at. While hidden each cadence stretches
+  /// [backgroundStretch]× (30 s → 2 min, 5 min → 20 min) so a marginal speed
+  /// gain no longer costs a wakeup; FAILURE detection is unaffected — the
+  /// connection monitor (2 min cadence when hidden) still demotes and fails
+  /// over a dead tunnel. Resume restores the live cadences instantly.
+  static const int backgroundStretch = 4;
+  bool foreground = true;
+
+  /// Last pool handed to [start] — needed to re-arm timers when the
+  /// foreground flag flips mid-session.
+  List<ProxyProfile> _candidates = const [];
+
+  /// Ladder cadences respect [foreground] (see [backgroundStretch]).
+  Duration _pace(Duration d) =>
+      foreground ? d : d * backgroundStretch;
+
+  void setForeground(bool on) {
+    if (foreground == on) return;
+    foreground = on;
+    // Only a RUNNING ladder re-arms; a stopped one must stay stopped.
+    if (_timer != null || _resultsSub != null) _armTimers(_candidates);
+  }
+
   Timer? _timer;
   Timer? _activeTimer;
   Timer? _rescanTimer;
@@ -148,6 +177,7 @@ class SmartSwitch {
 
   void start(List<ProxyProfile> candidates, {String? currentId}) {
     stop();
+    _candidates = candidates;
     // v0.5.0 §user-fix (smart switch never switched): seed [best] from the
     // caller's incumbent BEFORE the first sweep finishes.
     if (currentId != null) {
@@ -184,9 +214,11 @@ class SmartSwitch {
   }
 
   void _armTimers(List<ProxyProfile> candidates) {
+    _candidates = candidates;
     _timer?.cancel();
+    _timer = null;
     if (interval.inSeconds > 0) {
-      _timer = Timer.periodic(interval, (_) => _sweep(candidates));
+      _timer = Timer.periodic(_pace(interval), (_) => _sweep(candidates));
     }
     _armActiveRecheck(candidates);
     _armRescan(candidates);
@@ -198,8 +230,9 @@ class SmartSwitch {
   /// tunnel to a corpse).
   void _armActiveRecheck(List<ProxyProfile> candidates) {
     _activeTimer?.cancel();
+    _activeTimer = null;
     if (activeRecheckInterval.inSeconds <= 0) return;
-    _activeTimer = Timer.periodic(activeRecheckInterval, (_) async {
+    _activeTimer = Timer.periodic(_pace(activeRecheckInterval), (_) async {
       final incumbent = best;
       if (incumbent == null || _sweeping) return;
       final probe = urlProbe;
@@ -225,8 +258,9 @@ class SmartSwitch {
   /// active recheck on its own cadence).
   void _armRescan(List<ProxyProfile> candidates) {
     _rescanTimer?.cancel();
+    _rescanTimer = null;
     if (othersRescanInterval.inMinutes <= 0) return;
-    _rescanTimer = Timer.periodic(othersRescanInterval, (_) {
+    _rescanTimer = Timer.periodic(_pace(othersRescanInterval), (_) {
       final incumbent = best;
       _sweep([
         for (final p in candidates)
@@ -450,7 +484,17 @@ class SmartSwitch {
       // e.g. a stale currentId handed to start()) counts as UNKNOWN, not
       // usable: the first sweep must be able to replace it like the dead
       // case. The old `!…isUsable` branch only fired for RECORDED-bad.
-      final incumbentUsable = incumbentStats?.isUsable ?? false;
+      //
+      // v0.6.13 §auto-select-fix (study of ZedSecure's alive/suspect/dead
+      // member model): SUSPECT is not DEAD. `isUsable` flips false on the
+      // FIRST failed probe (state=timeout after one 5 s blip), and this
+      // branch then migrated the LIVE tunnel unconditionally — a momentary
+      // timeout on a busy link (or one failed TCP record from a sweep)
+      // hopped the session to another node. Hard verdicts still demote
+      // instantly; generic failures only drop the pinnable claim after
+      // TestScheduler.failureThreshold consecutive misses — the same bar
+      // ConnectionController uses before failover fires.
+      final incumbentUsable = _pinnable(incumbentStats);
       if (!incumbentUsable) {
         // Incumbent is dead or unmeasured — migrate unconditionally.
       } else if (!challengerHealthy) {
@@ -488,6 +532,31 @@ class SmartSwitch {
 
   bool _isHealthy(ProxyProfile p) =>
       health.statsOf(p.id)?.state == NodeHealth.healthy;
+
+  /// v0.6.13 §auto-select-fix — SUSPECT vs DEAD (ZedSecure's member model):
+  /// may the incumbent still PIN the live tunnel?
+  ///
+  /// * null stats → not pinnable (unmeasured; the first sweep replaces it —
+  ///   the v0.5.2 rule above);
+  /// * healthy/degraded/unknown → pinnable;
+  /// * config/core/blocked → NOT pinnable: a hard verdict never fixes
+  ///  itself by waiting, migrate at once;
+  /// * anything else (timeout/offline) → pinnable ONLY while the miss count
+  ///  is still below [TestScheduler.failureThreshold] — one blip is a
+  ///  SUSPECT, two consecutive misses demote it and the margin gate above
+  ///  decides the handover as usual.
+  bool _pinnable(NodeHealthStats? s) {
+    if (s == null) return false;
+    if (s.isUsable) return true;
+    switch (s.state) {
+      case NodeHealth.configError:
+      case NodeHealth.coreError:
+      case NodeHealth.blocked:
+        return false;
+      default:
+        return s.consecutiveFailures < scheduler.failureThreshold;
+    }
+  }
 
   /// v0.5.0 §user-2 — COMPOSITE ranking: latency + jitter + success rate,
   /// healthy-first. See the original design note in v0.5.0 docs; the score

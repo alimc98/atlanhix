@@ -103,6 +103,15 @@ class SystemProxyController {
         if (_winPrevEnable != null) {
           await _reg(['add', _kInternet, '/v', 'ProxyEnable',
                 '/t', 'REG_DWORD', '/d', _winPrevEnable!, '/f']);
+        } else {
+          // v0.6.13 §win-fix: a user who NEVER configured a proxy has no
+          // ProxyEnable value at all — enable() created it (with `/d 1`).
+          // Skipping the restore here left ProxyEnable=1 behind with
+          // ProxyServer deleted below, i.e. "proxy ON, server empty" —
+          // exactly the broken-networking-after-disconnect case the
+          // ProxyOverride branch was already fixed for in v0.6.3.
+          await _reg(
+              ['delete', _kInternet, '/v', 'ProxyEnable', '/f']);
         }
         if (_winPrevServer != null) {
           await _reg(['add', _kInternet, '/v', 'ProxyServer',

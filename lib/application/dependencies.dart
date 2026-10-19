@@ -134,16 +134,34 @@ class AppDependencies {
         'cores', // engines directly in cores\ (no platform nesting)
         'bin', // portable-tools habit
       ];
+      // v0.6.13 §linux-fix: engine files carry `.exe` ONLY on Windows —
+      // requiring it made every probe fail on Linux/macOS (engines ship
+      // extension-less: sing-box, xray, mihomo, amneziawg-go, …), so the
+      // resolver fell through to its FIRST guess — often a missing dir —
+      // and boot logged "CORES_DIR resolved to a MISSING dir — engines
+      // will read as notInstalled" with the real engines sitting right
+      // there. Accept the platform-canonical names from BinaryManager too;
+      // `.exe.bak` stays as the Windows self-update residue marker.
+      final engineNames = <String>{
+        for (final k in CoreBinaryKind.values) ...[
+          BinaryManager.binaryName(k),
+          ...BinaryManager.binaryAliases(k),
+        ],
+      };
+      bool hasEngine(FileSystemEntity e) {
+        if (e is! File) return false;
+        final base = e.path.split(sep).last;
+        return base.endsWith('.exe') ||
+            base.endsWith('.exe.bak') ||
+            engineNames.contains(base);
+      }
       Directory? firstGuess;
       for (final root in roots) {
         for (final nest in nests) {
           final d = Directory('$root$sep$nest');
           firstGuess ??= d;
           try {
-            if (d.existsSync() &&
-                d.listSync().any((e) =>
-                    e is File &&
-                    (e.path.endsWith('.exe') || e.path.endsWith('.exe.bak')))) {
+            if (d.existsSync() && d.listSync().any(hasEngine)) {
               return d;
             }
           } catch (_) {/* unreadable dir → keep probing */}

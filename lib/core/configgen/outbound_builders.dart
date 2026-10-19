@@ -127,8 +127,16 @@ class OutboundBuilders {
     // QUIC outbounds carry their own TLS 1.3 — uTLS would be rejected
     // ("unsupported usage for uTLS", measured on device 2026-09-13).
     final quic = type == 'hysteria' || type == 'hysteria2' || type == 'tuic';
-    final tls =
-        p.security != Security.none ? _sbTls(p, quic: quic) : null;
+    // v0.7.x §hy2-tls: a hysteria/hysteria2/tuic outbound IS TLS 1.3 over
+    // QUIC — sing-box refuses the whole config when the block is missing
+    // (`initialize outbound[0]: TLS required`, reproduced with the shipped
+    // 1.14.0). Importers set Security.tls, but a node created or edited by
+    // hand can keep `none`, and one such node killed EVERY other node in the
+    // pool (the engine exits before any session starts). Force TLS for the
+    // QUIC family; the rest still opt in through `security`.
+    final tls = (p.security != Security.none || quic)
+        ? _sbTls(p, quic: quic, force: quic)
+        : null;
     return {
       'type': type,
       'tag': tag,
@@ -140,8 +148,9 @@ class OutboundBuilders {
     };
   }
 
-  Map<String, dynamic>? _sbTls(ProxyProfile p, {bool quic = false}) {
-    if (p.security == Security.none) return null;
+  Map<String, dynamic>? _sbTls(ProxyProfile p,
+      {bool quic = false, bool force = false}) {
+    if (p.security == Security.none && !force) return null;
     final ech = _echOptions(p);
     return {
       'enabled': true,

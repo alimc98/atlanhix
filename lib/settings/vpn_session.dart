@@ -520,6 +520,11 @@ class VpnSession {
         ', switch re-armed per preference (${smartSwitchPreferred ? 'auto' : 'manual'})');
   }
 
+  /// v0.7.x §battery — the Smart Switch ladder's cadences stretch while the
+  /// app is hidden (see [SmartSwitch.setForeground]); failure detection stays
+  /// on the connection monitor's own 2-minute background cadence.
+  void setSmartSwitchForeground(bool on) => _smart.setForeground(on);
+
   /// v0.5.0 §user-fix: after the native reconcile re-adopted a still-running
   /// tunnel from a dead process, a fresh Dart side has NO runtime services
   /// armed: no WARP watchdog, no Smart Switch ladder, no active-node

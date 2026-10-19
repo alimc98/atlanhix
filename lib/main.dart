@@ -231,6 +231,8 @@ class _AtlanhixAppState extends State<AtlanhixApp>
       // wakeup alive all night).
       widget.deps.connection.setMonitorCadence(foreground: true);
       widget.deps.subscriptionService.startAutoUpdatePump();
+      // v0.7.x §battery: the Smart Switch ladder's delay tests follow too.
+      widget.deps.vpnSession.setSmartSwitchForeground(true);
     }
     // v0.4.9 §battery: the transient probe engine exists ONLY for foreground
     // delay tests. Backgrounded with no live VPN it is a hidden Go runtime
@@ -249,6 +251,8 @@ class _AtlanhixAppState extends State<AtlanhixApp>
       // tick — their `nextUpdate` already fired).
       widget.deps.connection.setMonitorCadence(foreground: false);
       widget.deps.subscriptionService.stopAutoUpdatePump();
+      // v0.7.x §battery: hidden app → no pool sweeps / 30 s rechecks.
+      widget.deps.vpnSession.setSmartSwitchForeground(false);
     }
   }
 

@@ -261,24 +261,57 @@ class LatencyTester {
         return ProbeResult(
             ok: false, errorKind: 'proxy', detail: 'write failed');
       }
-      // The reply is ATYP(1)+BND.ADDR+BND.PORT — read the 4-byte fixed
-      // tail FIRST (address type is in byte 3 of the 5-byte head), never
-      // a blind sleep: the old `25 ms + soak` added a full 25 ms to every
-      // probe and could still leak tail bytes into the TLS stream.
-      final rep = await _rawReadAtLeast(sock, 5, t);
-      if (rep.length < 5 || rep[1] != 0x00) {
+      // The reply is VER(1)+REP(1)+RSV(1)+ATYP(1)+BND.ADDR+BND.PORT.
+      // v0.6.13 §probe-fix: read the 4-byte fixed head, then the tail by
+      // ATYP. The OLD 5-byte head swallowed the FIRST address byte, so the
+      // IPv4 remainder (3 addr bytes + 2 port bytes = 5) was counted as 4
+      // — the stranded low port byte (sing-box replies
+      // `05 00 00 01|7f 00 00 01|2f 30`, leaking `30`) was fed to
+      // RawSecureSocket as the first TLS byte and killed EVERY https
+      // probe through the front with `Handshake error in client`
+      // (E2E-proven with real sing-box/xray/mihomo cores). The IPv6
+      // branch over-read 18 bytes when only 17 remained and stalled the
+      // FULL probe timeout — the "800–1200 ms ping" inflation class.
+      // Plain-http probes only masked the leak: the stray `0x30` ('0')
+      // prefixed the status line and the `HTTP/\d` regex still matched.
+      final rep = await _rawReadAtLeast(sock, 4, t);
+      if (rep.length < 4 || rep[1] != 0x00) {
         return ProbeResult(
             ok: false,
             errorKind: 'proxy',
             detail: 'CONNECT failed (${rep.length > 1 ? rep[1] : '?'})');
       }
-      final extra = switch (rep[3]) {
-        0x01 => 4, // 4-byte IPv4
-        0x03 => rep[4] + 2, // len + 2-byte port
-        0x04 => 16 + 2, // 16-byte IPv6 + port
-        _ => 4,
-      };
-      if (extra > 0) await _rawReadAtLeast(sock, extra, t);
+      int tail;
+      switch (rep[3]) {
+        case 0x01: // 4-byte IPv4 + 2-byte port
+          tail = 4 + 2;
+        case 0x03: // length-prefixed domain + 2-byte port
+          final len = await _rawReadAtLeast(sock, 1, t);
+          if (len.isEmpty) {
+            return ProbeResult(
+                ok: false,
+                errorKind: 'proxy',
+                detail: 'CONNECT reply truncated (domain length)');
+          }
+          tail = len.first + 2;
+        case 0x04: // 16-byte IPv6 + 2-byte port
+          tail = 16 + 2;
+        default:
+          // Unknown ATYP: fail honestly instead of guessing — a wrong tail
+          // count leaves stray bytes that corrupt the TLS stream.
+          return ProbeResult(
+              ok: false,
+              errorKind: 'proxy',
+              detail:
+                  'CONNECT reply unknown ATYP 0x${rep[3].toRadixString(16)}');
+      }
+      final tailBytes = await _rawReadAtLeast(sock, tail, t);
+      if (tailBytes.length < tail) {
+        return ProbeResult(
+            ok: false,
+            errorKind: 'proxy',
+            detail: 'CONNECT reply truncated (${tailBytes.length}/$tail)');
+      }
       connectMs = sw.elapsedMilliseconds;
 
       Object transport = sock;

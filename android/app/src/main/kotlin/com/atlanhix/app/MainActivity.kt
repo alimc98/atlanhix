@@ -153,6 +153,24 @@ class MainActivity : FlutterActivity() {
                             }
                         }.start()
                     }
+                    // v0.6.13 §jank-fix: deviceStats samples /proc/self/stat
+                    // over a 200 ms window AND reads Debug.getPss() — on the
+                    // MAIN thread that froze the UI for a quarter second on
+                    // EVERY 3 s LiveMonitor tick (plus ANR exposure). Same
+                    // background-thread pattern as installedApps.
+                    "deviceStats" -> {
+                        val ch = vpnChannelOrNew()
+                        Thread {
+                            try {
+                                val resp = ch.handle("deviceStats", arg)
+                                runOnUiThread { result.success(resp.toString()) }
+                            } catch (e: Exception) {
+                                runOnUiThread { result.error("vpn_channel", e.message, null) }
+                            } catch (t: Throwable) {
+                                runOnUiThread { result.error("core_unavailable", t.message, null) }
+                            }
+                        }.start()
+                    }
                     else -> result.success(vpnChannelOrNew().handle(call.method, arg).toString())
                 }
             } catch (e: Exception) {
